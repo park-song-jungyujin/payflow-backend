@@ -47,7 +47,7 @@
       "currency": "KRW",
       "account_category_code": "TRAVEL",
       "is_business": true,
-      "settlement_run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
       "settled_at": "2026-08-16T11:40:00Z",
       "status": "SETTLED",
       "created_at": "2026-08-13T10:00:00Z",
@@ -86,7 +86,7 @@
   ],
   "settlement_runs": [
     {
-      "settlement_run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
       "filter": {
         "period_start": "2026-08-01",
         "period_end": "2026-08-31",
@@ -112,8 +112,8 @@
   ],
   "sender_items": [
     {
-      "sender_item_id": "run_20260816_01SCN08MIXEDRESULT005:rcp_01SCN08YENA000000000008",
-      "settlement_run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08YENA000000000008",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
       "recipient_id": "rcp_01SCN08YENA000000000008",
       "receiver_email": "yena.demo@personal.example.com",
       "amount_minor": 65000,
@@ -127,8 +127,8 @@
       "updated_at": "2026-08-16T11:40:00Z"
     },
     {
-      "sender_item_id": "run_20260816_01SCN08MIXEDRESULT005:rcp_01SCN08SEUNGHO00000009",
-      "settlement_run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08SEUNGHO00000009",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
       "recipient_id": "rcp_01SCN08SEUNGHO00000009",
       "receiver_email": "seungho.demo@personal.example.com",
       "amount_minor": 42000,
@@ -142,8 +142,8 @@
       "updated_at": "2026-08-16T11:40:00Z"
     },
     {
-      "sender_item_id": "run_20260816_01SCN08MIXEDRESULT005:rcp_01SCN08MIRAE0000000010",
-      "settlement_run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08MIRAE0000000010",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
       "recipient_id": "rcp_01SCN08MIRAE0000000010",
       "receiver_email": "unclaimed-mailbox.demo@personal.example.com",
       "amount_minor": 27500,
@@ -163,7 +163,7 @@
       "actor": "api/src/payouts",
       "actor_type": "SYSTEM",
       "action": "PAYOUT_RECONCILED",
-      "run_id": "run_20260816_01SCN08MIXEDRESULT005",
+      "run_id": "run_260816_01SCN08MIXED",
       "before": { "status": "EXECUTING" },
       "after": { "status": "FAILED" },
       "reason": "1/3 SUCCESS, 1 FAILED, 1 UNCLAIMED — 미종결 claim 2건 IN_RUN→CONFIRMED 롤백, monthly_paid_minor 예약분 환원"
@@ -171,7 +171,7 @@
   ],
   "retry_preview": {
     "_fixture_note": "다음 재발송(POST /payouts/{run_id}/retry) 시 실제로 나갈 값의 형태 — retry_seq 1, ID 형식은 §3의 재발송 규칙",
-    "sender_batch_id": "run_20260816_01SCN08MIXEDRESULT005:r1",
+    "sender_batch_id": "run_260816_01SCN08MIXED:r1",
     "targets": ["clm_01SCN08FAILEDCLAIM000002", "clm_01SCN08UNCLAIMEDCLAIM0003"],
     "requires_new_approval_token": true
   }

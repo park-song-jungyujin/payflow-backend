@@ -30,7 +30,7 @@
         "currency": "KRW",
         "account_category_code": "RENT",
         "is_business": true,
-        "settlement_run_id": "run_20260817_01SCN07CAPEXCEED0003",
+        "settlement_run_id": "run_260817_01SCN07CAPEX",
         "settled_at": null,
         "status": "IN_RUN",
         "created_at": "2026-08-14T10:00:00Z",
@@ -39,7 +39,7 @@
     ],
     "settlement_runs": [
       {
-        "settlement_run_id": "run_20260817_01SCN07CAPEXCEED0003",
+        "settlement_run_id": "run_260817_01SCN07CAPEX",
         "filter": {
           "period_start": "2026-08-01",
           "period_end": "2026-08-31",
@@ -65,7 +65,7 @@
     ],
     "request": {
       "method": "POST",
-      "path": "/settlements/runs/run_20260817_01SCN07CAPEXCEED0003/approve"
+      "path": "/settlements/runs/run_260817_01SCN07CAPEX/approve"
     },
     "expected_response": {
       "status_code": 403,
@@ -77,7 +77,7 @@
         "actor": "api/src/guards",
         "actor_type": "SYSTEM",
         "action": "PAYOUT_REJECTED",
-        "run_id": "run_20260817_01SCN07CAPEXCEED0003",
+        "run_id": "run_260817_01SCN07CAPEX",
         "before": { "status": "DRAFT" },
         "after": { "status": "DRAFT" },
         "reason": "MAX_AMOUNT_PER_BATCH_MINOR exceeded at approve"
@@ -94,7 +94,7 @@
         "currency": "KRW",
         "account_category_code": "TRAVEL",
         "is_business": true,
-        "settlement_run_id": "run_20260817_01SCN07NOTOKEN00004",
+        "settlement_run_id": "run_260817_01SCN07NOTOK",
         "settled_at": null,
         "status": "IN_RUN",
         "created_at": "2026-08-14T11:00:00Z",
@@ -103,7 +103,7 @@
     ],
     "settlement_runs": [
       {
-        "settlement_run_id": "run_20260817_01SCN07NOTOKEN00004",
+        "settlement_run_id": "run_260817_01SCN07NOTOK",
         "filter": {
           "period_start": "2026-08-01",
           "period_end": "2026-08-31",
@@ -143,7 +143,7 @@
         "actor": "api/src/guards",
         "actor_type": "SYSTEM",
         "action": "PAYOUT_REJECTED",
-        "run_id": "run_20260817_01SCN07NOTOKEN00004",
+        "run_id": "run_260817_01SCN07NOTOK",
         "before": { "status": "APPROVED" },
         "after": { "status": "APPROVED" },
         "reason": "X-Approval-Token header missing"

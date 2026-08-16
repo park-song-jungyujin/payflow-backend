@@ -71,7 +71,7 @@
       "currency": "KRW",
       "account_category_code": "SUPPLIES",
       "is_business": true,
-      "settlement_run_id": "run_20260817_01SCN01GOLDENPATH0001",
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
       "settled_at": null,
       "status": "CONFIRMED",
       "created_at": "2026-08-05T09:20:00Z",
@@ -85,7 +85,7 @@
       "currency": "USD",
       "account_category_code": "ADVERTISING",
       "is_business": true,
-      "settlement_run_id": "run_20260817_01SCN01GOLDENPATH0001",
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
       "settled_at": null,
       "status": "CONFIRMED",
       "created_at": "2026-08-06T13:45:00Z",
@@ -94,7 +94,7 @@
   ],
   "settlement_runs": [
     {
-      "settlement_run_id": "run_20260817_01SCN01GOLDENPATH0001",
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
       "filter": {
         "period_start": "2026-08-01",
         "period_end": "2026-08-31",
