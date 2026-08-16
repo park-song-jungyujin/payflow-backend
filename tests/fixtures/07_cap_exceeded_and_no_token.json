@@ -1,0 +1,153 @@
+{
+  "_fixture_note": "7. 한도 캡 초과 배치 + 토큰 없는 /payouts 호출 → 403 거부. 두 서브케이스를 담는다.",
+  "_fixture_env_example": {
+    "MAX_AMOUNT_PER_BATCH_MINOR": 5000000,
+    "MAX_AMOUNT_PER_ITEM_MINOR": 3000000,
+    "MAX_AMOUNT_MONTHLY_MINOR": 10000000,
+    "_note": "실제 .env 값이 아니라 이 fixture가 403을 재현하려면 캡이 이보다 낮아야 한다는 예시. 서브케이스 A 총액(6,200,000)이 배치 캡을 넘도록 맞췄다."
+  },
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN07WOOJIN0000000007",
+      "slack_user_id": "U01SCN0007",
+      "paypal_email": "woojin.demo@personal.example.com",
+      "display_name": "서우진",
+      "monthly_paid_minor": 1200000,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-16T09:00:00Z"
+    }
+  ],
+  "sub_case_a_cap_exceeded_at_approve": {
+    "claims": [
+      {
+        "claim_id": "clm_01SCN07BIGCLAIM00000001",
+        "recipient_id": "rcp_01SCN07WOOJIN0000000007",
+        "receipt_id": "rct_01SCN07BIGRECEIPT000001",
+        "amount_minor": 6200000,
+        "currency": "KRW",
+        "account_category_code": "RENT",
+        "is_business": true,
+        "settlement_run_id": "run_260817_01SCN07CAPEX",
+        "settled_at": null,
+        "status": "IN_RUN",
+        "created_at": "2026-08-14T10:00:00Z",
+        "updated_at": "2026-08-16T09:00:00Z"
+      }
+    ],
+    "settlement_runs": [
+      {
+        "settlement_run_id": "run_260817_01SCN07CAPEX",
+        "filter": {
+          "period_start": "2026-08-01",
+          "period_end": "2026-08-31",
+          "recipient_ids": ["rcp_01SCN07WOOJIN0000000007"],
+          "account_categories": null,
+          "exclude_claim_ids": null
+        },
+        "base_currency": "KRW",
+        "total_amount_minor": 6200000,
+        "fx_rates": {},
+        "fx_locked_at": null,
+        "approval_amount_hash": null,
+        "approval_token_hash": null,
+        "approval_token_expires_at": null,
+        "approval_token_used_at": null,
+        "approved_by": null,
+        "approved_at": null,
+        "retry_seq": 0,
+        "status": "DRAFT",
+        "created_at": "2026-08-16T09:00:00Z",
+        "updated_at": "2026-08-16T09:05:00Z"
+      }
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/settlements/runs/run_260817_01SCN07CAPEX/approve"
+    },
+    "expected_response": {
+      "status_code": 403,
+      "body": { "detail": "MAX_AMOUNT_PER_BATCH_MINOR exceeded: 6200000 > 5000000" }
+    },
+    "audit_logs": [
+      {
+        "ts": "2026-08-16T09:05:00Z",
+        "actor": "api/src/guards",
+        "actor_type": "SYSTEM",
+        "action": "PAYOUT_REJECTED",
+        "run_id": "run_260817_01SCN07CAPEX",
+        "before": { "status": "DRAFT" },
+        "after": { "status": "DRAFT" },
+        "reason": "MAX_AMOUNT_PER_BATCH_MINOR exceeded at approve"
+      }
+    ]
+  },
+  "sub_case_b_payouts_without_token": {
+    "claims": [
+      {
+        "claim_id": "clm_01SCN07SMALLCLAIM0000002",
+        "recipient_id": "rcp_01SCN07WOOJIN0000000007",
+        "receipt_id": "rct_01SCN07SMALLRECEIPT00002",
+        "amount_minor": 80000,
+        "currency": "KRW",
+        "account_category_code": "TRAVEL",
+        "is_business": true,
+        "settlement_run_id": "run_260817_01SCN07NOTOK",
+        "settled_at": null,
+        "status": "IN_RUN",
+        "created_at": "2026-08-14T11:00:00Z",
+        "updated_at": "2026-08-16T09:10:00Z"
+      }
+    ],
+    "settlement_runs": [
+      {
+        "settlement_run_id": "run_260817_01SCN07NOTOK",
+        "filter": {
+          "period_start": "2026-08-01",
+          "period_end": "2026-08-31",
+          "recipient_ids": ["rcp_01SCN07WOOJIN0000000007"],
+          "account_categories": null,
+          "exclude_claim_ids": null
+        },
+        "base_currency": "KRW",
+        "total_amount_minor": 80000,
+        "fx_rates": {},
+        "fx_locked_at": "2026-08-16T09:12:00Z",
+        "approval_amount_hash": "fixture_placeholder_amount_hash_do_not_verify",
+        "approval_token_hash": "fixture_placeholder_token_hash_do_not_verify",
+        "approval_token_expires_at": "2026-08-16T09:22:00Z",
+        "approval_token_used_at": null,
+        "approved_by": "exec_demo_woojin",
+        "approved_at": "2026-08-16T09:12:00Z",
+        "retry_seq": 0,
+        "status": "APPROVED",
+        "created_at": "2026-08-16T09:10:00Z",
+        "updated_at": "2026-08-16T09:12:00Z"
+      }
+    ],
+    "request": {
+      "method": "POST",
+      "path": "/payouts",
+      "headers": {},
+      "_fixture_note_headers": "X-Approval-Token 헤더를 의도적으로 비웠다. 토큰이 존재해도 헤더 자체가 없으면 대조 이전 단계에서 403."
+    },
+    "expected_response": {
+      "status_code": 403,
+      "body": { "detail": "X-Approval-Token header missing" }
+    },
+    "audit_logs": [
+      {
+        "ts": "2026-08-16T09:15:00Z",
+        "actor": "api/src/guards",
+        "actor_type": "SYSTEM",
+        "action": "PAYOUT_REJECTED",
+        "run_id": "run_260817_01SCN07NOTOK",
+        "before": { "status": "APPROVED" },
+        "after": { "status": "APPROVED" },
+        "reason": "X-Approval-Token header missing"
+      }
+    ]
+  }
+}

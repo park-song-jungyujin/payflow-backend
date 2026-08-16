@@ -1,0 +1,178 @@
+{
+  "_fixture_note": "8. PayPal FAILED + UNCLAIMED 혼재 결과 — 대조 → 되돌리기 → 재발송 준비",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN08YENA000000000008",
+      "slack_user_id": "U01SCN0008",
+      "paypal_email": "yena.demo@personal.example.com",
+      "display_name": "오예나",
+      "monthly_paid_minor": 65000,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-16T11:30:00Z"
+    },
+    {
+      "recipient_id": "rcp_01SCN08SEUNGHO00000009",
+      "slack_user_id": "U01SCN0009",
+      "paypal_email": "seungho.demo@personal.example.com",
+      "display_name": "노승호",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-16T11:30:00Z"
+    },
+    {
+      "recipient_id": "rcp_01SCN08MIRAE0000000010",
+      "slack_user_id": "U01SCN0010",
+      "paypal_email": "unclaimed-mailbox.demo@personal.example.com",
+      "display_name": "정미래",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-16T11:30:00Z"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm_01SCN08SUCCESSCLAIM00001",
+      "recipient_id": "rcp_01SCN08YENA000000000008",
+      "receipt_id": "rct_01SCN08SUCCESSRCT000001",
+      "amount_minor": 65000,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "is_business": true,
+      "settlement_run_id": "run_260816_01SCN08MIXED",
+      "settled_at": "2026-08-16T11:40:00Z",
+      "status": "SETTLED",
+      "created_at": "2026-08-13T10:00:00Z",
+      "updated_at": "2026-08-16T11:40:00Z"
+    },
+    {
+      "claim_id": "clm_01SCN08FAILEDCLAIM000002",
+      "recipient_id": "rcp_01SCN08SEUNGHO00000009",
+      "receipt_id": "rct_01SCN08FAILEDRCT0000002",
+      "amount_minor": 42000,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "is_business": true,
+      "settlement_run_id": null,
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-13T10:05:00Z",
+      "updated_at": "2026-08-16T11:40:00Z",
+      "_fixture_note": "IN_RUN → CONFIRMED로 되돌아가고 settlement_run_id가 비워진 '대조 후' 상태"
+    },
+    {
+      "claim_id": "clm_01SCN08UNCLAIMEDCLAIM0003",
+      "recipient_id": "rcp_01SCN08MIRAE0000000010",
+      "receipt_id": "rct_01SCN08UNCLAIMEDRCT00003",
+      "amount_minor": 27500,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "is_business": true,
+      "settlement_run_id": null,
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-13T10:10:00Z",
+      "updated_at": "2026-08-16T11:40:00Z",
+      "_fixture_note": "IN_RUN → CONFIRMED로 되돌아가고 settlement_run_id가 비워진 '대조 후' 상태"
+    }
+  ],
+  "settlement_runs": [
+    {
+      "settlement_run_id": "run_260816_01SCN08MIXED",
+      "filter": {
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "recipient_ids": null,
+        "account_categories": null,
+        "exclude_claim_ids": null
+      },
+      "base_currency": "KRW",
+      "total_amount_minor": 134500,
+      "fx_rates": {},
+      "fx_locked_at": "2026-08-16T11:20:00Z",
+      "approval_amount_hash": "fixture_placeholder_amount_hash_do_not_verify",
+      "approval_token_hash": "fixture_placeholder_token_hash_do_not_verify",
+      "approval_token_expires_at": "2026-08-16T11:30:00Z",
+      "approval_token_used_at": "2026-08-16T11:20:30Z",
+      "approved_by": "exec_demo_lead",
+      "approved_at": "2026-08-16T11:20:00Z",
+      "retry_seq": 0,
+      "status": "FAILED",
+      "created_at": "2026-08-16T11:15:00Z",
+      "updated_at": "2026-08-16T11:40:00Z"
+    }
+  ],
+  "sender_items": [
+    {
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08YENA000000000008",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
+      "recipient_id": "rcp_01SCN08YENA000000000008",
+      "receiver_email": "yena.demo@personal.example.com",
+      "amount_minor": 65000,
+      "currency": "KRW",
+      "paypal_value": "65000",
+      "payout_item_id": "PAYOUTITEM-DEMO-0001",
+      "paypal_transaction_status": "SUCCESS",
+      "status": "SUCCESS",
+      "retry_of": null,
+      "created_at": "2026-08-16T11:20:30Z",
+      "updated_at": "2026-08-16T11:40:00Z"
+    },
+    {
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08SEUNGHO00000009",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
+      "recipient_id": "rcp_01SCN08SEUNGHO00000009",
+      "receiver_email": "seungho.demo@personal.example.com",
+      "amount_minor": 42000,
+      "currency": "KRW",
+      "paypal_value": "42000",
+      "payout_item_id": "PAYOUTITEM-DEMO-0002",
+      "paypal_transaction_status": "FAILED",
+      "status": "FAILED",
+      "retry_of": null,
+      "created_at": "2026-08-16T11:20:30Z",
+      "updated_at": "2026-08-16T11:40:00Z"
+    },
+    {
+      "sender_item_id": "run_260816_01SCN08MIXED:rcp_01SCN08MIRAE0000000010",
+      "settlement_run_id": "run_260816_01SCN08MIXED",
+      "recipient_id": "rcp_01SCN08MIRAE0000000010",
+      "receiver_email": "unclaimed-mailbox.demo@personal.example.com",
+      "amount_minor": 27500,
+      "currency": "KRW",
+      "paypal_value": "27500",
+      "payout_item_id": "PAYOUTITEM-DEMO-0003",
+      "paypal_transaction_status": "UNCLAIMED",
+      "status": "UNCLAIMED",
+      "retry_of": null,
+      "created_at": "2026-08-16T11:20:30Z",
+      "updated_at": "2026-08-16T11:40:00Z"
+    }
+  ],
+  "audit_logs": [
+    {
+      "ts": "2026-08-16T11:40:00Z",
+      "actor": "api/src/payouts",
+      "actor_type": "SYSTEM",
+      "action": "PAYOUT_RECONCILED",
+      "run_id": "run_260816_01SCN08MIXED",
+      "before": { "status": "EXECUTING" },
+      "after": { "status": "FAILED" },
+      "reason": "1/3 SUCCESS, 1 FAILED, 1 UNCLAIMED — 미종결 claim 2건 IN_RUN→CONFIRMED 롤백, monthly_paid_minor 예약분 환원"
+    }
+  ],
+  "retry_preview": {
+    "_fixture_note": "다음 재발송(POST /payouts/{run_id}/retry) 시 실제로 나갈 값의 형태 — retry_seq 1, ID 형식은 §3의 재발송 규칙",
+    "sender_batch_id": "run_260816_01SCN08MIXED:r1",
+    "targets": ["clm_01SCN08FAILEDCLAIM000002", "clm_01SCN08UNCLAIMEDCLAIM0003"],
+    "requires_new_approval_token": true
+  }
+}

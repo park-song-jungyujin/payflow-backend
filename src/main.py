@@ -4,7 +4,12 @@ from fastapi import FastAPI, Header, HTTPException
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
+from .guards.routes import router as guards_router
+from .payouts.routes import router as payouts_router
+
 app = FastAPI()
+app.include_router(guards_router)
+app.include_router(payouts_router)
 _google_request = google_requests.Request()
 
 

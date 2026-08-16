@@ -1,0 +1,122 @@
+{
+  "_fixture_note": "1. 정상 영수증, 매칭 성공, 항목 하나 USD — 골든 패스 + fx_rates 환산 경로",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN01YUJIN0000000000001",
+      "slack_user_id": "U01SCN0001",
+      "paypal_email": "yujin.demo@personal.example.com",
+      "display_name": "최유진",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN01KRWITEM000000001",
+      "recipient_id": "rcp_01SCN01YUJIN0000000000001",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc01/office-supplies.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc01/office-supplies.txt",
+      "merchant_name": "우아한사무용품",
+      "transaction_date": "2026-08-05",
+      "parsed_amount_minor": 45000,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.93,
+      "status": "PARSED",
+      "created_at": "2026-08-05T09:12:00Z",
+      "updated_at": "2026-08-05T09:12:40Z"
+    },
+    {
+      "receipt_id": "rct_01SCN01USDITEM000000002",
+      "recipient_id": "rcp_01SCN01YUJIN0000000000001",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc01/notion-invoice.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc01/notion-invoice.txt",
+      "merchant_name": "Notion Labs Inc",
+      "transaction_date": "2026-08-06",
+      "parsed_amount_minor": 2500,
+      "currency": "USD",
+      "account_category_code": "ADVERTISING",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.88,
+      "status": "PARSED",
+      "created_at": "2026-08-06T13:40:00Z",
+      "updated_at": "2026-08-06T13:40:35Z"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm_01SCN01KRWCLAIM00000001",
+      "recipient_id": "rcp_01SCN01YUJIN0000000000001",
+      "receipt_id": "rct_01SCN01KRWITEM000000001",
+      "amount_minor": 45000,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "is_business": true,
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-05T09:20:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    },
+    {
+      "claim_id": "clm_01SCN01USDCLAIM00000002",
+      "recipient_id": "rcp_01SCN01YUJIN0000000000001",
+      "receipt_id": "rct_01SCN01USDITEM000000002",
+      "amount_minor": 2500,
+      "currency": "USD",
+      "account_category_code": "ADVERTISING",
+      "is_business": true,
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-06T13:45:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "settlement_runs": [
+    {
+      "settlement_run_id": "run_260817_01SCN01GOLDP",
+      "filter": {
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "recipient_ids": ["rcp_01SCN01YUJIN0000000000001"],
+        "account_categories": null,
+        "exclude_claim_ids": null
+      },
+      "base_currency": "KRW",
+      "total_amount_minor": 79563,
+      "fx_rates": { "USD/KRW": "1382.50" },
+      "fx_locked_at": null,
+      "approval_amount_hash": null,
+      "approval_token_hash": null,
+      "approval_token_expires_at": null,
+      "approval_token_used_at": null,
+      "approved_by": null,
+      "approved_at": null,
+      "retry_seq": 0,
+      "status": "DRAFT",
+      "created_at": "2026-08-16T10:00:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "_fixture_note_fx_math": "45000(KRW) + round_half_up(25.00 USD * 1382.50) = 45000 + 34563 = 79563. B의 matching이 항목별 환산 후 합산 순서를 지키는지 이 값으로 검증한다."
+}

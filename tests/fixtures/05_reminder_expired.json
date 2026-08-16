@@ -1,0 +1,88 @@
+{
+  "_fixture_note": "5. 미청구 방치 → 재촉 → 무응답 만료 — 추적 루프 전체 상태 전이",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN05JIHUN00000000005",
+      "slack_user_id": "U01SCN0005",
+      "paypal_email": "jihun.demo@personal.example.com",
+      "display_name": "정지훈",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN05UNCLAIMEDRCT00001",
+      "recipient_id": "rcp_01SCN05JIHUN00000000005",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc05/conference-fee.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc05/conference-fee.txt",
+      "merchant_name": "코엑스",
+      "transaction_date": "2026-08-03",
+      "parsed_amount_minor": 150000,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.91,
+      "status": "RECEIVED",
+      "created_at": "2026-08-03T11:00:00Z",
+      "updated_at": "2026-08-03T11:00:20Z"
+    }
+  ],
+  "claim_requests": [
+    {
+      "claim_request_id": "crq_01SCN05REMINDLOOP000001",
+      "recipient_id": "rcp_01SCN05JIHUN00000000005",
+      "receipt_id": "rct_01SCN05UNCLAIMEDRCT00001",
+      "slack_dm_ts": "1722682800.000200",
+      "reminded_at": "2026-08-04T11:00:20Z",
+      "expires_at": "2026-08-05T11:00:20Z",
+      "status": "EXPIRED",
+      "created_at": "2026-08-03T11:00:20Z",
+      "updated_at": "2026-08-05T11:00:21Z"
+    }
+  ],
+  "audit_logs": [
+    {
+      "ts": "2026-08-03T11:00:20Z",
+      "actor": "api",
+      "actor_type": "SYSTEM",
+      "action": "CLAIM_REQUEST_CREATED",
+      "run_id": null,
+      "before": null,
+      "after": { "claim_request_id": "crq_01SCN05REMINDLOOP000001", "status": "PENDING" },
+      "reason": null
+    },
+    {
+      "ts": "2026-08-04T11:00:20Z",
+      "actor": "api",
+      "actor_type": "SYSTEM",
+      "action": "CLAIM_REQUEST_REMINDED",
+      "run_id": null,
+      "before": { "status": "PENDING" },
+      "after": { "status": "REMINDED" },
+      "reason": null
+    },
+    {
+      "ts": "2026-08-05T11:00:21Z",
+      "actor": "api",
+      "actor_type": "SYSTEM",
+      "action": "CLAIM_REQUEST_EXPIRED",
+      "run_id": null,
+      "before": { "status": "REMINDED" },
+      "after": { "status": "EXPIRED" },
+      "reason": null
+    }
+  ],
+  "_fixture_note_timeline": "PENDING(생성) → REMINDED(REMINDER_DELAY_SECONDS 경과 후 재촉 DM) → EXPIRED(CLAIM_REQUEST_TTL_SECONDS까지 무응답). 데모에서는 REMINDER_DELAY_SECONDS=20으로 좁혀 재현하지만 이 fixture의 타임스탬프는 실제 운영값(1일 간격) 기준 예시다."
+}

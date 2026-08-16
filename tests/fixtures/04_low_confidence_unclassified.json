@@ -1,0 +1,77 @@
+{
+  "_fixture_note": "4. 신호는 깨끗한데 llm_confidence 낮음 — 2단계 임계값 → UNCLASSIFIED → 집행자 재판단",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN04HAEUN00000000004",
+      "slack_user_id": "U01SCN0004",
+      "paypal_email": "haeun.demo@personal.example.com",
+      "display_name": "이하은",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN04AMBIGUOUSITEM0001",
+      "recipient_id": "rcp_01SCN04HAEUN00000000004",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc04/mixed-goods.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc04/mixed-goods.txt",
+      "merchant_name": "다이소 강남점",
+      "transaction_date": "2026-08-11",
+      "parsed_amount_minor": 32000,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "category_source": "EXECUTOR_AGENT",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.42,
+      "status": "PARSED",
+      "created_at": "2026-08-11T15:30:00Z",
+      "updated_at": "2026-08-16T10:15:00Z"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm_01SCN04AMBIGUOUSCLAIM0001",
+      "recipient_id": "rcp_01SCN04HAEUN00000000004",
+      "receipt_id": "rct_01SCN04AMBIGUOUSITEM0001",
+      "amount_minor": 32000,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "is_business": true,
+      "settlement_run_id": null,
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-11T15:40:00Z",
+      "updated_at": "2026-08-16T10:15:00Z"
+    }
+  ],
+  "agent_drafts": [
+    {
+      "draft_id": "drf_01SCN04EXECUTORDRAFT0001",
+      "agent": "EXECUTOR",
+      "target_type": "SETTLEMENT_RUN",
+      "target_id": "rct_01SCN04AMBIGUOUSITEM0001",
+      "task_id": "task_01SCN04EXECUTORANALYZE01",
+      "payload": {
+        "filter": null,
+        "anomalies": [],
+        "recategorized": [
+          { "claim_id": "clm_01SCN04AMBIGUOUSCLAIM0001", "code": "TRAVEL" }
+        ],
+        "summary_text": "다이소에서 잡화·소모품이 섞여 팔리는 매장이라 LLM confidence가 0.42로 임계값(0.7) 아래로 떨어졌습니다. 영수증 품목 중 대부분이 출장 중 구매한 소모품으로 보여 여비교통비로 재분류했습니다."
+      },
+      "created_at": "2026-08-16T10:15:00Z"
+    }
+  ],
+  "_fixture_note_threshold": "receipt.llm_confidence=0.42 < PARSING_CONFIDENCE_THRESHOLD(0.7)이므로 1차 파싱은 UNCLASSIFIED로 떨어졌다가, 위 EXECUTOR draft가 반영되며 account_category_code=TRAVEL, category_source=EXECUTOR_AGENT로 갱신된 '반영 후' 상태를 담았다. parse_signals는 전부 true — 1단계가 아니라 2단계에서 걸린 케이스임을 보여준다."
+}
