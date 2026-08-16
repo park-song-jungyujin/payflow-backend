@@ -6,11 +6,11 @@
 
 import hashlib
 import json
-import os
-import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from ..payouts.fixtures import get_claims_for_run
+from google.cloud import firestore
+
+from ..payouts.store import get_claims_for_run, get_client
 from .errors import GuardRejection
 from .limits import check_caps
 
@@ -34,24 +34,10 @@ def approval_amount_hash(run: dict) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def issue_token(run: dict) -> str:
-    """run을 in-place로 APPROVED 상태의 필드까지 채우고, 토큰 원문을 반환한다.
-    이 반환값 이후로 원문은 어디에도 저장하지 않는다."""
-    token = secrets.token_urlsafe(32)
-    ttl = int(os.environ.get("APPROVAL_TOKEN_TTL_SECONDS", "600"))
-    now = datetime.now(UTC)
-
-    run["approval_amount_hash"] = approval_amount_hash(run)
-    run["approval_token_hash"] = hashlib.sha256(token.encode("utf-8")).hexdigest()
-    run["approval_token_expires_at"] = (now + timedelta(seconds=ttl)).isoformat()
-    run["approval_token_used_at"] = None
-
-    return token
-
-
-def verify_and_burn_token(run: dict, token: str | None) -> None:
-    """실패하면 GuardRejection을 던진다. 성공하면 run을 EXECUTING으로 전이하고
-    approval_token_used_at을 기록한다(소각) — 재사용은 여기서 막힌다."""
+def verify_and_burn_token(run_id: str, run: dict, token: str | None) -> dict:
+    """실패하면 GuardRejection을 던진다. 성공하면 Firestore 트랜잭션으로 run을
+    EXECUTING 전이하고 approval_token_used_at을 기록한다(소각) — 재사용은
+    트랜잭션 안의 재확인으로 막힌다. 갱신된 필드 dict를 반환한다."""
     if not token:
         raise GuardRejection(403, "X-Approval-Token header missing")
 
@@ -64,7 +50,7 @@ def verify_and_burn_token(run: dict, token: str | None) -> None:
         raise GuardRejection(403, "approval token already used")
 
     expires_at = run.get("approval_token_expires_at")
-    if expires_at and datetime.fromisoformat(expires_at) < datetime.now(UTC):
+    if expires_at and expires_at < datetime.now(UTC):
         raise GuardRejection(403, "approval token expired")
 
     if hashlib.sha256(token.encode("utf-8")).hexdigest() != run.get("approval_token_hash"):
@@ -77,5 +63,23 @@ def verify_and_burn_token(run: dict, token: str | None) -> None:
     if violation:
         raise GuardRejection(403, violation)
 
-    run["approval_token_used_at"] = datetime.now(UTC).isoformat()
-    run["status"] = "EXECUTING"
+    now = datetime.now(UTC)
+    updates = {"approval_token_used_at": now, "status": "EXECUTING", "updated_at": now}
+
+    client = get_client()
+    run_ref = client.collection("settlement_runs").document(run_id)
+
+    @firestore.transactional
+    def _txn(transaction):
+        snapshot = run_ref.get(transaction=transaction)
+        current = snapshot.to_dict() or {}
+        if current.get("status") != "APPROVED":
+            raise GuardRejection(
+                409, f"settlement_run status is {current.get('status')}, expected APPROVED"
+            )
+        if current.get("approval_token_used_at") is not None:
+            raise GuardRejection(403, "approval token already used")
+        transaction.update(run_ref, updates)
+
+    _txn(client.transaction())
+    return updates

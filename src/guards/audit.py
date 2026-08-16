@@ -1,13 +1,10 @@
-"""money-safety.md — 모든 게이트 결정을 audit_logs에 남긴다.
-
-Firestore가 아직 안 붙어 있어 인메모리 리스트에 append만 한다. 필드 구성은
-schema-contract.md §2 `audit_logs`와 동일하게 맞춰, Firestore 연동 시 그대로
-옮겨 쓸 수 있게 한다.
+"""money-safety.md — 모든 게이트 결정을 audit_logs에 남긴다. append-only,
+schema-contract.md §2 필드 구성을 그대로 따른다.
 """
 
 from datetime import UTC, datetime
 
-_LOG: list[dict] = []
+from ..payouts.store import get_client
 
 
 def record_audit_log(
@@ -20,9 +17,9 @@ def record_audit_log(
     after: dict | None = None,
     reason: str | None = None,
 ) -> None:
-    _LOG.append(
+    get_client().collection("audit_logs").add(
         {
-            "ts": datetime.now(UTC).isoformat(),
+            "ts": datetime.now(UTC),
             "actor": actor,
             "actor_type": actor_type,
             "action": action,
@@ -35,4 +32,5 @@ def record_audit_log(
 
 
 def get_audit_log() -> list[dict]:
-    return list(_LOG)
+    docs = get_client().collection("audit_logs").order_by("ts").stream()
+    return [d.to_dict() for d in docs]

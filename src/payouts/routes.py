@@ -9,6 +9,7 @@ Cloud Tasks에 위임하고, 실제 PayPal 호출은 `/tasks/execute-payout`에�
 """
 
 import os
+from datetime import UTC, datetime
 
 import requests as http_requests
 from fastapi import APIRouter, Header, HTTPException
@@ -19,15 +20,17 @@ from ..guards.audit import record_audit_log
 from ..guards.errors import GuardRejection
 from ..guards.tokens import verify_and_burn_token
 from .currency import minor_to_paypal_value
-from .fixtures import (
+from .idempotency import build_payout_ids
+from .store import (
     find_run_id_by_payout_batch_id,
     get_recipient,
     get_sender_items,
     get_settlement_run,
     get_sole_recipient_id,
+    increment_recipient_monthly,
     set_sender_items,
+    update_settlement_run,
 )
-from .idempotency import build_payout_ids
 from .paypal_client import create_payout, get_payout_batch
 from .reconcile import MissingPayoutBatch, NotExecuting, RunNotFound, reconcile
 from .tasks_queue import QueueNotConfigured, enqueue_execute_payout
@@ -51,7 +54,7 @@ def _verify_oidc(authorization: str) -> None:
 
 
 @router.post("/payouts")
-def create_payout(
+def request_payout(
     body: dict,
     x_approval_token: str | None = Header(default=None, alias="X-Approval-Token"),
 ):
@@ -68,7 +71,7 @@ def create_payout(
         )
 
     try:
-        verify_and_burn_token(run, x_approval_token)
+        verify_and_burn_token(run_id, run, x_approval_token)
     except GuardRejection as rejection:
         record_audit_log(
             actor="api/src/guards",
@@ -82,7 +85,7 @@ def create_payout(
     # 아닌 종결 상태로 확정되면 그만큼 뺀다.
     recipient = get_recipient(recipient_id)
     if recipient is not None:
-        recipient["monthly_paid_minor"] = recipient.get("monthly_paid_minor", 0) + run["total_amount_minor"]
+        increment_recipient_monthly(recipient_id, run["total_amount_minor"])
 
     try:
         enqueue_execute_payout(run_id)
@@ -94,11 +97,11 @@ def create_payout(
         actor="api/src/payouts",
         action="PAYOUT_ENQUEUED",
         run_id=run_id,
-        after={"status": run["status"]},
+        after={"status": "EXECUTING"},
         reason=note,
     )
 
-    response = {"settlement_run_id": run_id, "status": run["status"]}
+    response = {"settlement_run_id": run_id, "status": "EXECUTING"}
     if note:
         response["note"] = note
     return response
@@ -201,6 +204,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         else "OTHER"
     )
 
+    now = datetime.now(UTC)
     sender_item = {
         "sender_item_id": sender_item_id,
         "settlement_run_id": run_id,
@@ -213,9 +217,11 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         "paypal_transaction_status": transaction_status,
         "status": internal_status,
         "retry_of": None,
+        "created_at": now,
+        "updated_at": now,
     }
     set_sender_items(run_id, [sender_item])
-    run["payout_batch_id"] = payout_batch_id
+    update_settlement_run(run_id, {"payout_batch_id": payout_batch_id, "updated_at": now})
 
     record_audit_log(
         actor="api/src/payouts",
