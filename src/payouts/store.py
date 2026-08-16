@@ -19,7 +19,7 @@ def get_client() -> firestore.Client:
     if _client is None:
         _client = firestore.Client(
             project=os.environ.get("GCP_PROJECT"),
-            database=os.environ.get("FIRESTORE_DATABASE", "dev"),
+            database=os.environ.get("FIRESTORE_DATABASE", "development"),
         )
     return _client
 
