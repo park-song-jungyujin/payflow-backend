@@ -4,7 +4,8 @@ Cloud Tasks 전용: /tasks/execute-payout, /tasks/reconcile (OIDC 필수).
 `/payouts`는 승인 토큰 게이트(§7)를 통과해야 한다 — money-safety.md 절대 규칙.
 승인 응답에서 PayPal을 동기 호출하지 않는다 — `/payouts`는 EXECUTING 마킹 후
 Cloud Tasks에 위임하고, 실제 PayPal 호출은 `/tasks/execute-payout`에서 한다.
-재발송(retry)·대조(reconcile) 로직은 아직 없다 — plan.md Phase 1 우선순위 2에서 붙인다.
+결과 대조는 `/tasks/reconcile`(주 경로)·`/webhooks/paypal`(보조 경로)이 `reconcile.py`의
+같은 로직을 공유한다. 재발송(retry)은 아직 없다 — plan.md Phase 1 우선순위 2에서 붙인다.
 """
 
 import os
@@ -18,9 +19,17 @@ from ..guards.audit import record_audit_log
 from ..guards.errors import GuardRejection
 from ..guards.tokens import verify_and_burn_token
 from .currency import minor_to_paypal_value
-from .fixtures import get_claims_for_run, get_recipient, get_sender_items, get_settlement_run, set_sender_items
+from .fixtures import (
+    find_run_id_by_payout_batch_id,
+    get_recipient,
+    get_sender_items,
+    get_settlement_run,
+    get_sole_recipient_id,
+    set_sender_items,
+)
 from .idempotency import build_payout_ids
 from .paypal_client import create_payout, get_payout_batch
+from .reconcile import MissingPayoutBatch, NotExecuting, RunNotFound, reconcile
 from .tasks_queue import QueueNotConfigured, enqueue_execute_payout
 
 router = APIRouter()
@@ -51,6 +60,13 @@ def create_payout(
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
 
+    recipient_id = get_sole_recipient_id(run_id)
+    if recipient_id is None:
+        raise HTTPException(
+            status_code=501,
+            detail="multi-recipient FX aggregation not implemented — depends on matching (Track B)",
+        )
+
     try:
         verify_and_burn_token(run, x_approval_token)
     except GuardRejection as rejection:
@@ -61,6 +77,12 @@ def create_payout(
             reason=rejection.detail,
         )
         raise HTTPException(status_code=rejection.status_code, detail=rejection.detail)
+
+    # schema-contract.md §7 — monthly_paid_minor 예약 가산. reconcile에서 SUCCESS가
+    # 아닌 종결 상태로 확정되면 그만큼 뺀다.
+    recipient = get_recipient(recipient_id)
+    if recipient is not None:
+        recipient["monthly_paid_minor"] = recipient.get("monthly_paid_minor", 0) + run["total_amount_minor"]
 
     try:
         enqueue_execute_payout(run_id)
@@ -92,7 +114,26 @@ def retry_payout(run_id: str):
 
 @router.post("/webhooks/paypal")
 def paypal_webhook(body: dict):
-    return {"status": "ok"}
+    """schema-contract.md §8 — 보조 경로. 서명 검증 없음: 샌드박스 웹훅이 불안정해
+    데모를 여기 걸지 않는다(주 경로는 /tasks/reconcile 폴링). 웹훅이 오면 같은 대조
+    로직을 앞당겨 실행할 뿐, 안 와도 폴링으로 결말이 난다."""
+    resource = body.get("resource", {})
+    payout_batch_id = resource.get("payout_batch_id") or resource.get("batch_header", {}).get(
+        "payout_batch_id"
+    )
+    if not payout_batch_id:
+        return {"status": "ignored"}
+
+    run_id = find_run_id_by_payout_batch_id(payout_batch_id)
+    if run_id is None:
+        return {"status": "ignored"}
+
+    try:
+        result = reconcile(run_id)
+    except (NotExecuting, MissingPayoutBatch):
+        return {"status": "ignored"}
+
+    return {"status": "ok", "reconciled": result}
 
 
 @router.post("/tasks/execute-payout")
@@ -116,13 +157,12 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
             detail=f"settlement_run status is {run['status']}, expected EXECUTING",
         )
 
-    recipient_ids = {c["recipient_id"] for c in get_claims_for_run(run_id)}
-    if len(recipient_ids) != 1:
+    recipient_id = get_sole_recipient_id(run_id)
+    if recipient_id is None:
         raise HTTPException(
             status_code=501,
             detail="multi-recipient FX aggregation not implemented — depends on matching (Track B)",
         )
-    recipient_id = next(iter(recipient_ids))
     recipient = get_recipient(recipient_id)
     if recipient is None:
         raise HTTPException(status_code=404, detail=f"unknown recipient_id: {recipient_id}")
@@ -175,6 +215,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         "retry_of": None,
     }
     set_sender_items(run_id, [sender_item])
+    run["payout_batch_id"] = payout_batch_id
 
     record_audit_log(
         actor="api/src/payouts",
@@ -192,6 +233,25 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
 
 @router.post("/tasks/reconcile")
 def task_reconcile(body: dict, authorization: str = Header(default="")):
+    """schema-contract.md §8 — 주 경로. /payouts enqueue 시 RECONCILE_DELAY_SECONDS 뒤에
+    Cloud Tasks가 부른다. 미종결이면 이 라우트가 스스로를 재예약해야 하는데, 그 큐잉은
+    tasks_queue.py와 마찬가지로 아직 없다 — pending 응답을 보고 데모/테스트에서 다시
+    호출해 재폴링을 시뮬레이션한다."""
     _verify_oidc(authorization)
     run_id = body.get("settlement_run_id")
-    return {"settlement_run": get_settlement_run(run_id), "sender_items": get_sender_items(run_id)}
+    if not run_id:
+        raise HTTPException(status_code=400, detail="settlement_run_id required")
+
+    try:
+        return reconcile(run_id)
+    except RunNotFound:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    except NotExecuting as e:
+        raise HTTPException(
+            status_code=409, detail=f"settlement_run status is {e.status}, expected EXECUTING"
+        )
+    except MissingPayoutBatch:
+        raise HTTPException(
+            status_code=409,
+            detail="run is EXECUTING but has no payout_batch_id — execute-payout must run first",
+        )
