@@ -51,6 +51,7 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
         "approved_by": approved_by,
         "approved_at": now,
         "fx_locked_at": now,
+        "updated_at": now,
         "approval_amount_hash": approval_amount_hash(run),
         "approval_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
         "approval_token_expires_at": now + timedelta(seconds=ttl),

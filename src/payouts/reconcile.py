@@ -92,7 +92,7 @@ def reconcile(run_id: str) -> dict:
     if pending:
         attempts = run.get("reconcile_attempts", 0) + 1
         max_attempts = int(os.environ.get("PAYOUT_MAX_RECONCILE_ATTEMPTS", "5"))
-        update_settlement_run(run_id, {"reconcile_attempts": attempts})
+        update_settlement_run(run_id, {"reconcile_attempts": attempts, "updated_at": _now()})
         if attempts < max_attempts:
             record_audit_log(
                 actor="api/src/payouts",
@@ -116,15 +116,23 @@ def reconcile(run_id: str) -> dict:
 
     if all_success:
         for claim in claims:
-            update_claim(claim["claim_id"], {"status": "SETTLED", "settled_at": _now()})
+            update_claim(
+                claim["claim_id"], {"status": "SETTLED", "settled_at": _now(), "updated_at": _now()}
+            )
         new_status = "SETTLED"
     else:
         success_recipients = {i["recipient_id"] for i in items if i["status"] == "SUCCESS"}
         for claim in claims:
             if claim["recipient_id"] in success_recipients:
-                update_claim(claim["claim_id"], {"status": "SETTLED", "settled_at": _now()})
+                update_claim(
+                    claim["claim_id"],
+                    {"status": "SETTLED", "settled_at": _now(), "updated_at": _now()},
+                )
             else:
-                update_claim(claim["claim_id"], {"status": "CONFIRMED", "settlement_run_id": None})
+                update_claim(
+                    claim["claim_id"],
+                    {"status": "CONFIRMED", "settlement_run_id": None, "updated_at": _now()},
+                )
         new_status = "FAILED"
 
         for recipient_id in {i["recipient_id"] for i in items if i["status"] != "SUCCESS"}:
@@ -136,7 +144,7 @@ def reconcile(run_id: str) -> dict:
                 recipient_id, -min(already_paid, run["total_amount_minor"])
             )
 
-    update_settlement_run(run_id, {"status": new_status})
+    update_settlement_run(run_id, {"status": new_status, "updated_at": _now()})
 
     record_audit_log(
         actor="api/src/payouts",

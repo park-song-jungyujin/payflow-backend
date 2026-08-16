@@ -9,6 +9,7 @@ claims, recipients)의 유일한 읽기/쓰기 창구.
 import os
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 _client: firestore.Client | None = None
 
@@ -34,7 +35,7 @@ def update_settlement_run(run_id: str, updates: dict) -> None:
 
 def get_sender_items(run_id: str) -> list[dict]:
     docs = get_client().collection("sender_items").where(
-        "settlement_run_id", "==", run_id
+        filter=FieldFilter("settlement_run_id", "==", run_id)
     ).stream()
     return [d.to_dict() for d in docs]
 
@@ -51,7 +52,7 @@ def set_sender_items(run_id: str, items: list[dict]) -> None:
 
 def get_claims_for_run(run_id: str) -> list[dict]:
     docs = get_client().collection("claims").where(
-        "settlement_run_id", "==", run_id
+        filter=FieldFilter("settlement_run_id", "==", run_id)
     ).stream()
     return [d.to_dict() for d in docs]
 
@@ -86,7 +87,7 @@ def find_run_id_by_payout_batch_id(payout_batch_id: str) -> str | None:
     docs = (
         get_client()
         .collection("settlement_runs")
-        .where("payout_batch_id", "==", payout_batch_id)
+        .where(filter=FieldFilter("payout_batch_id", "==", payout_batch_id))
         .limit(1)
         .stream()
     )

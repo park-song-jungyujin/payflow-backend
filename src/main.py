@@ -1,11 +1,14 @@
 import os
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
 
-from .guards.routes import router as guards_router
-from .payouts.routes import router as payouts_router
+load_dotenv()
+
+from .guards.routes import router as guards_router  # noqa: E402  (load_dotenv 이후 import)
+from .payouts.routes import router as payouts_router  # noqa: E402
 
 app = FastAPI()
 app.include_router(guards_router)

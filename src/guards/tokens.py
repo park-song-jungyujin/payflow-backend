@@ -63,7 +63,8 @@ def verify_and_burn_token(run_id: str, run: dict, token: str | None) -> dict:
     if violation:
         raise GuardRejection(403, violation)
 
-    updates = {"approval_token_used_at": datetime.now(UTC), "status": "EXECUTING"}
+    now = datetime.now(UTC)
+    updates = {"approval_token_used_at": now, "status": "EXECUTING", "updated_at": now}
 
     client = get_client()
     run_ref = client.collection("settlement_runs").document(run_id)

@@ -9,6 +9,7 @@ Cloud Tasks에 위임하고, 실제 PayPal 호출은 `/tasks/execute-payout`에�
 """
 
 import os
+from datetime import UTC, datetime
 
 import requests as http_requests
 from fastapi import APIRouter, Header, HTTPException
@@ -203,6 +204,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         else "OTHER"
     )
 
+    now = datetime.now(UTC)
     sender_item = {
         "sender_item_id": sender_item_id,
         "settlement_run_id": run_id,
@@ -215,9 +217,11 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         "paypal_transaction_status": transaction_status,
         "status": internal_status,
         "retry_of": None,
+        "created_at": now,
+        "updated_at": now,
     }
     set_sender_items(run_id, [sender_item])
-    update_settlement_run(run_id, {"payout_batch_id": payout_batch_id})
+    update_settlement_run(run_id, {"payout_batch_id": payout_batch_id, "updated_at": now})
 
     record_audit_log(
         actor="api/src/payouts",
