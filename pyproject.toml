@@ -8,4 +8,5 @@ dependencies = [
     "google-auth>=2.35",
     "requests>=2.32",
     "python-dotenv>=1.0",
+    "pydantic>=2.9",
 ]
