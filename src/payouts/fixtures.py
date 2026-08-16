@@ -50,6 +50,12 @@ def get_sender_items(run_id: str) -> list[dict]:
     return _SENDER_ITEMS.get(run_id, [])
 
 
+def set_sender_items(run_id: str, items: list[dict]) -> None:
+    """execute-payout이 PayPal 호출 결과로 만든 sender_items를 저장한다. Firestore가
+    붙기 전까지 이 프로세스 메모리가 유일한 저장소다."""
+    _SENDER_ITEMS[run_id] = items
+
+
 def get_claims_for_run(run_id: str) -> list[dict]:
     return [c for c in _CLAIMS.values() if c.get("settlement_run_id") == run_id]
 
