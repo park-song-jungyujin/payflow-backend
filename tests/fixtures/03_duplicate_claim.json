@@ -1,0 +1,136 @@
+{
+  "_fixture_note": "3. 중복 청구 의심 — 안전 확인 에이전트 이상 서술 (코드 게이트가 아니라 조언)",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN03SOYEON0000000003",
+      "slack_user_id": "U01SCN0003",
+      "paypal_email": "soyeon.demo@personal.example.com",
+      "display_name": "김소연",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN03TAXIRECEIPT000001",
+      "recipient_id": "rcp_01SCN03SOYEON0000000003",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc03/taxi-a.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc03/taxi-a.txt",
+      "merchant_name": "카카오모빌리티",
+      "transaction_date": "2026-08-10",
+      "parsed_amount_minor": 18500,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.95,
+      "status": "PARSED",
+      "created_at": "2026-08-10T21:00:00Z",
+      "updated_at": "2026-08-10T21:00:15Z"
+    },
+    {
+      "receipt_id": "rct_01SCN03TAXIRECEIPT000002",
+      "recipient_id": "rcp_01SCN03SOYEON0000000003",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc03/taxi-b.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc03/taxi-b.txt",
+      "merchant_name": "카카오모빌리티",
+      "transaction_date": "2026-08-10",
+      "parsed_amount_minor": 18500,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.94,
+      "status": "PARSED",
+      "created_at": "2026-08-10T21:03:00Z",
+      "updated_at": "2026-08-10T21:03:15Z"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm_01SCN03TAXICLAIM000000001",
+      "recipient_id": "rcp_01SCN03SOYEON0000000003",
+      "receipt_id": "rct_01SCN03TAXIRECEIPT000001",
+      "amount_minor": 18500,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "is_business": true,
+      "settlement_run_id": "run_20260817_01SCN03DUPCLAIM00002",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-10T21:10:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    },
+    {
+      "claim_id": "clm_01SCN03TAXICLAIM000000002",
+      "recipient_id": "rcp_01SCN03SOYEON0000000003",
+      "receipt_id": "rct_01SCN03TAXIRECEIPT000002",
+      "amount_minor": 18500,
+      "currency": "KRW",
+      "account_category_code": "TRAVEL",
+      "is_business": true,
+      "settlement_run_id": "run_20260817_01SCN03DUPCLAIM00002",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-10T21:13:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "settlement_runs": [
+    {
+      "settlement_run_id": "run_20260817_01SCN03DUPCLAIM00002",
+      "filter": {
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "recipient_ids": ["rcp_01SCN03SOYEON0000000003"],
+        "account_categories": null,
+        "exclude_claim_ids": null
+      },
+      "base_currency": "KRW",
+      "total_amount_minor": 37000,
+      "fx_rates": {},
+      "fx_locked_at": null,
+      "approval_amount_hash": null,
+      "approval_token_hash": null,
+      "approval_token_expires_at": null,
+      "approval_token_used_at": null,
+      "approved_by": null,
+      "approved_at": null,
+      "retry_seq": 0,
+      "status": "DRAFT",
+      "created_at": "2026-08-16T10:00:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "agent_drafts": [
+    {
+      "draft_id": "drf_01SCN03SAFETYDRAFT000001",
+      "agent": "SAFETY",
+      "target_type": "SETTLEMENT_RUN",
+      "target_id": "run_20260817_01SCN03DUPCLAIM00002",
+      "task_id": "task_01SCN03SAFETYREPORT0001",
+      "payload": {
+        "risk_report": "같은 수취인이 동일 가맹점(카카오모빌리티)·동일 금액(18,500원)·동일 결제일(2026-08-10)의 영수증 2건을 3분 간격으로 제출했습니다. 같은 택시비를 두 번 청구했을 가능성이 있어 승인 전 원본 영수증 대조를 권합니다. 이 판단은 참고용이며 배치 확정 여부는 사람이 결정합니다.",
+        "confidence": null
+      },
+      "created_at": "2026-08-16T10:05:00Z"
+    }
+  ],
+  "_fixture_note_gate": "코드 게이트(claim CAS 점유, exclude_claim_ids)는 여기서 중복을 막지 않는다 — receipt_id가 다르므로 두 claim 모두 정상적으로 CONFIRMED→IN_RUN 전이가 가능하다. 차단은 사람이 risk_report를 보고 판단해야 한다는 걸 보여주는 시나리오다."
+}

@@ -1,0 +1,71 @@
+{
+  "_fixture_note": "2. 파싱 실패(흐릿한 사진) — 재요청 문안, 1단계 결정론적 폴백",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN02MINJUN0000000002",
+      "slack_user_id": "U01SCN0002",
+      "paypal_email": "minjun.demo@personal.example.com",
+      "display_name": "박민준",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN02BLURRYPHOTO0000001",
+      "recipient_id": "rcp_01SCN02MINJUN0000000002",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc02/blurry.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc02/blurry.txt",
+      "merchant_name": null,
+      "transaction_date": "2026-08-09",
+      "parsed_amount_minor": null,
+      "currency": null,
+      "account_category_code": "UNCLASSIFIED",
+      "category_source": "DETERMINISTIC_FALLBACK",
+      "parse_signals": {
+        "merchant_name_present": false,
+        "transaction_date_present": true,
+        "amount_parsed": false,
+        "currency_detected": false,
+        "injection_suspected": false
+      },
+      "llm_confidence": null,
+      "status": "NEEDS_REQUERY",
+      "created_at": "2026-08-09T08:05:00Z",
+      "updated_at": "2026-08-09T08:05:20Z"
+    }
+  ],
+  "claim_requests": [
+    {
+      "claim_request_id": "crq_01SCN02REQUERY000000001",
+      "recipient_id": "rcp_01SCN02MINJUN0000000002",
+      "receipt_id": "rct_01SCN02BLURRYPHOTO0000001",
+      "slack_dm_ts": "1723190400.000100",
+      "reminded_at": null,
+      "expires_at": "2026-08-10T08:05:20Z",
+      "status": "PENDING",
+      "created_at": "2026-08-09T08:05:20Z",
+      "updated_at": "2026-08-09T08:05:20Z"
+    }
+  ],
+  "agent_drafts": [
+    {
+      "draft_id": "drf_01SCN02CLAIMANTDRAFT0001",
+      "agent": "CLAIMANT",
+      "target_type": "RECEIPT",
+      "target_id": "rct_01SCN02BLURRYPHOTO0000001",
+      "task_id": "task_01SCN02CLAIMANTREVIEW01",
+      "payload": {
+        "needs_requery": true,
+        "requery_message": "영수증 사진이 흐릿해서 금액·가맹점을 읽지 못했어요. 더 선명한 사진으로 다시 올려주시겠어요?",
+        "is_business": null,
+        "reason": "amount_parsed=false, merchant_name_present=false — 1단계 결정론적 신호에서 걸려 확신 없이 분류하지 않음"
+      },
+      "created_at": "2026-08-09T08:05:30Z"
+    }
+  ]
+}
