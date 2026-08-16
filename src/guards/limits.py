@@ -6,7 +6,7 @@
 
 import os
 
-from ..payouts.fixtures import get_claims_for_run, get_recipient
+from ..payouts.store import get_claims_for_run, get_recipient
 
 
 def _cap(name: str) -> int | None:

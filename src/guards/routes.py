@@ -1,18 +1,23 @@
 """schema-contract.md §10 — POST /settlements/runs/{run_id}/approve.
 
 money-safety.md 승인 게이트: DRAFT → APPROVED CAS, 한도 캡 검사, 토큰 발급.
-Firestore가 아직 안 붙어 있어 `payouts.fixtures`가 들고 있는 인메모리 dict를
-DB처럼 mutate한다 — 실제 영속화·트랜잭션은 Firestore 연동 시 대체한다.
+Firestore 트랜잭션으로 DRAFT 상태를 재확인한 뒤 쓴다 — 동시에 두 번 승인되면
+토큰이 두 개 발급되는 걸 막기 위해서다.
 """
 
-from datetime import UTC, datetime
+import hashlib
+import os
+import secrets
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
+from google.cloud import firestore
 
-from ..payouts.fixtures import get_settlement_run
+from ..payouts.store import get_client, get_settlement_run
 from .audit import record_audit_log
+from .errors import GuardRejection
 from .limits import check_caps
-from .tokens import issue_token
+from .tokens import approval_amount_hash
 
 router = APIRouter()
 
@@ -37,13 +42,38 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
         raise HTTPException(status_code=403, detail=violation)
 
     approved_by = (body or {}).get("approved_by", "demo_approver")
-    token = issue_token(run)
+    token = secrets.token_urlsafe(32)
+    ttl = int(os.environ.get("APPROVAL_TOKEN_TTL_SECONDS", "600"))
+    now = datetime.now(UTC)
 
-    now = datetime.now(UTC).isoformat()
-    run["status"] = "APPROVED"
-    run["approved_by"] = approved_by
-    run["approved_at"] = now
-    run["fx_locked_at"] = now
+    updates = {
+        "status": "APPROVED",
+        "approved_by": approved_by,
+        "approved_at": now,
+        "fx_locked_at": now,
+        "approval_amount_hash": approval_amount_hash(run),
+        "approval_token_hash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "approval_token_expires_at": now + timedelta(seconds=ttl),
+        "approval_token_used_at": None,
+    }
+
+    client = get_client()
+    run_ref = client.collection("settlement_runs").document(run_id)
+
+    @firestore.transactional
+    def _txn(transaction):
+        snapshot = run_ref.get(transaction=transaction)
+        current = snapshot.to_dict() or {}
+        if current.get("status") != "DRAFT":
+            raise GuardRejection(
+                409, f"settlement_run status is {current.get('status')}, expected DRAFT"
+            )
+        transaction.update(run_ref, updates)
+
+    try:
+        _txn(client.transaction())
+    except GuardRejection as rejection:
+        raise HTTPException(status_code=rejection.status_code, detail=rejection.detail)
 
     record_audit_log(
         actor=approved_by,
@@ -53,6 +83,7 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
         after={"status": "APPROVED"},
     )
 
-    response = {k: v for k, v in run.items() if k != "approval_token_hash"}
+    response = {**run, **updates}
+    del response["approval_token_hash"]
     response["approval_token"] = token
     return response

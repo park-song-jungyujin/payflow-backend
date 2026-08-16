@@ -16,8 +16,17 @@ import os
 from datetime import UTC, datetime
 
 from ..guards.audit import record_audit_log
-from .fixtures import get_claims_for_run, get_recipient, get_sender_items, get_settlement_run, set_sender_items
 from .paypal_client import get_payout_batch
+from .store import (
+    get_claims_for_run,
+    get_recipient,
+    get_sender_items,
+    get_settlement_run,
+    increment_recipient_monthly,
+    set_sender_items,
+    update_claim,
+    update_settlement_run,
+)
 
 _TERMINAL = {"SUCCESS", "FAILED", "UNCLAIMED", "OTHER"}
 _KNOWN = {"SUCCESS", "FAILED", "UNCLAIMED", "PENDING"}
@@ -36,8 +45,8 @@ class MissingPayoutBatch(Exception):
     pass
 
 
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
+def _now():
+    return datetime.now(UTC)
 
 
 def _refresh_items(run: dict) -> list[dict]:
@@ -82,8 +91,8 @@ def reconcile(run_id: str) -> dict:
     pending = [i for i in items if i["status"] not in _TERMINAL]
     if pending:
         attempts = run.get("reconcile_attempts", 0) + 1
-        run["reconcile_attempts"] = attempts
         max_attempts = int(os.environ.get("PAYOUT_MAX_RECONCILE_ATTEMPTS", "5"))
+        update_settlement_run(run_id, {"reconcile_attempts": attempts})
         if attempts < max_attempts:
             record_audit_log(
                 actor="api/src/payouts",
@@ -107,34 +116,34 @@ def reconcile(run_id: str) -> dict:
 
     if all_success:
         for claim in claims:
-            claim["status"] = "SETTLED"
-            claim["settled_at"] = _now()
-        run["status"] = "SETTLED"
+            update_claim(claim["claim_id"], {"status": "SETTLED", "settled_at": _now()})
+        new_status = "SETTLED"
     else:
         success_recipients = {i["recipient_id"] for i in items if i["status"] == "SUCCESS"}
         for claim in claims:
             if claim["recipient_id"] in success_recipients:
-                claim["status"] = "SETTLED"
-                claim["settled_at"] = _now()
+                update_claim(claim["claim_id"], {"status": "SETTLED", "settled_at": _now()})
             else:
-                claim["status"] = "CONFIRMED"
-                claim["settlement_run_id"] = None
-        run["status"] = "FAILED"
+                update_claim(claim["claim_id"], {"status": "CONFIRMED", "settlement_run_id": None})
+        new_status = "FAILED"
 
         for recipient_id in {i["recipient_id"] for i in items if i["status"] != "SUCCESS"}:
             recipient = get_recipient(recipient_id)
             if recipient is None:
                 continue
-            recipient["monthly_paid_minor"] = max(
-                0, recipient["monthly_paid_minor"] - run["total_amount_minor"]
+            already_paid = recipient.get("monthly_paid_minor", 0)
+            increment_recipient_monthly(
+                recipient_id, -min(already_paid, run["total_amount_minor"])
             )
+
+    update_settlement_run(run_id, {"status": new_status})
 
     record_audit_log(
         actor="api/src/payouts",
-        action="RUN_SETTLED" if run["status"] == "SETTLED" else "RUN_FAILED",
+        action="RUN_SETTLED" if new_status == "SETTLED" else "RUN_FAILED",
         run_id=run_id,
         before={"status": before_status},
-        after={"status": run["status"]},
+        after={"status": new_status},
     )
 
-    return {"settlement_run_id": run_id, "status": run["status"], "sender_items": items}
+    return {"settlement_run_id": run_id, "status": new_status, "sender_items": items}
