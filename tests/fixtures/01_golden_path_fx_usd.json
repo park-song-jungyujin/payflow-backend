@@ -1,0 +1,122 @@
+{
+  "_fixture_note": "1b. 01_golden_path_fx의 USD 기준통화 버전 — PayPal Payouts가 KRW를 지원하지 않아(422) base_currency를 USD로 바꾼 실행 가능한 골든 패스. 항목 하나는 KRW라서 fx_rates 환산 경로를 그대로 탄다.",
+  "recipients": [
+    {
+      "recipient_id": "rcp_01SCN01YUJINUSD000001",
+      "slack_user_id": "U01SCN0001",
+      "paypal_email": "yujin.demo@personal.example.com",
+      "display_name": "최유진",
+      "monthly_paid_minor": 0,
+      "monthly_period": "2026-08",
+      "verified": true,
+      "status": "ACTIVE",
+      "created_at": "2026-08-01T00:10:00Z",
+      "updated_at": "2026-08-01T00:10:00Z"
+    }
+  ],
+  "receipts": [
+    {
+      "receipt_id": "rct_01SCN01USDBASE0000001",
+      "recipient_id": "rcp_01SCN01YUJINUSD000001",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc01/office-supplies.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc01/office-supplies.txt",
+      "merchant_name": "우아한사무용품",
+      "transaction_date": "2026-08-05",
+      "parsed_amount_minor": 45000,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.93,
+      "status": "PARSED",
+      "created_at": "2026-08-05T09:12:00Z",
+      "updated_at": "2026-08-05T09:12:40Z"
+    },
+    {
+      "receipt_id": "rct_01SCN01USDBASE0000002",
+      "recipient_id": "rcp_01SCN01YUJINUSD000001",
+      "image_gcs_uri": "gs://payflow-demo/receipts/sc01/notion-invoice.jpg",
+      "raw_text_gcs_uri": "gs://payflow-demo/receipts/sc01/notion-invoice.txt",
+      "merchant_name": "Notion Labs Inc",
+      "transaction_date": "2026-08-06",
+      "parsed_amount_minor": 2500,
+      "currency": "USD",
+      "account_category_code": "ADVERTISING",
+      "category_source": "LLM_PARSE",
+      "parse_signals": {
+        "merchant_name_present": true,
+        "transaction_date_present": true,
+        "amount_parsed": true,
+        "currency_detected": true,
+        "injection_suspected": false
+      },
+      "llm_confidence": 0.88,
+      "status": "PARSED",
+      "created_at": "2026-08-06T13:40:00Z",
+      "updated_at": "2026-08-06T13:40:35Z"
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "clm_01SCN01USDBASECLM0001",
+      "recipient_id": "rcp_01SCN01YUJINUSD000001",
+      "receipt_id": "rct_01SCN01USDBASE0000001",
+      "amount_minor": 45000,
+      "currency": "KRW",
+      "account_category_code": "SUPPLIES",
+      "is_business": true,
+      "settlement_run_id": "run_260817_01SCN01GOLDUSD",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-05T09:20:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    },
+    {
+      "claim_id": "clm_01SCN01USDBASECLM0002",
+      "recipient_id": "rcp_01SCN01YUJINUSD000001",
+      "receipt_id": "rct_01SCN01USDBASE0000002",
+      "amount_minor": 2500,
+      "currency": "USD",
+      "account_category_code": "ADVERTISING",
+      "is_business": true,
+      "settlement_run_id": "run_260817_01SCN01GOLDUSD",
+      "settled_at": null,
+      "status": "CONFIRMED",
+      "created_at": "2026-08-06T13:45:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "settlement_runs": [
+    {
+      "settlement_run_id": "run_260817_01SCN01GOLDUSD",
+      "filter": {
+        "period_start": "2026-08-01",
+        "period_end": "2026-08-31",
+        "recipient_ids": ["rcp_01SCN01YUJINUSD000001"],
+        "account_categories": null,
+        "exclude_claim_ids": null
+      },
+      "base_currency": "USD",
+      "total_amount_minor": 5755,
+      "fx_rates": {},
+      "fx_locked_at": null,
+      "approval_amount_hash": null,
+      "approval_token_hash": null,
+      "approval_token_expires_at": null,
+      "approval_token_used_at": null,
+      "approved_by": null,
+      "approved_at": null,
+      "retry_seq": 0,
+      "status": "DRAFT",
+      "created_at": "2026-08-16T10:00:00Z",
+      "updated_at": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "_fixture_note_fx_math": "total_amount_minor(5755)는 배치 생성 시점 잠정치(schema-contract.md §4) — 실제 값은 /approve 호출 시 실시간 환율로 재계산되어 덮어써진다."
+}
