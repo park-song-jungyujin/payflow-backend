@@ -10,6 +10,7 @@ from .enums import (
     ClaimStatus,
     ReceiptStatus,
     RecipientStatus,
+    ReminderReason,
     SenderItemStatus,
     SettlementRunStatus,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "ClaimStatus",
     "ReceiptStatus",
     "RecipientStatus",
+    "ReminderReason",
     "SenderItemStatus",
     "SettlementRunStatus",
     "AgentDraft",

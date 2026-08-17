@@ -19,6 +19,7 @@ from .enums import (
     ClaimStatus,
     ReceiptStatus,
     RecipientStatus,
+    ReminderReason,
     SenderItemStatus,
     SettlementRunStatus,
 )
@@ -50,6 +51,8 @@ class Receipt(BaseModel):
     recipient_id: str
     image_gcs_uri: str
     raw_text_gcs_uri: str
+    slack_channel_id: str | None = None
+    slack_message_ts: str | None = None
     merchant_name: str | None = None
     transaction_date: date | None = None
     parsed_amount_minor: int | None = None
@@ -66,7 +69,9 @@ class Receipt(BaseModel):
 class ClaimRequest(BaseModel):
     claim_request_id: str
     recipient_id: str
-    receipt_id: str
+    # MISSING_CLAIM · UNPAID_NOTICE는 특정 영수증에서 출발하지 않는다.
+    receipt_id: str | None = None
+    reason: ReminderReason
     slack_dm_ts: str
     reminded_at: datetime | None = None
     expires_at: datetime

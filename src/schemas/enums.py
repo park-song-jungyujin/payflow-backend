@@ -43,6 +43,13 @@ class ReceiptStatus(StrEnum):
     FAILED = "FAILED"
 
 
+class ReminderReason(StrEnum):
+    PARSE_FAILED = "PARSE_FAILED"
+    AMOUNT_MISMATCH = "AMOUNT_MISMATCH"
+    MISSING_CLAIM = "MISSING_CLAIM"
+    UNPAID_NOTICE = "UNPAID_NOTICE"
+
+
 class ClaimRequestStatus(StrEnum):
     PENDING = "PENDING"
     REMINDED = "REMINDED"
