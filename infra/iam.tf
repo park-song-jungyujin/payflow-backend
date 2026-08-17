@@ -33,6 +33,15 @@ resource "google_project_iam_member" "api_tasks_enqueuer" {
   member  = "serviceAccount:${google_service_account.api.email}"
 }
 
+# Cloud Tasks가 태스크 실행 시 api SA 신원의 OIDC 토큰을 만들어 /tasks/* 콜백을
+# 부르게 하려면, Cloud Tasks 서비스 에이전트가 api SA에 대해 토큰을 발급할 권한이
+# 있어야 한다 (api SA를 "사칭"하는 게 아니라 그 신원의 OIDC 토큰만 만드는 것).
+resource "google_service_account_iam_member" "cloudtasks_can_mint_api_oidc" {
+  service_account_id = google_service_account.api.name
+  role                = "roles/iam.serviceAccountTokenCreator"
+  member              = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
+}
+
 # --- Secret Manager: PayPal + Slack 시크릿은 api SA에만 ---
 resource "google_secret_manager_secret_iam_member" "api_secret_access" {
   # secret_names(local, secrets.tf)를 도는 것 — 리소스 attribute map을 돌면 plan 시점에
