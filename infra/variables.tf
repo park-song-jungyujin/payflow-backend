@@ -29,6 +29,18 @@ variable "api_oidc_audience" {
   description = "Cloud Run이 서비스 생성 시 배정하는 안정적인 run.app URL. tasks_ping()이 검증하는 audience — 서비스를 지우고 새로 만들지 않는 한 안 바뀐다."
 }
 
+variable "agent_oidc_audience" {
+  type        = string
+  default     = "https://payflow-agent-6j6g3xdpma-du.a.run.app"
+  description = "api_oidc_audience와 같은 이유 — agent/main.py의 /agents/*가 검증하는 audience."
+}
+
+variable "agent_model" {
+  type        = string
+  default     = "gemini-flash-latest"
+  description = "agent-tools.md — 모델 ID는 환경변수. 해커톤 규정의 최소 버전 요건을 마지막에 한 번 더 확인한다."
+}
+
 # --- Cloud Run 서비스별 설정 (plan.md "Cloud Run 설정" 표) ---
 variable "agent_min_instances" {
   type        = number

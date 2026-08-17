@@ -8,16 +8,14 @@ Cloud Tasks에 위임하고, 실제 PayPal 호출은 `/tasks/execute-payout`에�
 같은 로직을 공유한다. 재발송(retry)은 아직 없다 — plan.md Phase 1 우선순위 2에서 붙인다.
 """
 
-import os
 from datetime import UTC, datetime
 
 import requests as http_requests
 from fastapi import APIRouter, Header, HTTPException
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
 
 from ..guards.audit import record_audit_log
 from ..guards.errors import GuardRejection
+from ..guards.oidc import verify_oidc
 from ..guards.tokens import verify_and_burn_token
 from .currency import UnsupportedPayoutCurrency, assert_supported_payout_currency, minor_to_paypal_value
 from .idempotency import build_payout_ids
@@ -36,21 +34,6 @@ from .reconcile import MissingPayoutBatch, NotExecuting, RunNotFound, reconcile
 from .tasks_queue import QueueNotConfigured, enqueue_execute_payout
 
 router = APIRouter()
-_google_request = google_requests.Request()
-
-
-def _verify_oidc(authorization: str) -> None:
-    """schema-contract.md §9 — Cloud Tasks 전용 라우트 진입점. main.py의 /tasks/ping과
-    동일한 검증 방식이다."""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-
-    token = authorization.removeprefix("Bearer ")
-    audience = os.environ["OIDC_AUDIENCE"]
-    try:
-        id_token.verify_oauth2_token(token, _google_request, audience=audience)
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
 
 
 @router.post("/payouts")
@@ -149,7 +132,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     base_currency로 환산·합산하는 건 matching(Track B)의 결과물이 필요한데 아직 없다 —
     잘못된 금액을 조용히 보내느니 501로 막는다.
     """
-    _verify_oidc(authorization)
+    verify_oidc(authorization)
     run_id = body.get("settlement_run_id")
     run = get_settlement_run(run_id) if run_id else None
     if run is None:
@@ -255,7 +238,7 @@ def task_reconcile(body: dict, authorization: str = Header(default="")):
     Cloud Tasks가 부른다. 미종결이면 이 라우트가 스스로를 재예약해야 하는데, 그 큐잉은
     tasks_queue.py와 마찬가지로 아직 없다 — pending 응답을 보고 데모/테스트에서 다시
     호출해 재폴링을 시뮬레이션한다."""
-    _verify_oidc(authorization)
+    verify_oidc(authorization)
     run_id = body.get("settlement_run_id")
     if not run_id:
         raise HTTPException(status_code=400, detail="settlement_run_id required")
