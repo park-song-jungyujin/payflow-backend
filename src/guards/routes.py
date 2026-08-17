@@ -9,17 +9,48 @@ import hashlib
 import os
 import secrets
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
+import requests
 from fastapi import APIRouter, HTTPException
 from google.cloud import firestore
 
-from ..payouts.store import get_client, get_settlement_run
+from ..payouts.currency import convert_minor
+from ..payouts.fx import FxRateUnavailable, fetch_fx_rate
+from ..payouts.store import get_client, get_claims_for_run, get_settlement_run
 from .audit import record_audit_log
 from .errors import GuardRejection
 from .limits import check_caps
 from .tokens import approval_amount_hash
 
 router = APIRouter()
+
+
+def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int]:
+    """schema-contract.md §4 — 항목별 환산 후 합산. 환율은 승인 시점에 조회해 고정한다."""
+    base_currency = run["base_currency"]
+    claims = get_claims_for_run(run["settlement_run_id"])
+
+    rates: dict[str, Decimal] = {}
+    total_amount_minor = 0
+    for claim in claims:
+        currency = claim["currency"]
+        if currency == base_currency:
+            total_amount_minor += claim["amount_minor"]
+            continue
+        pair = f"{currency}/{base_currency}"
+        if pair not in rates:
+            try:
+                rates[pair] = fetch_fx_rate(currency, base_currency)
+            except (requests.RequestException, FxRateUnavailable) as e:
+                raise HTTPException(
+                    status_code=502, detail=f"fx rate lookup failed: {pair}"
+                ) from e
+        total_amount_minor += convert_minor(
+            claim["amount_minor"], currency, base_currency, rates[pair]
+        )
+
+    return {pair: str(rate) for pair, rate in rates.items()}, total_amount_minor
 
 
 @router.post("/settlements/runs/{run_id}/approve")
@@ -33,6 +64,9 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
             status_code=409,
             detail=f"settlement_run status is {run['status']}, expected DRAFT",
         )
+
+    fx_rates, total_amount_minor = _lock_fx_and_total(run)
+    run = {**run, "fx_rates": fx_rates, "total_amount_minor": total_amount_minor}
 
     violation = check_caps(run)
     if violation:
@@ -50,6 +84,8 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
         "status": "APPROVED",
         "approved_by": approved_by,
         "approved_at": now,
+        "fx_rates": fx_rates,
+        "total_amount_minor": total_amount_minor,
         "fx_locked_at": now,
         "updated_at": now,
         "approval_amount_hash": approval_amount_hash(run),

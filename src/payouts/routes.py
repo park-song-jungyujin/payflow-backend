@@ -19,7 +19,7 @@ from google.oauth2 import id_token
 from ..guards.audit import record_audit_log
 from ..guards.errors import GuardRejection
 from ..guards.tokens import verify_and_burn_token
-from .currency import minor_to_paypal_value
+from .currency import UnsupportedPayoutCurrency, assert_supported_payout_currency, minor_to_paypal_value
 from .idempotency import build_payout_ids
 from .store import (
     find_run_id_by_payout_batch_id,
@@ -174,6 +174,18 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     sender_batch_id, sender_item_id = build_payout_ids(run_id, recipient_id, retry_seq)
     amount_minor = run["total_amount_minor"]
     currency = run["base_currency"]
+    try:
+        assert_supported_payout_currency(currency)
+    except UnsupportedPayoutCurrency:
+        record_audit_log(
+            actor="api/src/payouts",
+            action="PAYOUT_CALL_FAILED",
+            run_id=run_id,
+            reason=f"currency not supported by PayPal Payouts: {currency}",
+        )
+        raise HTTPException(
+            status_code=422, detail=f"currency not supported by PayPal Payouts: {currency}"
+        )
     paypal_value = minor_to_paypal_value(amount_minor, currency)
 
     try:
