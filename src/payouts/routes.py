@@ -8,6 +8,7 @@ Cloud Tasks에 위임하고, 실제 PayPal 호출은 `/tasks/execute-payout`에�
 같은 로직을 공유한다. 재발송(retry)은 아직 없다 — plan.md Phase 1 우선순위 2에서 붙인다.
 """
 
+import os
 from datetime import UTC, datetime
 
 import requests as http_requests
@@ -156,7 +157,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     retry_seq = run.get("retry_seq", 0)
     sender_batch_id, sender_item_id = build_payout_ids(run_id, recipient_id, retry_seq)
     amount_minor = run["total_amount_minor"]
-    currency = run["base_currency"]
+    currency = os.environ["PAYOUT_CURRENCY"]
     try:
         assert_supported_payout_currency(currency)
     except UnsupportedPayoutCurrency:

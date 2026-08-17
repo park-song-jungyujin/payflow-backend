@@ -28,7 +28,7 @@ router = APIRouter()
 
 def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int]:
     """schema-contract.md §4 — 항목별 환산 후 합산. 환율은 승인 시점에 조회해 고정한다."""
-    base_currency = run["base_currency"]
+    base_currency = os.environ["PAYOUT_CURRENCY"]
     claims = get_claims_for_run(run["settlement_run_id"])
 
     rates: dict[str, Decimal] = {}

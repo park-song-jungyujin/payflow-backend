@@ -6,6 +6,7 @@
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime
 
 from google.cloud import firestore
@@ -26,7 +27,7 @@ def approval_amount_hash(run: dict) -> str:
     ]
     payload = {
         "settlement_run_id": run["settlement_run_id"],
-        "base_currency": run["base_currency"],
+        "base_currency": os.environ["PAYOUT_CURRENCY"],
         "fx_rates": dict(sorted(run.get("fx_rates", {}).items())),
         "items": items,
     }
