@@ -10,6 +10,7 @@ FastAPI / Python. Cloud Run 배포. 시크릿: PayPal, Slack.
 - Slack webhook 수신 및 서명 검증
 - 승인 토큰 발급 / 검증
 - 영수증 이미지 → 구조화 JSON (Gemini structured output **단발 호출**, ADK 아님)
+- 정산 실행 시 영수증 이미지 ↔ 파싱 결과 검증 (파싱과 별개인 Gemini 단발 호출, ADK 아님)
 - 결정론적 매칭 (금액 · 날짜 윈도우 · 가맹점명)
 - Firestore 쓰기의 단일 창구
 - 스키마 단일 소스 — `src/schemas/*.py`의 Pydantic 모델

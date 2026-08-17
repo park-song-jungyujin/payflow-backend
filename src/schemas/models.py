@@ -46,6 +46,18 @@ class ParseSignals(BaseModel):
     injection_suspected: bool
 
 
+class VerificationSignals(BaseModel):
+    """이미지 ↔ 파싱 결과 검증 판정. 판정만 담는다 — 대체 금액/텍스트는 없다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    image_legible: bool
+    amount_matches: bool
+    merchant_matches: bool
+    date_matches: bool
+    injection_suspected: bool
+
+
 class Receipt(BaseModel):
     receipt_id: str
     recipient_id: str
@@ -61,6 +73,8 @@ class Receipt(BaseModel):
     category_source: CategorySource
     parse_signals: ParseSignals
     llm_confidence: float | None = None
+    verified_at: datetime | None = None
+    verification_signals: VerificationSignals | None = None
     status: ReceiptStatus
     created_at: datetime
     updated_at: datetime
@@ -167,6 +181,7 @@ __all__ = [
     "Money",
     "Recipient",
     "ParseSignals",
+    "VerificationSignals",
     "Receipt",
     "ClaimRequest",
     "Claim",

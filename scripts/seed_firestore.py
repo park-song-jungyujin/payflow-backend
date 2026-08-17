@@ -74,6 +74,30 @@ def _blocks(data: dict) -> list[dict]:
     return [data] + [data[key] for key in _SUB_CASE_KEYS if key in data]
 
 
+# schema-contract.md "검증" — fixture는 수정 금지(§0)이고 verified_at을 모른다.
+# 정산까지 가는 시나리오(status=PARSED)가 검증 미통과 취급으로 후보에서 빠지지
+# 않도록, 시딩 시점에 통과 판정을 채워 넣는다. fixture 9(검증 실패)가 생기면
+# 그쪽은 status가 VERIFICATION_FAILED라 이 보정을 타지 않는다.
+# fixture 06(프롬프트 인젝션)은 parse_signals.injection_suspected=true라 제외한다 —
+# 그 시나리오의 목적이 인젝션 탐지 시연인데 검증 통과로 덮어쓰면 무의미해진다.
+# claim/settlement_run이 없는 receipt라 제외해도 다른 데모가 막히지 않는다.
+_PASSED_VERIFICATION_SIGNALS = {
+    "image_legible": True,
+    "amount_matches": True,
+    "merchant_matches": True,
+    "date_matches": True,
+    "injection_suspected": False,
+}
+
+
+def _backfill_verification(doc: dict) -> dict:
+    injection_suspected = doc.get("parse_signals", {}).get("injection_suspected", False)
+    if doc.get("status") == "PARSED" and doc.get("verified_at") is None and not injection_suspected:
+        doc["verified_at"] = datetime.now(UTC)
+        doc["verification_signals"] = dict(_PASSED_VERIFICATION_SIGNALS)
+    return doc
+
+
 def seed() -> None:
     client = get_client()
     counts: dict[str, int] = {c: 0 for c in _COLLECTIONS}
@@ -84,6 +108,8 @@ def seed() -> None:
             for collection in _COLLECTIONS:
                 for doc in block.get(collection, []):
                     doc = _convert_timestamps(doc)
+                    if collection == "receipts":
+                        doc = _backfill_verification(doc)
                     doc_id = doc.get(_ID_FIELDS[collection]) if collection in _ID_FIELDS else None
                     ref = client.collection(collection).document(doc_id) if doc_id else client.collection(
                         collection
