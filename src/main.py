@@ -1,19 +1,17 @@
-import os
-
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
+from fastapi import FastAPI, Header
 
 load_dotenv()
 
-from .guards.routes import router as guards_router  # noqa: E402  (load_dotenv 이후 import)
+from .guards.agent_drafts import router as agent_drafts_router  # noqa: E402  (load_dotenv 이후 import)
+from .guards.oidc import verify_oidc  # noqa: E402
+from .guards.routes import router as guards_router  # noqa: E402
 from .payouts.routes import router as payouts_router  # noqa: E402
 
 app = FastAPI()
 app.include_router(guards_router)
 app.include_router(payouts_router)
-_google_request = google_requests.Request()
+app.include_router(agent_drafts_router)
 
 
 @app.get("/")
@@ -25,14 +23,5 @@ def health():
 def tasks_ping(authorization: str = Header(default="")):
     """Cloud Tasks OIDC 관통 확인용 스텁. schema-contract.md §10 Cloud Tasks 전용 라우트와
     동일한 검증 방식을 쓴다 — 실제 라우트는 A/C가 각자 만든다."""
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="missing bearer token")
-
-    token = authorization.removeprefix("Bearer ")
-    audience = os.environ["OIDC_AUDIENCE"]
-    try:
-        claims = id_token.verify_oauth2_token(token, _google_request, audience=audience)
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
+    claims = verify_oidc(authorization)
     return {"status": "ok", "sub": claims.get("sub")}

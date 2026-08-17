@@ -122,6 +122,26 @@ resource "google_cloud_run_v2_service" "agent" {
     }
     containers {
       image = var.placeholder_image
+      env {
+        # api와 동일한 이유로 상수 고정 — 자기 자신의 .uri를 참조하면 순환 참조가 난다.
+        # main.py의 /agents/*가 검증하는 audience(Cloud Tasks가 이 값으로 토큰을 만든다).
+        name  = "OIDC_AUDIENCE"
+        value = var.agent_oidc_audience
+      }
+      env {
+        # agent가 agent_drafts를 쓰려고 되부르는 api 주소. api는 allUsers invoker라
+        # 별도 run.invoker 바인딩 없이 agent SA의 ID 토큰만으로 통과한다(iam.tf api_public).
+        name  = "API_BASE_URL"
+        value = var.api_oidc_audience
+      }
+      env {
+        name  = "API_OIDC_AUDIENCE"
+        value = var.api_oidc_audience
+      }
+      env {
+        name  = "AGENT_MODEL"
+        value = var.agent_model
+      }
     }
   }
 
