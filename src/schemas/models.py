@@ -1,4 +1,4 @@
-"""schema-contract.md §2 Firestore 컬렉션 9종 + §6 SettlementFilter.
+"""schema-contract.md §2 Firestore 컬렉션 8종 + §6 SettlementFilter.
 
 필드명·타입·상태 enum은 이 문서가 단일 소스다. 여기 있는 것과 다르게 구현하면
 통합 시점에 조용히 실패한다. 변경이 필요하면 schema-contract.md를 먼저 고친다.
