@@ -1,0 +1,113 @@
+resource "google_service_account" "web" {
+  project      = var.project_id
+  account_id   = "payflow-web"
+  display_name = "Payflow web (Next.js BFF) — 시크릿 없음"
+}
+
+resource "google_service_account" "api" {
+  project      = var.project_id
+  account_id   = "payflow-api"
+  display_name = "Payflow api — PayPal/Slack 시크릿, Firestore 쓰기 유일 창구"
+}
+
+resource "google_service_account" "agent" {
+  project      = var.project_id
+  account_id   = "payflow-agent"
+  display_name = "Payflow agent (ADK) — PayPal 접근 불가. Vertex AI만 호출"
+}
+
+resource "google_cloud_run_v2_service" "web" {
+  name     = "payflow-web"
+  project  = var.project_id
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account = google_service_account.web.email
+    scaling {
+      min_instance_count = var.web_min_instances
+    }
+    containers {
+      image = var.placeholder_image
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_cloud_run_v2_service" "api" {
+  name     = "payflow-api"
+  project  = var.project_id
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL" # Slack webhook + web BFF가 외부에서 친다. 인가는 서명검증/토큰이 한다.
+
+  template {
+    # 2단계 마이그레이션 2단계: default compute SA(roles/editor)에서 전용 SA로 전환.
+    # 1단계(import 시점엔 local.compute_default_sa_email로 맞춰 diff 없이 편입)는 끝났다.
+    service_account = google_service_account.api.email
+    timeout         = "300s"
+    scaling {
+      min_instance_count = var.api_min_instances
+      max_instance_count = 20
+    }
+    containers {
+      image = var.placeholder_image
+      env {
+        name  = "GCP_PROJECT"
+        value = var.project_id
+      }
+      env {
+        name  = "CLOUD_TASKS_QUEUE"
+        value = google_cloud_tasks_queue.payflow_tasks.name
+      }
+      env {
+        name  = "CLOUD_TASKS_LOCATION"
+        value = var.region
+      }
+      env {
+        # 이미 배포된 서비스가 쓰던 값. Cloud Run v2는 env 목록을 통째로 갈아치우므로
+        # 여기 빠지면 import 후 apply에서 지워진다 → main.py의 os.environ["OIDC_AUDIENCE"]가
+        # KeyError → /tasks/* 전부 500. 자기 자신의 .uri를 참조하면 순환 참조가 나서 상수로 고정한다.
+        name  = "OIDC_AUDIENCE"
+        value = var.api_oidc_audience
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+# agent는 api가 Cloud Tasks로만 부른다. VPC 커넥터는 안 쓴다 (plan.md: 설정에 반나절 날아간다).
+# 네트워크는 열어두고 IAM으로 잠근다 — invoker를 api SA로만 제한한다 (iam.tf).
+resource "google_cloud_run_v2_service" "agent" {
+  name     = "payflow-agent"
+  project  = var.project_id
+  location = var.region
+  ingress  = "INGRESS_TRAFFIC_ALL"
+
+  template {
+    service_account                  = google_service_account.agent.email
+    timeout                          = "${var.agent_timeout_seconds}s"
+    max_instance_request_concurrency = var.agent_concurrency
+    scaling {
+      min_instance_count = var.agent_min_instances
+    }
+    containers {
+      image = var.placeholder_image
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].containers[0].image]
+  }
+
+  depends_on = [google_project_service.apis]
+}

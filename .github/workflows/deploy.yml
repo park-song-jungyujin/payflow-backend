@@ -1,0 +1,39 @@
+name: Deploy payflow-api
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # WIF — 키 없이 이 토큰으로 GCP에 인증한다
+
+env:
+  PROJECT_ID: payflow-hackathon-2026
+  REGION: asia-northeast3
+  # backend/infra의 terraform output ci_workload_identity_provider / ci_deployer_service_account
+  WIF_PROVIDER: projects/1095757595735/locations/global/workloadIdentityPools/github-actions/providers/payflow-backend
+  DEPLOY_SA: payflow-deployer@payflow-hackathon-2026.iam.gserviceaccount.com
+  RUNTIME_SA: payflow-api@payflow-hackathon-2026.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - run: |
+          gcloud run deploy payflow-api \
+            --source . \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --service-account "$RUNTIME_SA" \
+            --quiet

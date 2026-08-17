@@ -3,3 +3,9 @@
 __pycache__/
 *.pyc
 .venv/
+
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.*
+infra/terraform.tfvars
+infra/*.plan
