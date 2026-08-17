@@ -75,6 +75,10 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "OIDC_AUDIENCE"
         value = var.api_oidc_audience
       }
+      env {
+        name  = "TASKS_SERVICE_ACCOUNT_EMAIL"
+        value = google_service_account.api.email
+      }
     }
   }
 
