@@ -79,6 +79,18 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "TASKS_SERVICE_ACCOUNT_EMAIL"
         value = google_service_account.api.email
       }
+      dynamic "env" {
+        for_each = local.secret_names
+        content {
+          name = env.value
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.secrets[env.value].secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
     }
   }
 
@@ -86,7 +98,11 @@ resource "google_cloud_run_v2_service" "api" {
     ignore_changes = [template[0].containers[0].image]
   }
 
-  depends_on = [google_project_service.apis]
+  depends_on = [
+    google_project_service.apis,
+    google_secret_manager_secret_iam_member.api_secret_access,
+    google_secret_manager_secret_iam_member.run_service_agent_secret_access,
+  ]
 }
 
 # agent는 api가 Cloud Tasks로만 부른다. VPC 커넥터는 안 쓴다 (plan.md: 설정에 반나절 날아간다).

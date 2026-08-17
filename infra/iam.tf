@@ -42,6 +42,14 @@ resource "google_service_account_iam_member" "cloudtasks_can_mint_api_oidc" {
   member              = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-cloudtasks.iam.gserviceaccount.com"
 }
 
+# CreateTask 호출 자체(= api SA 본인)도 태스크에 넣는 oidc_token.service_account_email
+# 대상(api SA 자기 자신)에 대해 actAs 권한이 있어야 한다 — 위 바인딩과 별개 요건.
+resource "google_service_account_iam_member" "api_can_actas_self_for_tasks" {
+  service_account_id = google_service_account.api.name
+  role                = "roles/iam.serviceAccountUser"
+  member              = "serviceAccount:${google_service_account.api.email}"
+}
+
 # --- Secret Manager: PayPal + Slack 시크릿은 api SA에만 ---
 resource "google_secret_manager_secret_iam_member" "api_secret_access" {
   # secret_names(local, secrets.tf)를 도는 것 — 리소스 attribute map을 돌면 plan 시점에
@@ -52,6 +60,17 @@ resource "google_secret_manager_secret_iam_member" "api_secret_access" {
   secret_id = google_secret_manager_secret.secrets[each.value].secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+# Cloud Run 서비스 에이전트도 배포 시점에 시크릿 존재/접근을 확인한다 —
+# api SA 바인딩과 별개로 이게 없으면 "version latest was not found"로 apply가 실패한다.
+resource "google_secret_manager_secret_iam_member" "run_service_agent_secret_access" {
+  for_each = toset(local.secret_names)
+
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.secrets[each.value].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:service-${data.google_project.current.number}@serverless-robot-prod.iam.gserviceaccount.com"
 }
 
 # --- Cloud Run invoker ---
