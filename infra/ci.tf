@@ -75,3 +75,12 @@ resource "google_service_account_iam_member" "deployer_actas_api" {
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.deployer.email}"
 }
+
+# `gcloud run deploy --source`는 배포 대상 SA(api)와 별개로, Cloud Build가 소스를
+# 빌드할 때 쓰는 SA에도 actAs가 필요하다. 커스텀 빌드 SA를 지정하지 않았으므로
+# 기본값인 프로젝트 기본 Compute SA가 쓰인다 — 이것도 이 SA 하나로만 좁혀서 부여한다.
+resource "google_service_account_iam_member" "deployer_actas_compute_default" {
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${local.compute_default_sa_email}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.deployer.email}"
+}
