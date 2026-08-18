@@ -35,5 +35,7 @@ def verify_slack_signature(raw_body: bytes, timestamp: str, signature: str) -> N
     expected = "v0=" + hmac.new(secret, basestring, hashlib.sha256).hexdigest()
 
     # compare_digest — 타이밍 공격 방어. == 로 비교하지 않는다.
-    if not hmac.compare_digest(expected, signature):
+    # bytes로 넘긴다: str끼리는 non-ASCII가 섞이면 TypeError가 나고, 그러면
+    # 401이어야 할 적대적 요청이 500이 된다. 500은 Slack 재전송까지 부른다.
+    if not hmac.compare_digest(expected.encode("utf-8"), signature.encode("utf-8")):
         raise SignatureError("signature mismatch")

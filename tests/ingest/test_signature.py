@@ -45,6 +45,14 @@ def test_future_timestamp_fails():
         verify_slack_signature(body, ts, _sign(body, ts))
 
 
+def test_non_ascii_signature_fails_cleanly():
+    """적대적 입력이 500이 되면 안 된다. 500은 Slack 재전송까지 유발한다."""
+    body = b'{"type":"event_callback"}'
+    ts = str(int(time.time()))
+    with pytest.raises(SignatureError, match="signature mismatch"):
+        verify_slack_signature(body, ts, "v0=ÇÇÇ")
+
+
 def test_missing_headers_fail():
     with pytest.raises(SignatureError, match="missing"):
         verify_slack_signature(b"{}", "", "")
