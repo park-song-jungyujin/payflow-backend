@@ -22,6 +22,63 @@ Task 4 는 보류 (아래 참조). Task 5는 Task 4 없이도 완결된다.
 
 **Task 2는 ③이 끝나고 "시작"이라는 말을 들은 뒤에 착수한다.** 그전에는 실행하지 않는다.
 
+## 구현 후 개정 (2026-08-19)
+
+**아래 Task 3·5의 코드 블록보다 이 절이 우선한다.** 구현 중 계획서 명세가 틀린 것으로
+드러난 지점들이다.
+
+### 1. dedup은 쿼리가 아니라 문서 ID로 한다
+
+계획서 Task 3은 트랜잭션 안에서 `slack_file_id == X`로 `receipts`를 **쿼리**했다.
+**이건 동시 재전송에서 뚫린다.** Firestore 트랜잭션은 읽어서 *반환된* 문서에만 락을
+걸기 때문에, 쿼리가 0건이면 잠글 대상이 없다. 요청 두 개가 각각 "없음"을 보고 서로
+다른 `rct_{ulid}`에 쓰면 문서 ID가 달라 충돌 없이 **둘 다 커밋된다.**
+
+Firestore에서 유일성은 **문서 ID로 강제해야 한다.** 결정론적 경로에 대한
+`transaction.get()`은 문서가 없어도 read set에 들어가 락이 걸린다.
+
+→ `receipt_dedup_keys/{slack_file_id}` 컬렉션을 신설했다(계약 §2). `receipts`의 문서
+ID 규칙(`receipt_id`)은 그대로다 — `src/settlements/export.py:36`이
+`.document(receipt_id).get()`으로 읽고 `seed_firestore.py`·fixture도 같은 규칙이라,
+`receipts` 문서 ID를 `slack_file_id`로 바꾸면 이미 배포된 XLSX 출력이 깨진다.
+
+dedup 문서가 `receipt_id`를 함께 담으므로 재전송 경로는 쿼리 없이 문서 직접 조회로
+끝난다 — `receipts.slack_file_id` 인덱스에 의존하지 않게 되어, 원래 미검증으로 남아
+있던 인덱스 리스크가 사라졌다.
+
+### 2. 라우트는 `ValueError`를 잡지 않는다
+
+계획서 Task 5는 라우트에서 `except ValueError`로 트랜잭션 실패를 잡았다. **범위가
+너무 넓다** — 저장과 무관한 `ValueError`까지 503 + `RECEIPT_INGEST_FAILED`로
+뭉뚱그려져 진짜 버그가 "일시적 저장 장애"로 위장된다.
+
+→ `store.py`가 SDK의 `ValueError`를 경계에서 `ReceiptStoreUnavailable`로 바꿔 올리고,
+라우트는 그 도메인 예외만 잡는다. 라우트가 SDK 내부 사정을 알지 않는다.
+
+### 3. 파일 수 상한 `MAX_FILES_PER_EVENT = 5`
+
+파일마다 트랜잭션 + enqueue를 순차로 돌아 소요가 파일 수에 선형이다. 라우트 자체
+오버헤드는 ~3ms로 무의미하고 비용은 전부 네트워크다. 지연 주입 실측:
+
+| 파일당 왕복 | n=3 | n=5 | n=8 | n=10 |
+|---|---|---|---|---|
+| 100ms×2 | 0.61s | 1.01s | 1.62s | 2.03s |
+| 150ms×2 | 0.91s | 1.52s | 2.42s | **3.03s ✗** |
+| 200ms×2 | 1.23s | **2.03s** | **3.23s ✗** | 4.03s ✗ |
+
+→ 5로 정했다. 비관적 케이스(파일당 400ms)에서 2.03s로 3초 대비 32% 여유가 남고 8이면
+넘어간다. **초과분은 버리지 않는다** — ack는 즉시 주고 처리 못 한 `file_id`를
+`RECEIPT_INGEST_DEFERRED` 감사 로그에 남긴다. 영수증이 조용히 사라지는 게 3초 초과보다
+나쁘다.
+
+### 4. Task 4 보류 해제
+
+C가 `enqueue_task(path, payload)`를 `src/guards/tasks.py`에 냈다(`b381b4f`, PR #8).
+`src/shared/`가 아니다. `src/ingest/enqueue.py`는 그 위의 얇은 층이고 `guards/`는
+import만 한다.
+
+---
+
 ## Global Constraints
 
 - 소유 디렉터리는 `src/ingest/`와 `src/parsing/`뿐이다. `src/guards/`, `src/payouts/`, `src/matching/`, `src/settlements/`는 **수정하지 않는다** — import(읽기)는 허용된다.
@@ -43,7 +100,7 @@ Task 4 는 보류 (아래 참조). Task 5는 Task 4 없이도 완결된다.
 |---|---|
 | `receipts.slack_file_id` 신설 | `str \| None`. `F0123ABC`. Slack 재전송 dedup 키 |
 | `receipts` 파싱 필드 5개 완화 | `image_gcs_uri` · `raw_text_gcs_uri` · `currency` · `category_source` · `parse_signals` → 전부 `\| None` |
-| dedup 트랜잭션 규칙 | "`slack_file_id` 중복 검사와 `receipts` 생성은 하나의 Firestore 트랜잭션 안에서 한다" — 문서 규칙이라 코드 변경 없음. Task 3이 구현한다 |
+| dedup 트랜잭션 규칙 | "`slack_file_id` 중복 검사와 `receipts` 생성은 하나의 Firestore 트랜잭션 안에서 한다" — **단 검사는 쿼리가 아니라 `receipt_dedup_keys/{slack_file_id}` 문서 조회다.** 위 "구현 후 개정" 1번 참조 |
 | `claim_requests.slack_dm_ts` 완화 | `str \| None`. 생성 시점엔 아직 DM 전이라 비어 있다 |
 
 **계약에 들어가지 않은 것 — 코드에도 넣지 않는다.**
@@ -1275,8 +1332,9 @@ EOF
 
 | 항목 | 언제 |
 |---|---|
-| **`receipts.slack_file_id` 인덱스 실측** — 단일 필드라 Firestore 자동 인덱스로 커버되지만, 자동 인덱싱이 꺼져 있거나 예외 목록에 있으면 조회가 항상 0건을 돌려주고 **dedup이 조용히 무력화된다**. 실제 development DB에 재전송 시나리오를 한 번 돌려 확인해야 한다 | 배포 전 (필수) |
-| **fake 테스트는 원자성을 검증하지 못한다** — `FakeTransaction.set`은 즉시 반영되고 락·ABORTED·재시도가 없다. 검사와 쓰기를 트랜잭션 밖으로 꺼내도 6건이 똑같이 통과한다. 계약 준수는 테스트가 아니라 **리뷰**가 게이트다 | 리뷰 시 상시 |
+| **동시성 원자성은 에뮬레이터로만 증명 가능** — `FakeTransaction`에는 락·ABORTED·재실행이 없어 순차 호출만 검증한다. 구조 테스트(`test_dedup_key_is_read_before_any_write`)가 쿼리 기반 회귀는 잡지만, 진짜 동시 재전송은 Firestore 에뮬레이터에 스레드 두 개를 붙여야 증명된다. 6일 일정에 셋업이 안 맞아 미룸 | **통합 단계에서 검토** |
+| **이벤트 루프 블로킹** — `slack_events`는 `async def`인데 내부 호출(Firestore·Cloud Tasks)이 전부 동기 블로킹이라 처리 중 이벤트 루프가 막힌다. 동기 호출을 걷어내는 건 범위가 커서 하지 않았다. `MAX_FILES_PER_EVENT`로 최악 소요를 묶어 막는다 | 성능 문제가 실제로 관측되면 |
+| **콜드 스타트** — `get_client()`가 테스트에서 한 번도 불리지 않는다(전부 monkeypatch). Cloud Run 콜드 스타트 + 첫 Firestore 인증 왕복은 초 단위가 될 수 있고, Slack 첫 이벤트 재전송의 전형적 원인이다. **코드로 막을 수 없다** — Cloud Run `min-instances`는 C 소유 인프라 | C와 별도 협의 |
 | 실제 Cloud Tasks enqueue — C의 `src/shared/enqueue_task(path, payload)` 대기 | C 응답 후 |
 | `claim_requests.settlement_run_id` — `UNPAID_NOTICE`가 어느 배치 결과인지 담을 자리가 없다 | 지급 결과 통지 |
 | `AgentSession` / `Turn` 모델 — docs §2에 `agent_sessions`가 있는데 코드에 모델이 없다 | agent 세션 작업 |

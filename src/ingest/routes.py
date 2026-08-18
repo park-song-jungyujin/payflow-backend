@@ -14,11 +14,20 @@ from fastapi import APIRouter, HTTPException, Request
 from ..guards.audit import record_audit_log
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt
 from .signature import SignatureError, verify_slack_signature
-from .store import create_receipt_if_absent, find_recipient_by_slack_user
+from .store import ReceiptStoreUnavailable, create_receipt_if_absent, find_recipient_by_slack_user
 
 router = APIRouter()
 
 _IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/heic", "image/webp"}
+
+# 파일마다 Firestore 트랜잭션 + Cloud Tasks enqueue를 순차로 돈다. 라우트 자체
+# 오버헤드는 ~3ms로 무의미하고 비용은 전부 네트워크이며 파일 수에 선형이다.
+# 실측(지연 주입): 파일당 왕복 400ms 가정에서 5장 2.0s, 8장 3.2s로 3초를 넘긴다.
+# 5로 두면 비관적 케이스에서도 32% 여유가 남는다. 실제 업로드는 1~3장이다.
+#
+# 초과분은 버리지 않는다 — ack는 즉시 주고 처리 못 한 file_id를 감사 로그에
+# 남긴다. 영수증이 조용히 사라지는 게 3초 초과보다 나쁘다.
+MAX_FILES_PER_EVENT = 5
 
 
 @router.post("/slack/events")
@@ -59,6 +68,16 @@ async def slack_events(request: Request):
         )
         return {"status": "ignored", "reason": "unregistered_user"}
 
+    deferred = [f["id"] for f in files[MAX_FILES_PER_EVENT:]]
+    if deferred:
+        record_audit_log(
+            actor="api/src/ingest",
+            action="RECEIPT_INGEST_DEFERRED",
+            reason=f"file count {len(files)} exceeds MAX_FILES_PER_EVENT={MAX_FILES_PER_EVENT}",
+            after={"deferred_slack_file_ids": deferred},
+        )
+    files = files[:MAX_FILES_PER_EVENT]
+
     received = []
     for slack_file in files:
         try:
@@ -68,8 +87,10 @@ async def slack_events(request: Request):
                 slack_channel_id=event["channel"],
                 slack_message_ts=event["ts"],
             )
-        except ValueError as e:
-            # 트랜잭션 ABORTED가 SDK 재시도 상한(기본 5회)을 넘긴 경우.
+        except ReceiptStoreUnavailable as e:
+            # 트랜잭션 ABORTED가 SDK 재시도 상한(기본 5회)을 넘긴 경우. store.py가
+            # SDK의 ValueError를 이 도메인 예외로 바꿔 올린다 — 여기서 ValueError를
+            # 직접 잡으면 무관한 ValueError까지 503으로 뭉뚱그린다.
             # enqueue 실패와 달리 receipts 문서가 남지 않았으므로 200으로 삼키면
             # 영수증이 조용히 사라진다. Slack 재전송을 받아야 맞다 — 다만 스택
             # 트레이스 500이 아니라 명시적 503으로 남긴다.

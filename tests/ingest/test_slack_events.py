@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.ingest import routes
+from src.ingest.store import ReceiptStoreUnavailable
 from src.main import app
 
 SECRET = "test-signing-secret"
@@ -180,7 +181,7 @@ def test_queue_not_configured_still_acks(client, monkeypatch):
 
 
 def test_firestore_contention_returns_503_not_500(client, monkeypatch):
-    """트랜잭션 ABORTED가 SDK 기본 5회를 넘기면 ValueError가 올라온다.
+    """트랜잭션 재시도가 소진되면 store가 ReceiptStoreUnavailable을 올린다.
 
     이건 enqueue 실패와 다르게 **receipts 문서가 안 남은** 상황이므로 200으로
     삼키면 영수증이 조용히 사라진다. 재전송을 받아야 맞다. 다만 스택 트레이스
@@ -189,7 +190,7 @@ def test_firestore_contention_returns_503_not_500(client, monkeypatch):
     audit = []
 
     def boom(**kwargs):
-        raise ValueError("Failed to commit transaction in 5 attempts.")
+        raise ReceiptStoreUnavailable("Failed to commit transaction in 5 attempts.")
 
     monkeypatch.setattr(routes, "create_receipt_if_absent", boom)
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit.append(kw))
@@ -197,6 +198,55 @@ def test_firestore_contention_returns_503_not_500(client, monkeypatch):
     response = _post(client, _file_message(["F_AAA"]))
     assert response.status_code == 503
     assert any(a["action"] == "RECEIPT_INGEST_FAILED" for a in audit)
+
+
+def test_unrelated_value_error_is_not_masked_as_503(client, monkeypatch):
+    """503은 저장 실패 전용이다. 무관한 ValueError를 같이 삼키면 진짜 버그가
+    '일시적 저장 장애'로 위장돼 조사에서 빠진다."""
+
+    def boom(**kwargs):
+        raise ValueError("응답 파싱 실패 — 저장과 무관한 버그")
+
+    monkeypatch.setattr(routes, "create_receipt_if_absent", boom)
+
+    with pytest.raises(ValueError, match="저장과 무관한 버그"):
+        _post(client, _file_message(["F_AAA"]))
+
+
+def test_file_count_over_cap_is_deferred_not_dropped(client):
+    """상한 초과분을 버리면 영수증이 조용히 사라진다. ack는 즉시 주고 처리 못 한
+    file_id를 감사 로그에 남긴다 — 나중에 복구할 수 있어야 한다."""
+    file_ids = [f"F_{i}" for i in range(routes.MAX_FILES_PER_EVENT + 3)]
+    response = _post(client, _file_message(file_ids))
+
+    assert response.status_code == 200
+    assert len(client.calls["created"]) == routes.MAX_FILES_PER_EVENT
+    assert response.json()["receipt_ids"] == [
+        f"rct_F_{i}" for i in range(routes.MAX_FILES_PER_EVENT)
+    ]
+
+
+def test_deferred_file_ids_are_recorded_in_audit_log(client, monkeypatch):
+    audit = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit.append(kw))
+
+    file_ids = [f"F_{i}" for i in range(routes.MAX_FILES_PER_EVENT + 3)]
+    _post(client, _file_message(file_ids))
+
+    deferred = [a for a in audit if a["action"] == "RECEIPT_INGEST_DEFERRED"]
+    assert len(deferred) == 1
+    assert deferred[0]["after"]["deferred_slack_file_ids"] == [
+        f"F_{i}" for i in range(routes.MAX_FILES_PER_EVENT, routes.MAX_FILES_PER_EVENT + 3)
+    ]
+
+
+def test_file_count_at_cap_is_fully_processed(client):
+    """경계값 — 상한과 같으면 전부 처리하고 유예 로그를 남기지 않는다."""
+    file_ids = [f"F_{i}" for i in range(routes.MAX_FILES_PER_EVENT)]
+    response = _post(client, _file_message(file_ids))
+
+    assert response.status_code == 200
+    assert len(client.calls["created"]) == routes.MAX_FILES_PER_EVENT
 
 
 def test_round_trip_stays_within_slack_budget(client, monkeypatch):
