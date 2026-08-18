@@ -1,0 +1,101 @@
+"""schema-contract.md §10 — POST /slack/events (A 소유).
+
+architecture.md §비동기: 서명검증 → Firestore raw 저장 → enqueue → 200, 목표 0.5s.
+**3초 안에 200을 돌려주는 게 이 라우트의 유일한 성능 요구다.** 파일 다운로드,
+GCS 업로드, Gemini 호출은 전부 파싱 태스크 몫이다 — 여기서 하면 3초를 넘긴다.
+
+Slack은 ack가 늦으면 같은 이벤트를 최대 3회 재전송한다. dedup은 store.py가
+slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 한다 — 파싱 태스크는
+같은 receipt_id를 덮어쓰므로 멱등이고, 앞 요청이 enqueue 직전에 죽었을 수 있다.
+"""
+
+from fastapi import APIRouter, HTTPException, Request
+
+from ..guards.audit import record_audit_log
+from .enqueue import QueueNotConfigured, enqueue_parse_receipt
+from .signature import SignatureError, verify_slack_signature
+from .store import create_receipt_if_absent, find_recipient_by_slack_user
+
+router = APIRouter()
+
+_IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/heic", "image/webp"}
+
+
+@router.post("/slack/events")
+async def slack_events(request: Request):
+    # 서명은 raw body 기준이다. request.json()을 먼저 부르면 안 된다.
+    raw_body = await request.body()
+    try:
+        verify_slack_signature(
+            raw_body,
+            request.headers.get("X-Slack-Request-Timestamp", ""),
+            request.headers.get("X-Slack-Signature", ""),
+        )
+    except SignatureError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    payload = await request.json()
+
+    # 앱 설정에서 Event Subscriptions URL을 등록할 때 오는 핸드셰이크.
+    # 이걸 에코하지 않으면 Slack 앱 등록 자체가 안 된다.
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge")}
+
+    event = payload.get("event", {})
+    if event.get("type") != "message" or event.get("bot_id"):
+        return {"status": "ignored"}
+
+    files = [f for f in event.get("files", []) if f.get("mimetype") in _IMAGE_MIMETYPES]
+    if not files:
+        return {"status": "ignored"}
+
+    recipient = find_recipient_by_slack_user(event.get("user", ""))
+    if recipient is None:
+        # 조용히 버리지 않는다. 안내 DM은 재촉 루프(범위 밖)가 붙을 때 함께 단다.
+        record_audit_log(
+            actor="api/src/ingest",
+            action="RECEIPT_INGEST_SKIPPED",
+            reason=f"unregistered slack_user_id: {event.get('user')}",
+        )
+        return {"status": "ignored", "reason": "unregistered_user"}
+
+    received = []
+    for slack_file in files:
+        try:
+            receipt_id, created = create_receipt_if_absent(
+                recipient_id=recipient["recipient_id"],
+                slack_file_id=slack_file["id"],
+                slack_channel_id=event["channel"],
+                slack_message_ts=event["ts"],
+            )
+        except ValueError as e:
+            # 트랜잭션 ABORTED가 SDK 재시도 상한(기본 5회)을 넘긴 경우.
+            # enqueue 실패와 달리 receipts 문서가 남지 않았으므로 200으로 삼키면
+            # 영수증이 조용히 사라진다. Slack 재전송을 받아야 맞다 — 다만 스택
+            # 트레이스 500이 아니라 명시적 503으로 남긴다.
+            record_audit_log(
+                actor="api/src/ingest",
+                action="RECEIPT_INGEST_FAILED",
+                reason=f"firestore transaction failed: {e}",
+            )
+            raise HTTPException(status_code=503, detail="receipt store unavailable")
+        if created:
+            record_audit_log(
+                actor="api/src/ingest",
+                action="RECEIPT_RECEIVED",
+                after={"receipt_id": receipt_id, "status": "RECEIVED"},
+            )
+        try:
+            enqueue_parse_receipt(receipt_id)
+        except QueueNotConfigured as e:
+            # 3초 ack가 우선이다. 여기서 500을 내면 Slack이 재전송하는데 큐는
+            # 여전히 없다. 문서는 남았으니 수동 재개가 가능하다.
+            record_audit_log(
+                actor="api/src/ingest",
+                action="PARSE_ENQUEUE_FAILED",
+                reason=str(e),
+                after={"receipt_id": receipt_id},
+            )
+        received.append(receipt_id)
+
+    return {"status": "ok", "receipt_ids": received}

@@ -6,6 +6,7 @@ load_dotenv()
 from .guards.agent_drafts import router as agent_drafts_router  # noqa: E402  (load_dotenv 이후 import)
 from .guards.oidc import verify_oidc  # noqa: E402
 from .guards.routes import router as guards_router  # noqa: E402
+from .ingest.routes import router as ingest_router  # noqa: E402
 from .payouts.routes import router as payouts_router  # noqa: E402
 from .settlements.routes import router as settlements_router  # noqa: E402
 
@@ -14,6 +15,7 @@ app.include_router(guards_router)
 app.include_router(payouts_router)
 app.include_router(agent_drafts_router)
 app.include_router(settlements_router)
+app.include_router(ingest_router)
 
 
 @app.get("/")
