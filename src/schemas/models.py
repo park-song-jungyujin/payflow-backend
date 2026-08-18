@@ -61,17 +61,23 @@ class VerificationSignals(BaseModel):
 class Receipt(BaseModel):
     receipt_id: str
     recipient_id: str
-    image_gcs_uri: str
-    raw_text_gcs_uri: str
+    # image_gcs_uri · raw_text_gcs_uri · currency · category_source · parse_signals는
+    # 전부 파싱 파이프라인이 채운다. RECEIVED(Slack 인입 완료, 파싱 전) 상태에서는
+    # 없다 — 필수로 두면 그 상태의 문서를 애초에 만들 수 없다.
+    image_gcs_uri: str | None = None
+    raw_text_gcs_uri: str | None = None
+    # slack_file_id가 Slack 재전송 dedup 키다. slack_channel_id + slack_message_ts
+    # 조합은 키가 못 된다 — 한 메시지에 이미지를 여러 장 붙이면 ts가 같다.
+    slack_file_id: str | None = None
     slack_channel_id: str | None = None
     slack_message_ts: str | None = None
     merchant_name: str | None = None
     transaction_date: date | None = None
     parsed_amount_minor: int | None = None
-    currency: str
+    currency: str | None = None
     account_category_code: AccountCategory | None = None
-    category_source: CategorySource
-    parse_signals: ParseSignals
+    category_source: CategorySource | None = None
+    parse_signals: ParseSignals | None = None
     llm_confidence: float | None = None
     verified_at: datetime | None = None
     verification_signals: VerificationSignals | None = None
@@ -86,7 +92,9 @@ class ClaimRequest(BaseModel):
     # MISSING_CLAIM · UNPAID_NOTICE는 특정 영수증에서 출발하지 않는다.
     receipt_id: str | None = None
     reason: ReminderReason
-    slack_dm_ts: str
+    # 값은 chat.postMessage 응답에서 나온다. 문서를 먼저 만들어 멱등키를 확보하고
+    # DM을 보낸 뒤 채운다 — 필수면 재시도 때 같은 DM이 두 번 나간다.
+    slack_dm_ts: str | None = None
     reminded_at: datetime | None = None
     expires_at: datetime
     status: ClaimRequestStatus
