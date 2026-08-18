@@ -3,12 +3,24 @@
 # secretAccessor를 부여하는 바인딩이 없다 — 그게 증명이다.
 
 # --- Firestore ---
-# agent는 Firestore를 직접 안 쓴다 (architecture.md: api가 제공하는 툴을 통해서만).
-# 그래서 datastore.user는 api SA에만 부여한다.
+# agent는 Firestore를 원칙적으로 직접 안 쓴다 (architecture.md: api가 제공하는 툴을
+# 통해서만). 그래서 datastore.user는 기본적으로 api SA에만 부여한다.
 resource "google_project_iam_member" "api_datastore" {
   project = var.project_id
   role    = "roles/datastore.user"
   member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+# 예외 하나 — agent_sessions 컬렉션(청구자·집행자 세션 이어가기, shared/memory.py).
+# schema-contract.md §2 "IAM 한계": Firestore Admin SDK는 Security Rules를 우회하므로
+# 이 권한은 컬렉션 단위로 못 좁힌다 — agent SA는 기술적으로 다른 컬렉션도 읽고 쓸 수
+# 있게 된다. "agent_sessions만 쓴다"는 코드 컨벤션과 리뷰로 지키는 경계이지 IAM이
+# 강제하는 경계가 아니다. 배포 순서: 이 바인딩 apply → agent 배포 (역순이면 agent가
+# PermissionDenied로 즉시 실패한다 — 조용한 실패는 없다).
+resource "google_project_iam_member" "agent_datastore" {
+  project = var.project_id
+  role    = "roles/datastore.user"
+  member  = "serviceAccount:${google_service_account.agent.email}"
 }
 
 # --- Vertex AI ---
