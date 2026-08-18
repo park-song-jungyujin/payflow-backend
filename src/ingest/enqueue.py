@@ -1,22 +1,19 @@
-"""schema-contract.md §10 — 파싱 태스크 enqueue 경계 (A 소유).
+"""schema-contract.md §10 — 파싱 태스크 enqueue (A 소유).
 
-**아직 큐에 넣지 않는다.** payouts/tasks_queue.py는 /tasks/execute-payout URL이
-박혀 있고 C 소유라 고칠 수 없어서, C에게 enqueue_task(path, payload) 형태로
-일반화해 src/shared/로 빼달라고 요청해 둔 상태다. 도착하면 이 파일의 함수 본문만
-그 호출로 바꾼다 — 라우트와 테스트는 손대지 않는다.
+실제 큐잉은 `guards/tasks.py`의 `enqueue_task(path, payload)`가 한다(C 소유,
+읽기만 한다). 이 모듈은 경로와 페이로드 형태만 고정하는 얇은 층이다 —
+`/tasks/parse-receipt`의 본문 계약이 `{"receipt_id": ...}` 하나라는 걸
+호출부 여러 곳에 흩어놓지 않기 위해서다.
 
-그때까지는 QueueNotConfigured를 던진다. 라우트가 이 예외를 잡아 200으로 ack하고
-감사 로그를 남기므로, 큐가 없다고 Slack 재전송을 유발하지는 않는다. receipts
-문서는 이미 남아 있어 수동 재개가 가능하다.
+`QueueNotConfigured`를 그대로 다시 export한다. 라우트가 이 예외를 잡아 200으로
+ack하므로(큐가 없어도 receipts 문서는 남아 수동 재개가 가능하다), 호출부가
+guards를 직접 import하지 않고도 잡을 수 있어야 한다.
 """
 
+from ..guards.tasks import QueueNotConfigured, enqueue_task
 
-class QueueNotConfigured(RuntimeError):
-    pass
+__all__ = ["QueueNotConfigured", "enqueue_parse_receipt"]
 
 
 def enqueue_parse_receipt(receipt_id: str) -> None:
-    raise QueueNotConfigured(
-        "공용 enqueue 모듈(src/shared/) 미도착 — POST /tasks/parse-receipt를 "
-        f"직접 호출해 시뮬레이션한다. receipt_id={receipt_id}"
-    )
+    enqueue_task("/tasks/parse-receipt", {"receipt_id": receipt_id})
