@@ -964,6 +964,26 @@ def test_queue_not_configured_still_acks(client, monkeypatch):
     assert len(client.calls["created"]) == 1
 
 
+def test_firestore_contention_returns_503_not_500(client, monkeypatch):
+    """트랜잭션 ABORTED가 SDK 기본 5회를 넘기면 ValueError가 올라온다.
+
+    이건 enqueue 실패와 다르게 **receipts 문서가 안 남은** 상황이므로 200으로
+    삼키면 영수증이 조용히 사라진다. 재전송을 받아야 맞다. 다만 스택 트레이스
+    500이 아니라 명시적 503 + 감사 로그로 남긴다 — 원인 추적이 가능해야 한다.
+    """
+    audit = []
+
+    def boom(**kwargs):
+        raise ValueError("Failed to commit transaction in 5 attempts.")
+
+    monkeypatch.setattr(routes, "create_receipt_if_absent", boom)
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit.append(kw))
+
+    response = _post(client, _file_message(["F_AAA"]))
+    assert response.status_code == 503
+    assert any(a["action"] == "RECEIPT_INGEST_FAILED" for a in audit)
+
+
 def test_round_trip_stays_within_slack_budget(client, monkeypatch):
     """서명검증 → Firestore 쓰기 → enqueue 왕복이 3초 안이어야 한다.
 
@@ -1074,12 +1094,24 @@ async def slack_events(request: Request):
 
     received = []
     for slack_file in files:
-        receipt_id, created = create_receipt_if_absent(
-            recipient_id=recipient["recipient_id"],
-            slack_file_id=slack_file["id"],
-            slack_channel_id=event["channel"],
-            slack_message_ts=event["ts"],
-        )
+        try:
+            receipt_id, created = create_receipt_if_absent(
+                recipient_id=recipient["recipient_id"],
+                slack_file_id=slack_file["id"],
+                slack_channel_id=event["channel"],
+                slack_message_ts=event["ts"],
+            )
+        except ValueError as e:
+            # 트랜잭션 ABORTED가 SDK 재시도 상한(기본 5회)을 넘긴 경우.
+            # enqueue 실패와 달리 receipts 문서가 남지 않았으므로 200으로 삼키면
+            # 영수증이 조용히 사라진다. Slack 재전송을 받아야 맞다 — 다만 스택
+            # 트레이스 500이 아니라 명시적 503으로 남긴다.
+            record_audit_log(
+                actor="api/src/ingest",
+                action="RECEIPT_INGEST_FAILED",
+                reason=f"firestore transaction failed: {e}",
+            )
+            raise HTTPException(status_code=503, detail="receipt store unavailable")
         if created:
             record_audit_log(
                 actor="api/src/ingest",
@@ -1243,6 +1275,8 @@ EOF
 
 | 항목 | 언제 |
 |---|---|
+| **`receipts.slack_file_id` 인덱스 실측** — 단일 필드라 Firestore 자동 인덱스로 커버되지만, 자동 인덱싱이 꺼져 있거나 예외 목록에 있으면 조회가 항상 0건을 돌려주고 **dedup이 조용히 무력화된다**. 실제 development DB에 재전송 시나리오를 한 번 돌려 확인해야 한다 | 배포 전 (필수) |
+| **fake 테스트는 원자성을 검증하지 못한다** — `FakeTransaction.set`은 즉시 반영되고 락·ABORTED·재시도가 없다. 검사와 쓰기를 트랜잭션 밖으로 꺼내도 6건이 똑같이 통과한다. 계약 준수는 테스트가 아니라 **리뷰**가 게이트다 | 리뷰 시 상시 |
 | 실제 Cloud Tasks enqueue — C의 `src/shared/enqueue_task(path, payload)` 대기 | C 응답 후 |
 | `claim_requests.settlement_run_id` — `UNPAID_NOTICE`가 어느 배치 결과인지 담을 자리가 없다 | 지급 결과 통지 |
 | `AgentSession` / `Turn` 모델 — docs §2에 `agent_sessions`가 있는데 코드에 모델이 없다 | agent 세션 작업 |
