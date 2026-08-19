@@ -12,6 +12,7 @@
 """
 
 import os
+import re
 
 import requests as http_requests
 from pydantic import BaseModel
@@ -26,6 +27,10 @@ _EXT_BY_MIMETYPE = {
     "image/heic": "heic",
     "image/webp": "webp",
 }
+
+# ext는 나중에 objects storage 키 images/{receipt_id}.{ext}가 된다. Slack이 주는
+# filetype은 업로더가 정하는 신뢰할 수 없는 입력이라 화이트리스트로 검증한다.
+_SAFE_EXT = re.compile(r"^[a-z0-9]{1,8}$")
 
 
 class TransientParseError(RuntimeError):
@@ -63,7 +68,12 @@ def download_slack_file(slack_file_id: str) -> SlackFile:
     if info.status_code in _RETRYABLE_STATUS:
         raise TransientParseError(f"files.info returned {info.status_code}")
 
-    body = info.json()
+    try:
+        body = info.json()
+    except ValueError as e:
+        # 인프라(게이트웨이/프록시)가 뱉는 비-JSON 응답이지 이 영수증의 속성이 아니다.
+        raise TransientParseError(f"files.info returned non-JSON body: {e}") from e
+
     if not body.get("ok"):
         raise PermanentParseError(f"files.info error: {body.get('error')}")
 
@@ -88,9 +98,12 @@ def download_slack_file(slack_file_id: str) -> SlackFile:
     if not content_type.startswith("image/"):
         raise PermanentParseError(f"expected image, got Content-Type={content_type!r}")
 
-    mimetype = content_type
+    fallback_ext = slack_file.get("filetype") or "bin"
+    if not _SAFE_EXT.match(fallback_ext):
+        fallback_ext = "bin"
+
     return SlackFile(
         data=response.content,
-        mimetype=mimetype,
-        ext=_EXT_BY_MIMETYPE.get(mimetype, slack_file.get("filetype") or "bin"),
+        mimetype=content_type,
+        ext=_EXT_BY_MIMETYPE.get(content_type, fallback_ext),
     )

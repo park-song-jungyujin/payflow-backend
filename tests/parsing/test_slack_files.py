@@ -105,3 +105,72 @@ def test_missing_bot_token_is_transient(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     with pytest.raises(TransientParseError):
         slack_files.download_slack_file("F01ABCDEF")
+
+
+class RaisingJsonResponse:
+    """`.json()`이 예외를 던지는 가짜 응답 — 게이트웨이/프록시의 비-JSON 오류 페이지를 흉내낸다."""
+
+    def __init__(self, status_code=200):
+        self.status_code = status_code
+        self.content = b""
+        self.headers = {}
+
+    def json(self):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+def test_files_info_retryable_status_is_transient(monkeypatch, status):
+    """files.info 자체가 재시도 대상 상태 코드를 주는 경로."""
+    _wire(monkeypatch, FakeResponse(status_code=status))
+    with pytest.raises(TransientParseError):
+        slack_files.download_slack_file("F01ABCDEF")
+
+
+def test_files_info_non_json_body_is_transient(monkeypatch):
+    """F1: files.info가 200 + 비-JSON 본문을 주면 인프라 이상이지 영수증 속성이 아니다."""
+    _wire(monkeypatch, RaisingJsonResponse())
+    with pytest.raises(TransientParseError):
+        slack_files.download_slack_file("F01ABCDEF")
+
+
+def test_files_info_non_retryable_error_is_permanent(monkeypatch):
+    """403/404처럼 재시도 대상이 아닌 상태 코드 + ok:false JSON 본문은 영구 실패다."""
+    _wire(
+        monkeypatch,
+        FakeResponse(status_code=404, json_body={"ok": False, "error": "file_not_found"}),
+    )
+    with pytest.raises(PermanentParseError):
+        slack_files.download_slack_file("F01ABCDEF")
+
+
+def test_missing_url_private_is_permanent(monkeypatch):
+    info = FakeResponse(json_body={"ok": True, "file": {"mimetype": "image/jpeg", "filetype": "jpg"}})
+    _wire(monkeypatch, info)
+    with pytest.raises(PermanentParseError):
+        slack_files.download_slack_file("F01ABCDEF")
+
+
+def test_unknown_mimetype_falls_back_to_safe_filetype(monkeypatch):
+    """알려진 4개 mimetype 밖이면 filetype 폴백을 쓰되, 안전한 값만 통과시킨다."""
+    info = _ok_info(mimetype="image/gif")
+    _wire(monkeypatch, info, FakeResponse(content=b"gifbytes", headers={"Content-Type": "image/gif"}))
+    result = slack_files.download_slack_file("F01ABCDEF")
+    assert result.ext == "jpg"  # _ok_info의 filetype 기본값
+
+
+def test_unsafe_filetype_falls_back_to_bin(monkeypatch):
+    """F2: filetype이 경로 구분자 등 위험한 값이면 storage 키를 보호하기 위해 bin으로 떨어뜨린다."""
+    info = FakeResponse(
+        json_body={
+            "ok": True,
+            "file": {
+                "url_private": "https://files.slack.com/priv/F1/receipt",
+                "mimetype": "image/gif",
+                "filetype": "../../etc/passwd",
+            },
+        }
+    )
+    _wire(monkeypatch, info, FakeResponse(content=b"gifbytes", headers={"Content-Type": "image/gif"}))
+    result = slack_files.download_slack_file("F01ABCDEF")
+    assert result.ext == "bin"
