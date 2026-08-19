@@ -39,7 +39,15 @@ resource "google_cloud_run_v2_service" "web" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [google_project_service.apis]
@@ -105,7 +113,15 @@ resource "google_cloud_run_v2_service" "api" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [
@@ -156,7 +172,15 @@ resource "google_cloud_run_v2_service" "agent" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [google_project_service.apis]
