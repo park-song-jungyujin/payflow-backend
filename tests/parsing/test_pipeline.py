@@ -131,7 +131,11 @@ def test_amount_is_integer_minor_unit(monkeypatch, wired):
 
 # --- ★ 불변식 1: 마스킹이 Firestore 쓰기보다 앞 ---
 
-def test_merchant_name_is_masked_before_firestore_write(monkeypatch, wired):
+def test_merchant_name_is_masked_in_firestore_write(monkeypatch, wired):
+    """이 테스트는 최종 값만 본다(updates[-1]) — "먼저 raw로 쓰고 masked로
+    덮어쓴다"는 구현도 단독으로는 통과한다. 순서 보증(마스킹이 쓰기보다 앞)은
+    아래 test_no_unmasked_value_appears_in_any_firestore_write가 전체 쓰기를
+    훑어서 담당한다."""
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
     pipeline.parse_receipt("rct_1")
 
@@ -225,6 +229,19 @@ def test_permanent_failure_writes_failed(monkeypatch, wired):
     assert updates["status"] == "FAILED"
 
 
+def test_missing_slack_file_id_writes_failed_without_calling_parser(monkeypatch, wired):
+    """F1 회귀 — slack_file_id는 계약상 nullable이다(Slack 외 경로로 만들어진
+    영수증). 대괄호로 읽으면 KeyError가 밖으로 새 나가 영수증이 RECEIVED에
+    영원히 남는다."""
+    wired["receipts"]["rct_1"].pop("slack_file_id")
+    parser = _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    assert pipeline.parse_receipt("rct_1") == "FAILED"
+    assert parser.calls == []
+    _, updates = wired["updates"][-1]
+    assert updates["status"] == "FAILED"
+
+
 # --- ★ 불변식 3: 일시적 실패는 상태를 안 바꾼다 ---
 
 def test_transient_failure_leaves_status_untouched(monkeypatch, wired):
@@ -281,6 +298,23 @@ def test_enqueue_failure_does_not_undo_parsed(monkeypatch, wired):
 
     def boom(receipt_id):
         raise QueueNotConfigured("CLOUD_TASKS_QUEUE not configured")
+
+    monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    assert wired["receipts"]["rct_1"]["status"] == "PARSED"
+    assert any(entry["action"] == "CLAIMANT_ENQUEUE_FAILED" for entry in wired["audit"])
+
+
+def test_enqueue_failure_other_than_queue_not_configured_does_not_undo_parsed(monkeypatch, wired):
+    """F2 회귀 — 큐가 설정된 상태에서도 enqueue_task는 os.environ 대괄호 접근
+    (KeyError)이나 Cloud Tasks 네트워크 호출(Google API 예외)로 던질 수 있다.
+    QueueNotConfigured만 잡으면 이런 실패가 500으로 새 나가고, 재시도해도
+    status != RECEIVED라 SKIPPED로 빠져 청구자 에이전트 호출이 영영 사라진다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    def boom(receipt_id):
+        raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)
 
