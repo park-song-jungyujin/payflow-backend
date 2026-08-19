@@ -40,8 +40,11 @@ class ParsedReceipt(BaseModel):
 def amount_to_minor(amount_text: str | None, currency: str | None) -> int | None:
     """영수증에 찍힌 문자열 → minor unit 정수. float를 거치지 않는다.
 
-    미등록 통화는 None을 돌려준다. §4대로 기본 지수 2로 추측하지 않는다 —
-    다만 여기서는 예외를 던지지 않는다. 파싱은 "못 읽었다"를 amount_parsed=False로
+    미등록 통화는 None을 돌려준다. §4대로 기본 지수 2로 추측하지 않는다.
+    판독 불가(NaN/Infinity/정밀도 초과/지수표기), 지수 0 통화의 소수점(KRW·JPY에
+    `.`이 나오면 천단위 구분자 오독이나 OCR 오류이지 소수점일 수 없다 — 추측해서
+    자르지 않고 못 읽은 것으로 떨어뜨린다), 음수(정상 영수증에 음수 금액은 없다)는
+    전부 None이다. 예외를 던지지 않는다 — 파싱은 "못 읽었다"를 amount_parsed=False로
     표현할 자리가 있고, 그게 1단계 게이트로 이어지는 정상 경로다.
     """
     if not amount_text or not currency:
@@ -49,9 +52,14 @@ def amount_to_minor(amount_text: str | None, currency: str | None) -> int | None
     exponent = CURRENCY_EXPONENT.get(currency)
     if exponent is None:
         return None
-    try:
-        value = Decimal(amount_text.translate(_AMOUNT_NOISE))
-    except InvalidOperation:
+    cleaned = amount_text.translate(_AMOUNT_NOISE)
+    if exponent == 0 and "." in cleaned:
         return None
-    scaled = value * (Decimal(10) ** exponent)
-    return int(scaled.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    try:
+        value = Decimal(cleaned)
+        if not value.is_finite() or value < 0:
+            return None
+        scaled = value * (Decimal(10) ** exponent)
+        return int(scaled.quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    except (InvalidOperation, ValueError, OverflowError):
+        return None

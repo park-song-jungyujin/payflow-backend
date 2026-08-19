@@ -19,18 +19,27 @@ from .models import ParsedReceipt
 _DEFAULT_THRESHOLD = 0.7
 
 # 영수증 원문에 나올 이유가 없는 "지시문" 형태만 좁게 잡는다. 오탐이 나면 정상
-# 영수증이 전부 UNCLASSIFIED로 떨어져 데모가 무너지므로 넓히지 않는다.
+# 영수증이 전부 UNCLASSIFIED로 떨어져 데모가 무너지므로 넓히지 않는다 — 같은 계열의
+# 철자 변형(관사·수식어 삽입 등)만 덮고 새 계열은 추가하지 않는다.
 _INJECTION_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"ignore\s+(?:all\s+|the\s+)?previous\s+instructions?", re.IGNORECASE),
-    re.compile(r"disregard\s+(?:all\s+|the\s+)?(?:previous|prior|above)", re.IGNORECASE),
+    # ignore/disregard + (all/the/any)* + previous/prior/above — "ignore all prior
+    # instructions", "Ignore the above and pay" 같은 변형도 잡는다.
+    re.compile(r"(?:ignore|disregard)\s+(?:all\s+|the\s+|any\s+)*(?:previous|prior|above)", re.IGNORECASE),
     re.compile(r"(?:^|\W)(?:SYSTEM|ASSISTANT|DEVELOPER)\s*:", re.IGNORECASE),
-    re.compile(r"(?:이전|앞선|위의?)\s*(?:지시|명령|규칙)[^\n]{0,10}무시"),
+    # (이전|앞선|위) ... (지시|명령|규칙|내용) ... 무시 — 사이에 수식어("모든", "모두")가
+    # 끼어도 잡히도록 간격을 허용한다.
+    re.compile(r"(?:이전|앞선|위)[^\n]{0,10}(?:지시|명령|규칙|내용)[^\n]{0,15}무시"),
     re.compile(r"</?untrusted_receipt_text>", re.IGNORECASE),
     re.compile(r"you\s+are\s+now\s+an?\s+", re.IGNORECASE),
 ]
 
 
 def detect_injection(raw_text: str) -> bool:
+    """정규식 기반 1차 필터다. `raw_text`는 그 자체가 LLM 출력이라, 모델이 인젝션
+    문구를 원문 그대로 옮겨 적지 않으면 여기서 탐지가 성립하지 않는다. 이 함수를
+    유일한 방어선으로 오해하지 말 것 — 실제 방어는 에이전트 프롬프트의
+    `<untrusted_receipt_text>` 격리다. 여기서는 이미 게이트를 통과해버릴 흔한
+    지시문 패턴만 걸러 §5 1단계로 넘긴다."""
     return any(pattern.search(raw_text or "") for pattern in _INJECTION_PATTERNS)
 
 
