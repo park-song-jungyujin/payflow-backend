@@ -29,6 +29,12 @@ resource "google_cloud_run_v2_service" "web" {
     }
     containers {
       image = var.placeholder_image
+      env {
+        # agent와 같은 이유로 상수 고정(var.api_oidc_audience) — 자기 자신의 .uri를
+        # 참조하면 순환 참조가 난다. web의 승인 프록시(route.ts)가 이 값으로 api를 부른다.
+        name  = "API_BASE_URL"
+        value = var.api_oidc_audience
+      }
     }
   }
 
