@@ -19,6 +19,10 @@ output "api_service_account" {
   value = google_service_account.api.email
 }
 
+output "receipts_bucket" {
+  value = google_storage_bucket.receipts.name
+}
+
 output "cloud_tasks_queue" {
   value = google_cloud_tasks_queue.payflow_tasks.name
 }
@@ -30,4 +34,13 @@ output "ci_workload_identity_provider" {
 
 output "ci_deployer_service_account" {
   value = google_service_account.deployer.email
+}
+
+output "ci_web_workload_identity_provider" {
+  value       = google_iam_workload_identity_pool_provider.github_frontend.name
+  description = "payflow-frontend GitHub Actions 워크플로 `workload_identity_provider` 입력값."
+}
+
+output "ci_web_deployer_service_account" {
+  value = google_service_account.web_deployer.email
 }

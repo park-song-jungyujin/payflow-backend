@@ -29,11 +29,25 @@ resource "google_cloud_run_v2_service" "web" {
     }
     containers {
       image = var.placeholder_image
+      env {
+        # agent와 같은 이유로 상수 고정(var.api_oidc_audience) — 자기 자신의 .uri를
+        # 참조하면 순환 참조가 난다. web의 승인 프록시(route.ts)가 이 값으로 api를 부른다.
+        name  = "API_BASE_URL"
+        value = var.api_oidc_audience
+      }
     }
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [google_project_service.apis]
@@ -79,6 +93,10 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "TASKS_SERVICE_ACCOUNT_EMAIL"
         value = google_service_account.api.email
       }
+      env {
+        name  = "GCS_RECEIPTS_BUCKET"
+        value = google_storage_bucket.receipts.name
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {
@@ -95,7 +113,15 @@ resource "google_cloud_run_v2_service" "api" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [
@@ -146,7 +172,15 @@ resource "google_cloud_run_v2_service" "agent" {
   }
 
   lifecycle {
-    ignore_changes = [template[0].containers[0].image]
+    # client/client_version/build_config/scaling(top-level)은 `gcloud run deploy`가
+    # 배포마다 찍는 필드라 Terraform 선언과 항상 어긋난다 — 무시한다.
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version,
+      build_config,
+      scaling,
+    ]
   }
 
   depends_on = [google_project_service.apis]
