@@ -29,6 +29,15 @@ def get_settlement_run(run_id: str) -> dict | None:
     return doc.to_dict() if doc.exists else None
 
 
+def list_settlement_runs() -> list[dict]:
+    docs = get_client().collection("settlement_runs").stream()
+    return [d.to_dict() for d in docs]
+
+
+def create_settlement_run(run_id: str, doc: dict) -> None:
+    get_client().collection("settlement_runs").document(run_id).set(doc)
+
+
 def update_settlement_run(run_id: str, updates: dict) -> None:
     get_client().collection("settlement_runs").document(run_id).update(updates)
 
