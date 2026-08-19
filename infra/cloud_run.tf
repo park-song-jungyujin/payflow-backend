@@ -79,6 +79,10 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "TASKS_SERVICE_ACCOUNT_EMAIL"
         value = google_service_account.api.email
       }
+      env {
+        name  = "GCS_RECEIPTS_BUCKET"
+        value = google_storage_bucket.receipts.name
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {

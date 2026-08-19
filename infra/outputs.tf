@@ -19,6 +19,10 @@ output "api_service_account" {
   value = google_service_account.api.email
 }
 
+output "receipts_bucket" {
+  value = google_storage_bucket.receipts.name
+}
+
 output "cloud_tasks_queue" {
   value = google_cloud_tasks_queue.payflow_tasks.name
 }
