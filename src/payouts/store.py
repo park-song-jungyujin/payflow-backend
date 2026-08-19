@@ -66,6 +66,27 @@ def get_claims_for_run(run_id: str) -> list[dict]:
     return [d.to_dict() for d in docs]
 
 
+def list_confirmed_claims() -> list[dict]:
+    """TEMP(B): 매칭 후보 조회. status=CONFIRMED이고 아직 배치에 안 묶인 것 전체.
+    PayPal 원장 대조는 하지 않는다 — 필터링만 한다. src/matching/이 실제 매칭으로
+    교체되면 이 함수를 대체하거나 그 안에서만 쓰게 된다."""
+    docs = get_client().collection("claims").where(
+        filter=FieldFilter("status", "==", "CONFIRMED")
+    ).where(
+        filter=FieldFilter("settlement_run_id", "==", None)
+    ).stream()
+    return [d.to_dict() for d in docs]
+
+
+def link_claims_to_run(run_id: str, claim_ids: list[str]) -> None:
+    """TEMP(B): 선택된 claims를 배치에 묶고 IN_RUN으로 전이."""
+    batch = get_client().batch()
+    col = get_client().collection("claims")
+    for cid in claim_ids:
+        batch.update(col.document(cid), {"settlement_run_id": run_id, "status": "IN_RUN"})
+    batch.commit()
+
+
 def update_claim(claim_id: str, updates: dict) -> None:
     get_client().collection("claims").document(claim_id).update(updates)
 
