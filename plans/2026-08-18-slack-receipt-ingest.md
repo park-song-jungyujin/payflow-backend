@@ -8,19 +8,26 @@
 
 **Tech Stack:** FastAPI, Firestore (`google-cloud-firestore`), Cloud Tasks (`google-cloud-tasks`), `python-ulid`, pytest + httpx.
 
-## 실행 순서와 게이트
+## 상태: 전 Task 완료 (2026-08-19)
+
+**이 계획은 끝났다.** 브랜치 `feat/slack-ingest`는 `main`에 머지 후 삭제했고,
+Task 6은 `main`에 직접 올렸다(`75d331a`) — 테스트 추가라 브랜치 게이트 대상이 아니고
+리뷰어가 부재였다. 아래 체크박스는 전부 실제 실행 기록이다.
 
 ```
-Task 1 ① docs 반영          ✅ 완료 — payflow-docs 88a6031
-Task 1 ② src/schemas 수정    ← 지금. schema: 커밋까지
-Task 1 ③ v0.4.0 태그 + 통보  ← 사용자가 직접. "시작" 신호를 준다
+Task 1 ① docs 반영          ✅ payflow-docs 88a6031
+Task 1 ② src/schemas 수정    ✅ 03549a2 (schema: 커밋)
+Task 1 ③ v0.4.0 태그 + 통보  ✅ 태그 v0.4.0. 이후 v0.5.0(receipt_dedup_keys)까지 진행
         ↓
-Task 2 → Task 3 → Task 5 → Task 6
-        ↑
-Task 4 는 보류 (아래 참조). Task 5는 Task 4 없이도 완결된다.
+Task 2 ✅ 2c0a61f (+ dacdb10 non-ASCII 헤더 500 수정)
+Task 3 ✅ 454c543 (+ 4897b5f Dockerfile 의존성)
+Task 4 ✅ 보류 해제 — 86d2142로 guards/tasks.py에 연결
+Task 5 ✅ 082ade4 (+ 88d6399 dedup·상한·예외 개정)
+Task 6 ✅ 75d331a
 ```
 
-**Task 2는 ③이 끝나고 "시작"이라는 말을 들은 뒤에 착수한다.** 그전에는 실행하지 않는다.
+**계획서 명세와 달라진 지점은 아래 "구현 후 개정"과 각 Task의 완료 주석에 남겼다.**
+Task 6 Step 5의 PR 생성은 하지 않았다 — 사유는 해당 Step 참조.
 
 ## 구현 후 개정 (2026-08-19)
 
@@ -144,7 +151,12 @@ import만 한다.
 | `tests/ingest/test_slack_events.py` (신규) | 라우트 통합 테스트 + 3초 예산 측정 | 5 |
 | `tests/test_openapi_snapshot.py` (신규) | §6 계약 스냅샷 | 6 |
 
-## Task 4 보류 — enqueue 일반화 요청
+## Task 4 ✅ 보류 해제 후 완료 — enqueue 일반화 요청
+
+> **완료(`86d2142`).** C가 `enqueue_task(path, payload)`로 일반화해 올린 위치는
+> `src/shared/`가 아니라 **`src/guards/tasks.py`**였다(`b381b4f`, PR #8).
+> `src/ingest/enqueue.py`는 그 위의 얇은 층으로 바뀌었고 `guards/`는 import만 한다.
+> 아래는 보류 당시의 기록이다.
 
 원래 계획은 `payouts/tasks_queue.py`(C 소유, `/tasks/execute-payout` URL이 박혀 있음)를 `src/ingest/tasks_queue.py`로 30줄 복제하는 것이었다. **보류한다.** C에게 `enqueue_task(path, payload)` 형태로 일반화해 `src/shared/`로 빼달라고 요청해 둔 상태고, 답이 오면 그 모듈을 쓴다.
 
@@ -164,7 +176,7 @@ payflow-docs `88a6031`을 Pydantic 모델에 옮긴다. 계약에 없는 것은 
 **Interfaces:**
 - Produces: `Receipt.slack_file_id: str | None`, `Receipt.image_gcs_uri | raw_text_gcs_uri | currency | category_source | parse_signals` 전부 nullable, `ClaimRequest.slack_dm_ts: str | None`
 
-- [ ] **Step 1: 브랜치를 판다**
+- [x] **Step 1: 브랜치를 판다**
 
 ```bash
 git checkout -b feat/slack-ingest
@@ -172,7 +184,7 @@ git checkout -b feat/slack-ingest
 
 `src/schemas/`는 공유 디렉터리다. 돈 경로는 아니지만 세 레포가 따라오는 변경이라 main에 직접 밀지 않는다.
 
-- [ ] **Step 2: `Receipt`를 고친다**
+- [x] **Step 2: `Receipt`를 고친다**
 
 `src/schemas/models.py`의 `Receipt`를 교체한다. 필드 순서는 docs §2 표 순서를 그대로 따른다.
 
@@ -204,7 +216,7 @@ class Receipt(BaseModel):
     updated_at: datetime
 ```
 
-- [ ] **Step 3: `ClaimRequest.slack_dm_ts`를 완화한다**
+- [x] **Step 3: `ClaimRequest.slack_dm_ts`를 완화한다**
 
 ```python
     slack_dm_ts: str | None = None
@@ -218,7 +230,7 @@ class Receipt(BaseModel):
     slack_dm_ts: str | None = None
 ```
 
-- [ ] **Step 4: 계약과 일치하는지 확인한다**
+- [x] **Step 4: 계약과 일치하는지 확인한다**
 
 임포트와 필드 구성을 확인한다. 테스트 하네스는 Task 2가 세우므로 여기서는 인터프리터로 본다.
 
@@ -241,7 +253,7 @@ print('ok')
 ```
 Expected: `ok`
 
-- [ ] **Step 5: 기존 fixture 8종이 그대로 통과하는지 확인한다**
+- [x] **Step 5: 기존 fixture 8종이 그대로 통과하는지 확인한다**
 
 전부 완화 방향이라 깨질 이유가 없지만, 확인 없이 넘어가지 않는다.
 
@@ -258,7 +270,7 @@ for path in sorted(pathlib.Path('tests/fixtures').glob('*.json')):
 ```
 Expected: 모든 fixture에 `ok`
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/schemas/models.py
@@ -304,7 +316,7 @@ EOF
 **Interfaces:**
 - Produces: `verify_slack_signature(raw_body: bytes, timestamp: str, signature: str) -> None`, `SignatureError`
 
-- [ ] **Step 1: 테스트 하네스를 세운다**
+- [x] **Step 1: 테스트 하네스를 세운다**
 
 `pyproject.toml`의 `dependencies` 리스트는 건드리지 않고, 파일 끝에 블록 두 개를 추가한다.
 
@@ -351,7 +363,7 @@ def pytest_addoption(parser):
 
 Run: `uv sync`
 
-- [ ] **Step 2: 실패하는 테스트를 쓴다**
+- [x] **Step 2: 실패하는 테스트를 쓴다**
 
 `tests/ingest/test_signature.py`:
 
@@ -413,12 +425,12 @@ def test_malformed_timestamp_fails():
         verify_slack_signature(b"{}", "not-a-number", "v0=deadbeef")
 ```
 
-- [ ] **Step 3: 테스트가 실패하는 걸 확인한다**
+- [x] **Step 3: 테스트가 실패하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/test_signature.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.ingest.signature'`
 
-- [ ] **Step 4: 구현한다**
+- [x] **Step 4: 구현한다**
 
 `src/ingest/signature.py`:
 
@@ -464,12 +476,12 @@ def verify_slack_signature(raw_body: bytes, timestamp: str, signature: str) -> N
         raise SignatureError("signature mismatch")
 ```
 
-- [ ] **Step 5: 테스트가 통과하는 걸 확인한다**
+- [x] **Step 5: 테스트가 통과하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/test_signature.py -v`
 Expected: PASS 6건
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add pyproject.toml uv.lock src/ingest/signature.py tests/
@@ -493,7 +505,7 @@ pytest·httpx 개발 의존성과 tests/conftest.py 하네스를 함께 세운�
 - Consumes: `src.payouts.store.get_client` (읽기만 — C 소유 파일을 수정하지 않는다)
 - Produces: `find_recipient_by_slack_user(slack_user_id: str) -> dict | None`, `create_receipt_if_absent(*, recipient_id: str, slack_file_id: str, slack_channel_id: str, slack_message_ts: str) -> tuple[str, bool]` — `(receipt_id, created)`. `created=False`면 Slack 재전송이다
 
-- [ ] **Step 1: 의존성을 추가한다**
+- [x] **Step 1: 의존성을 추가한다**
 
 `pyproject.toml`의 `dependencies` 마지막에 추가:
 
@@ -505,7 +517,7 @@ Run: `uv sync`
 
 레포에 ULID 생성기가 아직 없다 — A가 처음 도입한다. `schema-contract.md` §3이 ID 체계를 ULID로 못박고 있다.
 
-- [ ] **Step 2: 실패하는 테스트를 쓴다**
+- [x] **Step 2: 실패하는 테스트를 쓴다**
 
 `tests/ingest/test_store.py`:
 
@@ -672,12 +684,18 @@ def test_created_receipt_validates_against_contract(fake_client):
     Receipt.model_validate(fake_client.data["receipts"][receipt_id])
 ```
 
-- [ ] **Step 3: 테스트가 실패하는 걸 확인한다**
+- [x] **Step 3: 테스트가 실패하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/test_store.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.ingest.store'`
 
-- [ ] **Step 4: 구현한다**
+- [x] **Step 4: 구현한다**
+
+> **완료(`454c543`), 단 아래 코드 블록대로는 아니다.** 두 군데가 달라졌다 —
+> ① `client.run_transaction(fn)`은 `google-cloud-firestore` 2.28.1에 **없다.**
+> `guards/tokens.py`와 같은 `@firestore.transactional` + `client.transaction()` 형태로
+> `_run_in_transaction` 안에서만 고쳤다(테스트 seam은 유지). ② dedup은 아래의 쿼리가
+> 아니라 `receipt_dedup_keys/{slack_file_id}` 문서 조회다 — "구현 후 개정" 1번 참조.
 
 `src/ingest/store.py`:
 
@@ -773,12 +791,12 @@ def create_receipt_if_absent(
 
 `client.run_transaction(fn)`이 콜백 첫 인자로 transaction 객체를 넘긴다. 실제 Firestore에서 이 시그니처가 다르면 `@firestore.transactional` 데코레이터 형태로 바꾸되, `_run_in_transaction` **한 곳만** 고친다 — 테스트 seam이 거기다.
 
-- [ ] **Step 5: 테스트가 통과하는 걸 확인한다**
+- [x] **Step 5: 테스트가 통과하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/test_store.py -v`
 Expected: PASS 6건
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add pyproject.toml uv.lock src/ingest/store.py tests/ingest/test_store.py
@@ -804,9 +822,13 @@ ULID 생성기가 레포에 없어 python-ulid를 함께 도입한다."
 - Consumes: `verify_slack_signature`, `SignatureError` (Task 2) · `find_recipient_by_slack_user`, `create_receipt_if_absent` (Task 3) · `src.guards.audit.record_audit_log` (읽기)
 - Produces: `router` (APIRouter), `enqueue_parse_receipt(receipt_id: str) -> None`, `QueueNotConfigured`
 
-- [ ] **Step 1: enqueue 경계를 만든다**
+- [x] **Step 1: enqueue 경계를 만든다**
 
 Task 4가 보류이므로 자리표시자를 둔다. C의 `src/shared/enqueue_task(path, payload)`가 도착하면 본문만 바꾼다.
+
+> **완료. 자리표시자는 이미 교체됐다(`86d2142`).** 아래 코드 블록은 `082ade4` 시점의
+> 과도기 상태다. 현재 `src/ingest/enqueue.py`는 `guards/tasks.py`의 `enqueue_task`를
+> 호출하고 `QueueNotConfigured`를 re-export한다. 예고대로 라우트와 테스트는 손대지 않았다.
 
 `src/ingest/enqueue.py`:
 
@@ -835,7 +857,7 @@ def enqueue_parse_receipt(receipt_id: str) -> None:
     )
 ```
 
-- [ ] **Step 2: 실패하는 테스트를 쓴다**
+- [x] **Step 2: 실패하는 테스트를 쓴다**
 
 `tests/ingest/test_slack_events.py`:
 
@@ -1078,12 +1100,12 @@ def test_round_trip_stays_within_slack_budget(client, monkeypatch):
     assert elapsed - injected < 0.5, f"라우트 자체 오버헤드 과다: {elapsed - injected:.2f}s"
 ```
 
-- [ ] **Step 3: 테스트가 실패하는 걸 확인한다**
+- [x] **Step 3: 테스트가 실패하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/test_slack_events.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.ingest.routes'`
 
-- [ ] **Step 4: 구현한다**
+- [x] **Step 4: 구현한다**
 
 `src/ingest/routes.py`:
 
@@ -1203,17 +1225,17 @@ from .ingest.routes import router as ingest_router  # noqa: E402
 app.include_router(ingest_router)
 ```
 
-- [ ] **Step 5: 테스트가 통과하는 걸 확인한다**
+- [x] **Step 5: 테스트가 통과하는 걸 확인한다**
 
 Run: `uv run pytest tests/ingest/ -v`
 Expected: PASS — 이 파일 14건 포함 전체 통과
 
-- [ ] **Step 6: 3초 예산을 눈으로 확인한다**
+- [x] **Step 6: 3초 예산을 눈으로 확인한다**
 
 Run: `uv run pytest tests/ingest/test_slack_events.py --durations=5 -q`
 Expected: `test_round_trip_stays_within_slack_budget`만 0.75s 근처(주입한 지연), 나머지는 0.1s 미만. 다른 테스트가 느리면 라우트에 예상 못 한 동기 호출이 섞인 것이다.
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
 ```bash
 git add src/ingest/enqueue.py src/ingest/routes.py src/main.py tests/ingest/test_slack_events.py
@@ -1236,7 +1258,7 @@ enqueue는 src/ingest/enqueue.py 경계로만 두고 실제 큐 호출은 C의 �
 
 `--snapshot-update` 옵션은 Task 2에서 `conftest.py`에 이미 넣었다.
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_openapi_snapshot.py`:
 
@@ -1267,23 +1289,29 @@ def test_openapi_snapshot(pytestconfig):
     assert current == json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 ```
 
-- [ ] **Step 2: 테스트가 실패하는 걸 확인한다**
+- [x] **Step 2: 테스트가 실패하는 걸 확인한다**
 
 Run: `uv run pytest tests/test_openapi_snapshot.py -v`
 Expected: FAIL — `FileNotFoundError: tests/openapi.snapshot.json`
 
-- [ ] **Step 3: 스냅샷을 만든다**
+- [x] **Step 3: 스냅샷을 만든다**
 
 Run: `uv run pytest tests/test_openapi_snapshot.py --snapshot-update -q`
 
 생성된 `tests/openapi.snapshot.json`에 `/slack/events`가 들어 있는지 확인한다.
 
-- [ ] **Step 4: 전체가 통과하는 걸 확인한다**
+- [x] **Step 4: 전체가 통과하는 걸 확인한다**
 
 Run: `uv run pytest -v`
 Expected: 전체 PASS
 
-- [ ] **Step 5: 커밋하고 PR을 연다**
+- [x] **Step 5: 커밋하고 PR을 연다** — 커밋만. PR은 열지 않았다
+
+> **PR을 열지 않은 이유.** Task 6 착수 시점에 Task 1~5는 이미 `feat/slack-ingest`로
+> `main`에 머지된 뒤였다(`88d6399` → main). 머지된 브랜치에 테스트 한 건을 얹어 다시
+> 여는 대신, `main`으로 cherry-pick해 직접 올렸다(`75d331a`) — 테스트 추가라 브랜치
+> 게이트(payout·승인 토큰·CAS) 대상이 아니고 리뷰어가 부재했다. `feat/slack-ingest`는
+> 로컬·원격 모두 삭제했다. 아래 PR 본문은 기록으로 남긴다.
 
 ```bash
 git add tests/
