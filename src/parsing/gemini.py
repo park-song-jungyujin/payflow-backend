@@ -11,13 +11,17 @@
 결정론적 신호로 먼저 걸러내고, 신호가 깨끗할 때만 이 값들을 본다.
 """
 
+import logging
 import os
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 
 from .models import ParsedReceipt
 from .slack_files import PermanentParseError, TransientParseError
+
+_logger = logging.getLogger(__name__)
 
 _PROMPT = """\
 너는 영수증 이미지에서 사실만 옮겨 적는 추출기다.
@@ -70,9 +74,27 @@ class VertexReceiptParser:
                     "response_schema": ParsedReceipt,
                 },
             )
+        except genai_errors.ClientError as e:
+            # google.genai.errors.APIError.raise_error()가 4xx를 전부 ClientError로
+            # 던진다(.code에 HTTP 상태 보존). 429(쿼터 초과)만 재시도로 풀리고,
+            # 그 외 4xx(모델 ID 오타 → 404 NOT_FOUND, 잘못된 location, 미지원
+            # mimetype → 400 INVALID_ARGUMENT 등)는 설정·입력이 틀린 것이라
+            # 재시도해도 똑같이 실패한다 — Permanent로 확정해야 무한 재시도를
+            # 막는다. 어느 쪽이든 예외 원문을 남긴다 — Transient로 빠지는 429는
+            # 감사 로그가 없으므로 이 logging이 유일한 흔적이다.
+            if e.code == 429:
+                _logger.warning("vertex generate_content rate limited for %s: %s", receipt_id, e)
+                raise TransientParseError(f"vertex generate_content rate limited: {e}") from e
+            _logger.error("vertex generate_content client error for %s: %s", receipt_id, e)
+            raise PermanentParseError(f"vertex generate_content client error: {e}") from e
+        except genai_errors.ServerError as e:
+            # 5xx는 Vertex 쪽 일시 장애다. 재시도하면 풀린다.
+            _logger.warning("vertex generate_content server error for %s: %s", receipt_id, e)
+            raise TransientParseError(f"vertex generate_content server error: {e}") from e
         except Exception as e:
-            # 쿼터·5xx·네트워크가 전부 여기로 온다. 재시도하면 되는 실패라
-            # receipts를 FAILED로 찍지 않는다.
+            # 네트워크 단절 등 APIError로도 안 잡히는 나머지. 재시도하면 되는
+            # 실패라 receipts를 FAILED로 찍지 않는다.
+            _logger.warning("vertex generate_content failed for %s: %s", receipt_id, e)
             raise TransientParseError(f"vertex generate_content failed: {e}") from e
 
         if response.parsed is None:

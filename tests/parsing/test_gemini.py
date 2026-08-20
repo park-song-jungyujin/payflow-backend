@@ -7,6 +7,7 @@
 """
 
 import pytest
+from google.genai import errors as genai_errors
 
 from src.parsing import gemini
 from src.parsing.models import ParsedReceipt
@@ -91,5 +92,36 @@ def test_unparseable_response_is_permanent(monkeypatch):
 
 def test_api_error_is_transient(monkeypatch):
     parser = _parser(monkeypatch, FakeModels(error=RuntimeError("503 Service Unavailable")))
+    with pytest.raises(TransientParseError):
+        parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")
+
+
+def test_client_error_404_is_permanent(monkeypatch):
+    """모델 ID 오타 같은 4xx(429 제외)는 재시도해도 똑같이 실패한다 — Permanent."""
+    error = genai_errors.ClientError(404, {"error": {"message": "model not found", "status": "NOT_FOUND"}})
+    parser = _parser(monkeypatch, FakeModels(error=error))
+    with pytest.raises(PermanentParseError):
+        parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")
+
+
+def test_client_error_400_is_permanent(monkeypatch):
+    """미지원 mimetype(HEIC 등)이 부르는 400 INVALID_ARGUMENT도 Permanent."""
+    error = genai_errors.ClientError(400, {"error": {"message": "invalid mimetype", "status": "INVALID_ARGUMENT"}})
+    parser = _parser(monkeypatch, FakeModels(error=error))
+    with pytest.raises(PermanentParseError):
+        parser.parse(image=b"x", mimetype="image/heic", receipt_id="rct_1")
+
+
+def test_client_error_429_is_transient(monkeypatch):
+    """쿼터 초과는 4xx이지만 재시도하면 풀린다 — Transient로 남아야 한다."""
+    error = genai_errors.ClientError(429, {"error": {"message": "quota exceeded", "status": "RESOURCE_EXHAUSTED"}})
+    parser = _parser(monkeypatch, FakeModels(error=error))
+    with pytest.raises(TransientParseError):
+        parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")
+
+
+def test_server_error_503_is_transient(monkeypatch):
+    error = genai_errors.ServerError(503, {"error": {"message": "unavailable", "status": "UNAVAILABLE"}})
+    parser = _parser(monkeypatch, FakeModels(error=error))
     with pytest.raises(TransientParseError):
         parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")

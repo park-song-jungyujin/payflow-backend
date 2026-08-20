@@ -537,7 +537,7 @@ requires-dist = [
     { name = "google-cloud-firestore", specifier = ">=2.19" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "google-cloud-tasks", specifier = ">=2.16" },
-    { name = "google-genai", specifier = ">=1.0" },
+    { name = "google-genai", specifier = ">=2.0" },
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "python-dotenv", specifier = ">=1.0" },
