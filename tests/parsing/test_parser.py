@@ -10,8 +10,10 @@ from datetime import date
 
 import pytest
 
+from src.parsing import parser as parser_module
 from src.parsing.models import ParsedReceipt, amount_to_minor
-from src.parsing.parser import FixtureReceiptParser, get_parser
+from src.parsing.parser import FixtureReceiptParser, _UnavailableParser, get_parser
+from src.parsing.slack_files import TransientParseError
 from src.schemas.enums import AccountCategory
 
 FIXTURES = [
@@ -76,6 +78,34 @@ def test_unknown_receipt_id_raises():
         parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_nope")
 
 
-def test_factory_returns_fixture_parser_without_model_id(monkeypatch):
+def test_factory_returns_fixture_parser_when_corpus_is_populated(monkeypatch):
+    """GEMINI_MODEL_ID가 없어도 fixture corpus(tests/fixtures/*.json)가 채워져
+    있으면 여전히 FixtureReceiptParser가 나와야 한다. 로컬/테스트 환경이 이 경로다."""
     monkeypatch.delenv("GEMINI_MODEL_ID", raising=False)
     assert isinstance(get_parser(), FixtureReceiptParser)
+
+
+def test_factory_returns_unavailable_parser_when_corpus_is_empty(monkeypatch, tmp_path):
+    """컨테이너 이미지에는 fixture가 없다(Dockerfile이 tests/를 COPY하지 않는다).
+    corpus가 비면 KeyError로 죽는 fixture 파서 대신 재시도 신호를 내는
+    _UnavailableParser가 나와야 한다."""
+    monkeypatch.delenv("GEMINI_MODEL_ID", raising=False)
+    monkeypatch.setattr(parser_module, "DEFAULT_FIXTURE_GLOB", str(tmp_path / "*.json"))
+
+    parser = get_parser()
+
+    assert isinstance(parser, _UnavailableParser)
+
+
+def test_unavailable_parser_raises_transient_and_records_audit(monkeypatch):
+    audited = []
+    monkeypatch.setattr(parser_module, "record_audit_log", lambda **kwargs: audited.append(kwargs))
+
+    parser = _UnavailableParser("fixture corpus empty (cwd=/app, glob=tests/fixtures/*.json)")
+
+    with pytest.raises(TransientParseError):
+        parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")
+
+    assert len(audited) == 1
+    assert audited[0]["action"] == "PARSER_UNAVAILABLE"
+    assert audited[0]["after"] == {"receipt_id": "rct_1"}
