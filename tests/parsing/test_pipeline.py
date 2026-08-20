@@ -339,3 +339,24 @@ def test_enqueue_is_still_called_when_audit_log_raises(monkeypatch, wired):
 
     assert pipeline.parse_receipt("rct_1") == "PARSED"
     assert wired["enqueued"] == ["rct_1"]
+
+
+def test_audit_log_failure_is_recorded_as_audit_failure_not_enqueue_failure(monkeypatch, wired):
+    """I1 회귀 — RECEIPT_PARSED 감사 로그 기록 자체가 실패해도 그 직후의
+    enqueue_claimant_review는 별개 try라 정상 성공한다. 폴백 액션명이
+    CLAIMANT_ENQUEUE_FAILED면 성공한 enqueue를 실패로 오기록해 감사 로그가
+    증거로서 틀리게 된다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    def boom(**kwargs):
+        if kwargs.get("action") == "RECEIPT_PARSED":
+            raise RuntimeError("Firestore unavailable")
+        wired["audit"].append(kwargs)
+
+    monkeypatch.setattr(pipeline, "record_audit_log", boom)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    assert wired["enqueued"] == ["rct_1"]
+    actions = [entry["action"] for entry in wired["audit"]]
+    assert "RECEIPT_PARSED_AUDIT_FAILED" in actions
+    assert "CLAIMANT_ENQUEUE_FAILED" not in actions

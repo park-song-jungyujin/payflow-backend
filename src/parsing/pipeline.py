@@ -146,10 +146,13 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     except Exception as e:
         # 이 기록 자체가 실패해도 최선을 다한다 — PARSED 자체는 이미 남아 있으니
         # 여기서 또 던지면 안 되고, 뒤따르는 enqueue는 반드시 시도되어야 한다.
+        # 액션명은 RECEIPT_PARSED_AUDIT_FAILED — enqueue는 바로 아래에서 별개로
+        # 시도되어 정상 성공할 수 있으므로 CLAIMANT_ENQUEUE_FAILED를 쓰면 성공한
+        # enqueue를 실패로 오기록하게 된다.
         try:
             record_audit_log(
                 actor=_ACTOR,
-                action="CLAIMANT_ENQUEUE_FAILED",
+                action="RECEIPT_PARSED_AUDIT_FAILED",
                 reason=mask_pii(str(e)),
                 after={"receipt_id": receipt_id},
             )
