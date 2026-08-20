@@ -2389,6 +2389,58 @@ class VertexReceiptParser:
         return response.parsed
 ```
 
+- [ ] **Step 4b: `get_parser()`의 import 실패를 안전하게 만든다** — `src/parsing/parser.py`
+
+현재 `get_parser()`는 `GEMINI_MODEL_ID`가 있으면 `from .gemini import VertexReceiptParser`를 한다. **모듈이 없거나 SDK 초기화가 실패하면 `ImportError`가 그대로 터져 파싱 라우트가 500을 낸다.** 설정 하나가 틀렸을 뿐인데 배포가 통째로 죽는다.
+
+**폴백은 fixture 파서가 아니다** (2026-08-20 결정). `FixtureReceiptParser`는 `receipt_id`로 데모 데이터를 조회하므로, 운영 중 들어온 진짜 영수증은 `KeyError`로 터져 영수증이 `RECEIVED`에 영원히 남고, ID가 우연히 겹치면 **데모 금액이 진짜 파싱 결과인 척 Firestore에 저장된다.** 그건 이 프로젝트가 최악으로 정의한 조용한 오류다(`money-safety.md`).
+
+**폴백은 "항상 `TransientParseError`를 던지는 파서"다.**
+
+```python
+class _UnavailableParser:
+    """모델 설정이 깨졌을 때 쓰는 자리. 파싱을 시도하는 대신 매번 재시도 신호를 낸다.
+
+    영수증을 FAILED로 확정하지 않는 게 핵심이다 — 설정을 고치면 큐에 쌓인
+    태스크가 그대로 재시도되어 정상 파싱된다. 잘못된 데이터는 한 건도 안 쓴다.
+    """
+
+    def __init__(self, reason: str):
+        self._reason = reason
+
+    def parse(self, *, image: bytes, mimetype: str, receipt_id: str) -> ParsedReceipt:
+        record_audit_log(
+            actor="api/src/parsing",
+            action="PARSER_UNAVAILABLE",
+            reason=f"parser unavailable, retrying: {self._reason}",
+            after={"receipt_id": receipt_id},
+        )
+        raise TransientParseError(f"receipt parser unavailable: {self._reason}")
+```
+
+요구사항 3개:
+
+1. **import 실패 로그는 한 번만 남긴다.** 모듈 수준 플래그로 최초 1회만 `logging.error`. 매 파싱마다 같은 줄을 반복하면 진짜 신호가 묻힌다.
+2. **파싱된 영수증이 0건이라는 게 감사 로그로 보여야 한다.** 위 `PARSER_UNAVAILABLE`을 파싱 시도마다 남긴다(로그와 달리 이건 반복해도 된다 — 재시도만 쌓이고 아무도 모르는 상황을 막는 게 목적이다).
+3. 라우트는 이미 `TransientParseError`를 503으로 바꾸므로 Cloud Tasks가 자동 재시도한다. 라우트는 안 고친다.
+
+**이 폴백이 켜졌는지 확인하는 법** — 8/21 통합에서 파싱이 계속 503이면 여기부터 본다:
+
+```bash
+# 1) 감사 로그에 PARSER_UNAVAILABLE이 쌓이는지 (가장 빠른 확인)
+gcloud firestore ... 또는 대시보드에서 audit_logs.action == "PARSER_UNAVAILABLE"
+
+# 2) Cloud Run 로그에서 최초 1회 에러
+gcloud run services logs read payflow-api --region asia-northeast3 | grep -i "parser unavailable"
+
+# 3) 어떤 파서가 선택됐는지 직접 확인
+python -c "from src.parsing.parser import get_parser; print(type(get_parser()).__name__)"
+```
+
+3번이 `VertexReceiptParser`가 아니면 폴백 상태다. 원인은 대개 `GEMINI_MODEL_ID`/`VERTEX_LOCATION` 오타이거나 `google-genai` 미설치다.
+
+테스트를 추가해라: `GEMINI_MODEL_ID`가 설정됐는데 `gemini` import가 실패하도록 만든 상태에서 `get_parser()`가 예외를 던지지 않고 폴백 파서를 돌려주고, 그 파서의 `parse`가 `TransientParseError`를 던지는지.
+
 - [ ] **Step 5: 통과를 확인한다**
 
 Run: `python -m pytest tests/parsing/test_gemini.py -v`
