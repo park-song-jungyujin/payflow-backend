@@ -32,6 +32,9 @@ def test_builds_oidc_task_for_claimant_review_route(monkeypatch):
     enqueue_claimant_review("rct_01K3M9XQ7B2F4G6H8J0K2M4N6P")
 
     request = captured["task"]["http_request"]
+    # 잠정값이다: /agents/claimant/review는 payflow-agent가 별도 Cloud Run
+    # 서비스라 이 앱에 존재하지 않는다(404). 에이전트 URL 계약이 확정되면
+    # (다른 담당자가 진행 중, 답변 대기) 이 단언도 함께 바뀌어야 한다.
     assert request["url"] == "https://api.test.invalid/agents/claimant/review"
     assert json.loads(request["body"]) == {"receipt_id": "rct_01K3M9XQ7B2F4G6H8J0K2M4N6P"}
     assert request["oidc_token"]["audience"] == "https://api.test.invalid"

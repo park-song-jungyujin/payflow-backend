@@ -6,7 +6,8 @@
 HTTP 코드가 큐의 재시도 손잡이다:
 - 200 → 태스크 종료. PARSED든 FAILED든 결말이 났다는 뜻이다.
 - 503 → 재시도. 일시적 실패라 다시 부르면 될 때만 쓴다.
-- 404 → 재시도해도 없다. 큐가 포기한다.
+- 404 → "이 receipt_id는 없다"는 기록일 뿐, 재시도 중단 장치가 아니다.
+  Cloud Tasks는 2xx가 아닌 응답을 전부 재시도하므로 404도 다시 불린다.
 """
 
 from fastapi import APIRouter, Header, HTTPException
