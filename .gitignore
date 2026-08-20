@@ -10,5 +10,7 @@ infra/*.tfstate.*
 infra/terraform.tfvars
 infra/*.plan
 
+plans/*
+
 # 빌드 산출물 (uv/pip editable install)
 *.egg-info/
