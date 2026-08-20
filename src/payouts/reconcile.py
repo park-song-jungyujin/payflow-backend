@@ -4,8 +4,10 @@
 
 종결 판정(§8):
 - 전 항목 SUCCESS → run SETTLED, claims SETTLED
-- FAILED/UNCLAIMED/OTHER가 있음 → run FAILED, 성공분만 SETTLED, 나머지는
-  CONFIRMED로 되돌리고 settlement_run_id를 비운다. 예약했던 monthly_paid_minor도 뺀다.
+- FAILED/UNCLAIMED/OTHER가 있음 → run FAILED, 성공분만 SETTLED, 나머지는 CONFIRMED로
+  되돌리되 settlement_run_id는 이 run에 그대로 묶어둔다(§8 재발송이 같은 run으로
+  다시 보내야 하므로 — 비우면 list_confirmed_claims()가 다른 run에 중복으로 골라갈
+  수 있다). 예약했던 monthly_paid_minor도 뺀다.
 
 현재는 실행 단계(execute-payout)에서 이미 단일 recipient run만 통과시키므로, 여기서도
 그 전제를 그대로 따른다 — monthly_paid_minor 역산이 run.total_amount_minor 하나로
@@ -129,9 +131,15 @@ def reconcile(run_id: str) -> dict:
                     {"status": "SETTLED", "settled_at": _now(), "updated_at": _now()},
                 )
             else:
+                # settlement_run_id는 비우지 않는다 — 비우면 list_confirmed_claims()가
+                # (status=CONFIRMED, settlement_run_id=None) 조건으로 이 클레임을 다른
+                # run에 다시 골라갈 수 있는데, 이 run이 나중에 재발송(§8)되면 같은
+                # claim이 두 run에서 중복 지급될 수 있다. 이 run에 묶어둔 채
+                # CONFIRMED로만 되돌려 재발송(POST /payouts/{run_id}/retry) 전용으로
+                # 묶어둔다 — 포기(abandon) 후 다른 run에 풀어주는 기능은 아직 없다.
                 update_claim(
                     claim["claim_id"],
-                    {"status": "CONFIRMED", "settlement_run_id": None, "updated_at": _now()},
+                    {"status": "CONFIRMED", "updated_at": _now()},
                 )
         new_status = "FAILED"
 
