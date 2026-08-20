@@ -64,7 +64,15 @@ def _patch(monkeypatch):
     monkeypatch.setattr(routes.firestore, "transactional", lambda fn: fn)
     monkeypatch.setattr(routes, "check_caps", lambda run: None)
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
-    monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: [])
+    # 빈 클레임은 422(아래 test_empty_claims_returns_422...)라 기본값은 클레임 1건.
+    # 개별 테스트가 필요하면 이 스텁을 덮어쓴다.
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda run_id: [
+            {"claim_id": "clm_1", "recipient_id": "rcp_1", "amount_minor": 1000, "currency": "USD"}
+        ],
+    )
     # approval_amount_hash(tokens.py)는 자체적으로 get_claims_for_run(진짜 Firestore)을
     # 다시 부른다 — 여기 테스트가 검증하는 건 CAS/캡/토큰 발급이지 해시 내용이 아니라 스텁 처리.
     monkeypatch.setattr(routes, "approval_amount_hash", lambda run: "stub-hash")
@@ -93,14 +101,35 @@ def test_non_draft_run_returns_409(monkeypatch):
 
 
 def test_failed_run_can_be_reapproved_for_retry(monkeypatch):
-    """schema-contract.md §8 재발송 — FAILED run도 DRAFT처럼 재승인해 새 토큰을 받는다."""
+    """schema-contract.md §8 재발송 — FAILED run도 DRAFT처럼 재승인해 새 토큰을 받는다.
+    reconcile.py가 실패분 claim의 settlement_run_id를 비우지 않고 이 run에 그대로
+    묶어두므로(중복 지급 방지), 재승인 시점에도 get_claims_for_run이 클레임을 찾는다."""
     run = _run(status="FAILED")
     _wire_store(monkeypatch, run)
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda run_id: [
+            {"claim_id": "clm_1", "recipient_id": "rcp_1", "amount_minor": 1000, "currency": "USD"}
+        ],
+    )
 
     result = routes.approve_settlement_run("run_1")
 
     assert result["status"] == "APPROVED"
     assert "approval_token" in result
+
+
+def test_empty_claims_returns_422_and_does_not_issue_token(monkeypatch):
+    """클레임이 하나도 안 걸린 run을 0원으로 조용히 승인하지 않는다 — FAILED
+    run이 (버그로든 뭐로든) 클레임을 다 잃은 상태에서 재승인되는 걸 막는 안전판."""
+    run = _run()
+    _wire_store(monkeypatch, run)
+    monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: [])
+
+    with pytest.raises(HTTPException) as exc:
+        routes.approve_settlement_run("run_1")
+    assert exc.value.status_code == 422
 
 
 def test_fx_lookup_failure_returns_502(monkeypatch):

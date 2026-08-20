@@ -68,6 +68,12 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
         )
 
     fx_rates, total_amount_minor = _lock_fx_and_total(run)
+    if total_amount_minor <= 0:
+        # 클레임이 하나도 안 걸린 run(예: FAILED 재승인 시점에 이미 다른 곳으로
+        # 풀린 경우)을 조용히 0원으로 승인·토큰 발급하지 않는다.
+        raise HTTPException(
+            status_code=422, detail=f"settlement_run {run_id} has no linked claims to approve"
+        )
     run = {**run, "fx_rates": fx_rates, "total_amount_minor": total_amount_minor}
 
     violation = check_caps(run)

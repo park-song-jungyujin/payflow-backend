@@ -147,7 +147,9 @@ def test_pending_at_max_attempts_forces_other_and_finalizes_as_failed(store, mon
 
     assert result["status"] == "FAILED"
     assert store.claims["clm_1"]["status"] == "CONFIRMED"
-    assert store.claims["clm_1"]["settlement_run_id"] is None
+    # settlement_run_id는 비우지 않는다 — 재발송(retry)이 같은 run으로 다시 보내야
+    # 하고, 비우면 list_confirmed_claims()가 다른 run에 중복으로 골라갈 수 있다.
+    assert store.claims["clm_1"]["settlement_run_id"] == "run_1"
 
 
 def test_all_success_settles_run_and_all_claims(store, monkeypatch):
@@ -165,7 +167,7 @@ def test_all_success_settles_run_and_all_claims(store, monkeypatch):
     assert store.claims["clm_1"]["status"] == "SETTLED"
 
 
-def test_failed_item_reverts_claim_to_confirmed_and_clears_run_id(store, monkeypatch):
+def test_failed_item_reverts_claim_to_confirmed_but_keeps_run_id(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1")
     store.sender_items["run_1"] = [
         {"payout_item_id": "itm_1", "recipient_id": "rcp_1", "paypal_transaction_status": "FAILED", "status": "PENDING"}
@@ -178,7 +180,9 @@ def test_failed_item_reverts_claim_to_confirmed_and_clears_run_id(store, monkeyp
 
     assert result["status"] == "FAILED"
     assert store.claims["clm_1"]["status"] == "CONFIRMED"
-    assert store.claims["clm_1"]["settlement_run_id"] is None
+    # settlement_run_id는 비우지 않는다 — 재발송(retry)이 같은 run으로 다시 보내야
+    # 하고, 비우면 list_confirmed_claims()가 다른 run에 중복으로 골라갈 수 있다.
+    assert store.claims["clm_1"]["settlement_run_id"] == "run_1"
 
 
 def test_failed_run_decrements_monthly_paid_by_run_total(store, monkeypatch):
