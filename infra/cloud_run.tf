@@ -97,6 +97,44 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "GCS_RECEIPTS_BUCKET"
         value = google_storage_bucket.receipts.name
       }
+      env {
+        name  = "FIRESTORE_DATABASE"
+        value = var.app_firestore_database
+      }
+      env {
+        # guards/routes.py, guards/limits.py가 os.environ["PAYOUT_CURRENCY"]로 직접
+        # 읽는다(기본값 없음) — 여기 빠지면 approve 전체가 KeyError로 500.
+        name  = "PAYOUT_CURRENCY"
+        value = var.payout_currency
+      }
+      env {
+        name  = "RECEIPT_DEFAULT_CURRENCY"
+        value = var.receipt_default_currency
+      }
+      env {
+        name  = "MAX_AMOUNT_PER_ITEM_MINOR"
+        value = tostring(var.max_amount_per_item_minor)
+      }
+      env {
+        name  = "MAX_AMOUNT_PER_BATCH_MINOR"
+        value = tostring(var.max_amount_per_batch_minor)
+      }
+      env {
+        name  = "MAX_AMOUNT_MONTHLY_MINOR"
+        value = tostring(var.max_amount_monthly_minor)
+      }
+      env {
+        name  = "APPROVAL_TOKEN_TTL_SECONDS"
+        value = tostring(var.approval_token_ttl_seconds)
+      }
+      env {
+        name  = "PAYOUT_MAX_RECONCILE_ATTEMPTS"
+        value = tostring(var.payout_max_reconcile_attempts)
+      }
+      env {
+        name  = "RECONCILE_DELAY_SECONDS"
+        value = tostring(var.reconcile_delay_seconds)
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {

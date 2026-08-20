@@ -119,6 +119,7 @@
     "/payouts/{run_id}/retry": {
       "post": {
         "summary": "Retry Payout",
+        "description": "schema-contract.md §8 재발송 — FAILED run을 새 승인 토큰으로 다시 보낸다.\n사람이 먼저 POST /settlements/runs/{run_id}/approve로 FAILED→APPROVED 재승인해\n새 토큰을 받아야 한다(재발송도 돈이 나가는 행위라 approve의 CAS·캡 검사를 다시 탄다).\n이 라우트는 그 토큰으로 APPROVED→EXECUTING만 담당한다 — verify_and_burn_token은\n상태가 APPROVED이기만 하면 최초 송금과 재발송을 구분하지 않는다.\n\n현재는 execute-payout과 같은 이유로 단일 recipient run만 처리한다.",
         "operationId": "retry_payout_payouts__run_id__retry_post",
         "parameters": [
           {
@@ -128,6 +129,22 @@
             "schema": {
               "type": "string",
               "title": "Run Id"
+            }
+          },
+          {
+            "name": "X-Approval-Token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Approval-Token"
             }
           }
         ],
@@ -246,7 +263,7 @@
     "/tasks/reconcile": {
       "post": {
         "summary": "Task Reconcile",
-        "description": "schema-contract.md §8 — 주 경로. /payouts enqueue 시 RECONCILE_DELAY_SECONDS 뒤에\nCloud Tasks가 부른다. 미종결이면 이 라우트가 스스로를 재예약해야 하는데, 그 큐잉은\ntasks_queue.py와 마찬가지로 아직 없다 — pending 응답을 보고 데모/테스트에서 다시\n호출해 재폴링을 시뮬레이션한다.",
+        "description": "schema-contract.md §8 — 주 경로. /payouts enqueue 시 RECONCILE_DELAY_SECONDS 뒤에\nCloud Tasks가 부른다. 미종결(pending_items가 있고 아직 최대 시도 전)이면 이 라우트가\n스스로를 다시 예약한다 — reconcile()이 최대 시도(PAYOUT_MAX_RECONCILE_ATTEMPTS)를\n넘기면 강제로 종결 처리하므로, 그 안에서는 계속 폴링해도 된다.",
         "operationId": "task_reconcile_tasks_reconcile_post",
         "parameters": [
           {

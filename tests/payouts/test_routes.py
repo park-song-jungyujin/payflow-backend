@@ -17,6 +17,7 @@ from src.payouts.tasks_queue import QueueNotConfigured
 def _patch(monkeypatch):
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
     monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+    monkeypatch.setattr(routes, "enqueue_reconcile", lambda rid: None)
     monkeypatch.setenv("PAYOUT_CURRENCY", "USD")
 
 
@@ -112,6 +113,77 @@ def test_request_payout_queue_not_configured_still_returns_200_with_note(monkeyp
     monkeypatch.setattr(routes, "enqueue_execute_payout", boom)
 
     result = routes.request_payout({"settlement_run_id": "run_1"}, x_approval_token="good")
+
+    assert result["status"] == "EXECUTING"
+    assert "note" in result
+
+
+# ---- POST /payouts/{run_id}/retry ----
+
+
+def test_retry_payout_unknown_run_returns_404(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: None)
+    with pytest.raises(HTTPException) as exc:
+        routes.retry_payout("run_1", x_approval_token="tok")
+    assert exc.value.status_code == 404
+
+
+def test_retry_payout_multi_recipient_returns_501(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
+    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: None)
+    with pytest.raises(HTTPException) as exc:
+        routes.retry_payout("run_1", x_approval_token="tok")
+    assert exc.value.status_code == 501
+
+
+def test_retry_payout_token_rejection_propagates_status_and_audits(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="FAILED"))
+    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+
+    def reject(*a):
+        raise GuardRejection(409, "settlement_run status is FAILED, expected APPROVED")
+
+    monkeypatch.setattr(routes, "verify_and_burn_token", reject)
+    audits = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audits.append(kw))
+
+    with pytest.raises(HTTPException) as exc:
+        routes.retry_payout("run_1", x_approval_token="stale")
+
+    assert exc.value.status_code == 409
+    assert audits[0]["action"] == "PAYOUT_REJECTED"
+
+
+def test_retry_payout_success_bumps_retry_seq_and_enqueues(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED", retry_seq=1))
+    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {"status": "EXECUTING"})
+    monkeypatch.setattr(routes, "get_recipient", lambda rid: {"recipient_id": "rcp_1", "monthly_paid_minor": 0})
+    monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: None)
+    monkeypatch.setattr(routes, "enqueue_execute_payout", lambda rid: None)
+    updated = []
+    monkeypatch.setattr(routes, "update_settlement_run", lambda rid, updates: updated.append(updates))
+
+    result = routes.retry_payout("run_1", x_approval_token="good")
+
+    assert result == {"settlement_run_id": "run_1", "status": "EXECUTING", "retry_seq": 2}
+    assert updated == [{"retry_seq": 2}]  # 이전 retry_seq=1 -> 2, execute-payout이 이 값을 읽는다
+
+
+def test_retry_payout_queue_not_configured_still_returns_200_with_note(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
+    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {})
+    monkeypatch.setattr(routes, "get_recipient", lambda rid: None)
+    monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: None)
+    monkeypatch.setattr(routes, "update_settlement_run", lambda rid, updates: None)
+
+    def boom(rid):
+        raise QueueNotConfigured("CLOUD_TASKS_QUEUE not set")
+
+    monkeypatch.setattr(routes, "enqueue_execute_payout", boom)
+
+    result = routes.retry_payout("run_1", x_approval_token="good")
 
     assert result["status"] == "EXECUTING"
     assert "note" in result
@@ -304,5 +376,42 @@ def test_task_reconcile_missing_payout_batch_returns_409(monkeypatch):
 
 def test_task_reconcile_success_passthrough(monkeypatch):
     monkeypatch.setattr(routes, "reconcile", lambda rid: {"settlement_run_id": rid, "status": "SETTLED"})
+    rescheduled = []
+    monkeypatch.setattr(routes, "enqueue_reconcile", lambda rid: rescheduled.append(rid))
     result = routes.task_reconcile({"settlement_run_id": "run_1"}, authorization="Bearer x")
     assert result == {"settlement_run_id": "run_1", "status": "SETTLED"}
+    assert rescheduled == []  # 종결 상태면 재예약 안 함
+
+
+def test_task_reconcile_pending_reschedules_itself(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "reconcile",
+        lambda rid: {"settlement_run_id": rid, "status": "EXECUTING", "pending_items": 1, "reconcile_attempts": 1},
+    )
+    rescheduled = []
+    monkeypatch.setattr(routes, "enqueue_reconcile", lambda rid: rescheduled.append(rid))
+    result = routes.task_reconcile({"settlement_run_id": "run_1"}, authorization="Bearer x")
+    assert result["pending_items"] == 1
+    assert rescheduled == ["run_1"]
+
+
+def test_task_reconcile_reschedule_failure_does_not_break_response(monkeypatch):
+    """reconcile 결과 자체는 이미 확정됐으니, 재예약 큐잉이 실패해도 응답은 그대로 나가야 한다."""
+    monkeypatch.setattr(
+        routes,
+        "reconcile",
+        lambda rid: {"settlement_run_id": rid, "status": "EXECUTING", "pending_items": 1, "reconcile_attempts": 1},
+    )
+
+    def boom(rid):
+        raise QueueNotConfigured("CLOUD_TASKS_QUEUE not set")
+
+    monkeypatch.setattr(routes, "enqueue_reconcile", boom)
+    audits = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audits.append(kw))
+
+    result = routes.task_reconcile({"settlement_run_id": "run_1"}, authorization="Bearer x")
+
+    assert result["pending_items"] == 1
+    assert audits[0]["action"] == "RECONCILE_ENQUEUE_FAILED"

@@ -92,6 +92,17 @@ def test_non_draft_run_returns_409(monkeypatch):
     assert exc.value.status_code == 409
 
 
+def test_failed_run_can_be_reapproved_for_retry(monkeypatch):
+    """schema-contract.md §8 재발송 — FAILED run도 DRAFT처럼 재승인해 새 토큰을 받는다."""
+    run = _run(status="FAILED")
+    _wire_store(monkeypatch, run)
+
+    result = routes.approve_settlement_run("run_1")
+
+    assert result["status"] == "APPROVED"
+    assert "approval_token" in result
+
+
 def test_fx_lookup_failure_returns_502(monkeypatch):
     run = _run()
     _wire_store(monkeypatch, run)

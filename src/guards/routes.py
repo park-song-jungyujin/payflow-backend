@@ -1,7 +1,9 @@
 """schema-contract.md §10 — POST /settlements/runs/{run_id}/approve.
 
-money-safety.md 승인 게이트: DRAFT → APPROVED CAS, 한도 캡 검사, 토큰 발급.
-Firestore 트랜잭션으로 DRAFT 상태를 재확인한 뒤 쓴다 — 동시에 두 번 승인되면
+money-safety.md 승인 게이트: (DRAFT | FAILED) → APPROVED CAS, 한도 캡 검사, 토큰 발급.
+FAILED 허용은 schema-contract.md §8 "재발송" 때문 — 재발송도 새 승인 토큰이 있어야
+하므로 이 엔드포인트를 그대로 재사용한다(payouts/routes.py retry_payout 참조).
+Firestore 트랜잭션으로 상태를 재확인한 뒤 쓴다 — 동시에 두 번 승인되면
 토큰이 두 개 발급되는 걸 막기 위해서다.
 """
 
@@ -59,10 +61,10 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
 
-    if run["status"] != "DRAFT":
+    if run["status"] not in ("DRAFT", "FAILED"):
         raise HTTPException(
             status_code=409,
-            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+            detail=f"settlement_run status is {run['status']}, expected DRAFT or FAILED",
         )
 
     fx_rates, total_amount_minor = _lock_fx_and_total(run)
@@ -101,9 +103,10 @@ def approve_settlement_run(run_id: str, body: dict | None = None):
     def _txn(transaction):
         snapshot = run_ref.get(transaction=transaction)
         current = snapshot.to_dict() or {}
-        if current.get("status") != "DRAFT":
+        if current.get("status") not in ("DRAFT", "FAILED"):
             raise GuardRejection(
-                409, f"settlement_run status is {current.get('status')}, expected DRAFT"
+                409,
+                f"settlement_run status is {current.get('status')}, expected DRAFT or FAILED",
             )
         transaction.update(run_ref, updates)
 
