@@ -11,6 +11,8 @@ def _env(monkeypatch):
     monkeypatch.setenv("CLOUD_TASKS_LOCATION", "asia-northeast3")
     monkeypatch.setenv("OIDC_AUDIENCE", "https://api.test.invalid")
     monkeypatch.delenv("CLOUD_TASKS_QUEUE", raising=False)
+    monkeypatch.delenv("GCS_RECEIPTS_BUCKET", raising=False)  # 테스트는 실제 GCS에 붙지 않는다
+    monkeypatch.delenv("GEMINI_MODEL_ID", raising=False)  # src/parsing/gemini.py는 아직 없다
     yield
 
 

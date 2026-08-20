@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Protocol
 
+from google.cloud import storage as gcs
+
 
 class ObjectStore(Protocol):
     def put(self, *, key: str, data: bytes, content_type: str) -> str:
@@ -37,7 +39,42 @@ class LocalObjectStore:
         return path.resolve().as_uri()
 
 
+_bucket_cache: dict[str, "gcs.Bucket"] = {}
+
+
+def _get_bucket(bucket_name: str) -> "gcs.Bucket":
+    """클라이언트 생성을 이 함수 하나로 모은다. 두 가지를 동시에 해결한다:
+    요청마다 클라이언트를 새로 만들지 않는 것(payouts/store.py의 get_client와 같은
+    이유), 그리고 테스트가 여기만 갈아끼우면 gcs.Client()가 아예 생성되지 않아
+    ADC를 찾거나 네트워크로 나가지 않는 것.
+    """
+    if bucket_name not in _bucket_cache:
+        _bucket_cache[bucket_name] = gcs.Client(project=os.environ.get("GCP_PROJECT")).bucket(bucket_name)
+    return _bucket_cache[bucket_name]
+
+
+class GcsObjectStore:
+    """LocalObjectStore와 시그니처가 같다. 갈아끼우는 게 이 클래스의 전부다.
+
+    버킷: payflow-hackathon-2026-receipts (asia-northeast3). 키는 image_key/
+    raw_text_key가 만들고 receipt_id 기준이라 결정론적이다 — Cloud Tasks
+    재시도가 같은 오브젝트를 덮어쓴다. GCS 오브젝트 쓰기는 기본이 덮어쓰기라
+    별도 처리가 필요 없다. 세대 조건(`if_generation_match`)을 걸면 오히려
+    재시도가 412로 죽는다.
+    """
+
+    def __init__(self, bucket_name: str):
+        self._bucket_name = bucket_name
+
+    def put(self, *, key: str, data: bytes, content_type: str) -> str:
+        _get_bucket(self._bucket_name).blob(key).upload_from_string(data, content_type=content_type)
+        return f"gs://{self._bucket_name}/{key}"
+
+
 def get_object_store() -> ObjectStore:
+    bucket = os.environ.get("GCS_RECEIPTS_BUCKET")
+    if bucket:
+        return GcsObjectStore(bucket)
     root = os.environ.get("LOCAL_RECEIPTS_DIR") or str(Path(tempfile.gettempdir()) / "payflow-receipts")
     return LocalObjectStore(Path(root))
 
