@@ -71,6 +71,58 @@ variable "agent_timeout_seconds" {
   description = "기본 5분이면 ADK 툴 루프가 잘린다. 최대 60분까지."
 }
 
+# --- api 런타임 설정 (money-safety.md 한도 · 통화) — backend/.env와 값을 맞춘다 ---
+variable "app_firestore_database" {
+  type        = string
+  default     = "development"
+  description = "payouts/store.py get_client()가 읽는 Firestore 데이터베이스 이름. firestore_databases 중 하나."
+}
+
+variable "payout_currency" {
+  type        = string
+  default     = "USD"
+  description = "guards/routes.py, guards/limits.py가 os.environ[\"PAYOUT_CURRENCY\"]로 직접 읽는다 — 없으면 승인 자체가 KeyError로 500."
+}
+
+variable "receipt_default_currency" {
+  type    = string
+  default = "KRW"
+}
+
+variable "max_amount_per_item_minor" {
+  type        = number
+  default     = 200000
+  description = "1500 KRW/USD 가정으로 기존 KRW 캡(3,000,000)을 USD로 환산."
+}
+
+variable "max_amount_per_batch_minor" {
+  type        = number
+  default     = 333333
+  description = "1500 KRW/USD 가정으로 기존 KRW 캡(5,000,000)을 USD로 환산."
+}
+
+variable "max_amount_monthly_minor" {
+  type        = number
+  default     = 666667
+  description = "1500 KRW/USD 가정으로 기존 KRW 캡(10,000,000)을 USD로 환산."
+}
+
+variable "approval_token_ttl_seconds" {
+  type    = number
+  default = 600
+}
+
+variable "payout_max_reconcile_attempts" {
+  type    = number
+  default = 5
+}
+
+variable "reconcile_delay_seconds" {
+  type        = number
+  default     = 30
+  description = "payouts/tasks_queue.py enqueue_reconcile()이 /tasks/reconcile을 예약하는 지연 시간. 샌드박스에서 PayPal이 배치를 처리할 시간을 준다."
+}
+
 # --- Cloud Tasks 재시도 (plan.md: "재시도를 만드는 건 Cloud Run이 아니라 큐다") ---
 variable "task_max_attempts" {
   type    = number

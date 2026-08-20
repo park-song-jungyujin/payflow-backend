@@ -8,15 +8,17 @@
 
 import json
 import os
+from datetime import UTC, datetime, timedelta
 
 from google.cloud import tasks_v2
+from google.protobuf import timestamp_pb2
 
 
 class QueueNotConfigured(RuntimeError):
     pass
 
 
-def enqueue_task(path: str, payload: dict) -> None:
+def enqueue_task(path: str, payload: dict, delay_seconds: int = 0) -> None:
     queue = os.environ.get("CLOUD_TASKS_QUEUE")
     if not queue:
         raise QueueNotConfigured(
@@ -43,4 +45,8 @@ def enqueue_task(path: str, payload: dict) -> None:
             },
         }
     }
+    if delay_seconds > 0:
+        schedule_time = timestamp_pb2.Timestamp()
+        schedule_time.FromDatetime(datetime.now(UTC) + timedelta(seconds=delay_seconds))
+        task["schedule_time"] = schedule_time
     client.create_task(parent=parent, task=task)

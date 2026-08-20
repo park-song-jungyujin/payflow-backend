@@ -44,3 +44,12 @@ output "ci_web_workload_identity_provider" {
 output "ci_web_deployer_service_account" {
   value = google_service_account.web_deployer.email
 }
+
+output "ci_agent_workload_identity_provider" {
+  value       = google_iam_workload_identity_pool_provider.github_agent.name
+  description = "payflow-agent GitHub Actions 워크플로 `workload_identity_provider` 입력값."
+}
+
+output "ci_agent_deployer_service_account" {
+  value = google_service_account.agent_deployer.email
+}

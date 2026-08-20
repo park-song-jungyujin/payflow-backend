@@ -3,9 +3,9 @@
 # 서비스 계정 키 JSON을 GitHub Secrets에 넣지 않는다 — Workload Identity Federation으로
 # 단기 토큰만 발급한다.
 #
-# 범위는 이 레포(payflow-backend) CI뿐이다. agent는 아직 코드·Dockerfile이 없어서
-# CI를 만들면 첫 푸시에 바로 깨진다 — 그 레포 담당(A)이 준비되면 같은 패턴으로 추가.
-# web(payflow-frontend)용은 ci_web.tf에 같은 패턴으로 분리해뒀다.
+# 범위는 이 레포(payflow-backend) CI뿐이다.
+# web(payflow-frontend)용은 ci_web.tf, agent(payflow-agent)용은 ci_agent.tf에
+# 같은 패턴으로 분리해뒀다.
 
 resource "google_iam_workload_identity_pool" "github" {
   project                   = var.project_id

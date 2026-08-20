@@ -3,6 +3,8 @@ name: Deploy payflow-api
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,7 +19,20 @@ env:
   RUNTIME_SA: payflow-api@payflow-hackathon-2026.iam.gserviceaccount.com
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+
+      - run: uv sync
+
+      - run: uv run pytest
+
   deploy:
+    needs: test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
