@@ -6,6 +6,7 @@ amount_text는 minor_to_paypal_value로 역변환한다 — KRW 45000 → "45000
 USD 2500 → "25.00". 파이프라인이 amount_to_minor로 다시 접으면 원래 값이 나온다.
 """
 
+import sys
 from datetime import date
 
 import pytest
@@ -100,20 +101,16 @@ def test_factory_returns_unavailable_parser_when_corpus_is_empty(monkeypatch, tm
 def test_factory_returns_unavailable_parser_when_gemini_import_fails(monkeypatch):
     """GEMINI_MODEL_ID는 있는데 gemini 모듈 import(또는 SDK 초기화)가 실패하면
     ImportError를 그대로 터뜨려 파싱 라우트를 500으로 죽이는 대신 재시도 신호를
-    내는 _UnavailableParser로 폴백해야 한다."""
+    내는 _UnavailableParser로 폴백해야 한다.
+
+    `from .gemini import X`는 `__import__('gemini', ..., level=1)`을 호출한다 —
+    이름에 점이 없고 level=1이라 builtins.__import__를 이름으로 가로채는 방식은
+    절대 매칭되지 않는다(이전 라운드에서 no-op이었던 원인). sys.modules에
+    None을 심어 import 자체가 ImportError를 내게 만드는 게 표준 관용구다.
+    """
     monkeypatch.setenv("GEMINI_MODEL_ID", "gemini-test")
     monkeypatch.setattr(parser_module, "record_audit_log", lambda **kwargs: None)
-
-    import builtins
-
-    real_import = builtins.__import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == "src.parsing.gemini" or name.endswith(".gemini"):
-            raise ImportError("no module named 'google.genai'")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    monkeypatch.setitem(sys.modules, "src.parsing.gemini", None)
 
     parser = get_parser()
 
