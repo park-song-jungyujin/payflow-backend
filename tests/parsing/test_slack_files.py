@@ -144,6 +144,15 @@ def test_files_info_non_retryable_error_is_permanent(monkeypatch):
         slack_files.download_slack_file("F01ABCDEF")
 
 
+def test_ok_true_but_missing_file_key_is_permanent(monkeypatch):
+    """ok:true인데 'file'이 없는 비정상 응답(스코프 변경 등)이 KeyError로 새 나가
+    영수증을 RECEIVED에 영구 잔류시키면 안 된다."""
+    info = FakeResponse(json_body={"ok": True})
+    _wire(monkeypatch, info)
+    with pytest.raises(PermanentParseError):
+        slack_files.download_slack_file("F01ABCDEF")
+
+
 def test_missing_url_private_is_permanent(monkeypatch):
     info = FakeResponse(json_body={"ok": True, "file": {"mimetype": "image/jpeg", "filetype": "jpg"}})
     _wire(monkeypatch, info)

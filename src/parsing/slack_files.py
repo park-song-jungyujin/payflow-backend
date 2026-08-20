@@ -77,7 +77,9 @@ def download_slack_file(slack_file_id: str) -> SlackFile:
     if not body.get("ok"):
         raise PermanentParseError(f"files.info error: {body.get('error')}")
 
-    slack_file = body["file"]
+    slack_file = body.get("file")
+    if not slack_file:
+        raise PermanentParseError(f"files.info ok=true but missing 'file' for {slack_file_id}")
     url = slack_file.get("url_private")
     if not url:
         raise PermanentParseError(f"file {slack_file_id} has no url_private")
