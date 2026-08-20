@@ -321,3 +321,21 @@ def test_enqueue_failure_other_than_queue_not_configured_does_not_undo_parsed(mo
     assert pipeline.parse_receipt("rct_1") == "PARSED"
     assert wired["receipts"]["rct_1"]["status"] == "PARSED"
     assert any(entry["action"] == "CLAIMANT_ENQUEUE_FAILED" for entry in wired["audit"])
+
+
+def test_enqueue_is_still_called_when_audit_log_raises(monkeypatch, wired):
+    """감사 로그(RECEIPT_PARSED)가 던져도 enqueue_claimant_review는 반드시
+    호출되어야 한다 — 같은 try에 묶으면 감사 로그 실패가 enqueue를 통째로
+    건너뛰게 만들고, 재시도해도 status != RECEIVED라 SKIPPED로 빠져 영구
+    유실이 된다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    def boom(**kwargs):
+        if kwargs.get("action") == "RECEIPT_PARSED":
+            raise RuntimeError("Firestore unavailable")
+        wired["audit"].append(kwargs)
+
+    monkeypatch.setattr(pipeline, "record_audit_log", boom)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    assert wired["enqueued"] == ["rct_1"]

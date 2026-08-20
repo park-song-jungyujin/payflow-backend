@@ -121,11 +121,13 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     # 않는다 — 되돌리면 Gemini 호출을 다시 태우고, 재시도해도 status != RECEIVED라
     # SKIPPED로 빠져 같은 부수 효과가 영영 안 돈다(ingest/routes.py와 같은 판단).
     #
-    # RECEIPT_PARSED 감사 로그와 enqueue를 같은 보호 범위로 묶는다: 감사 로그
-    # 호출 자체가 던지면 뒤따르는 enqueue가 통째로 못 불려 같은 영구 유실이
-    # 나기 때문이다. QueueNotConfigured만이 아니라 모든 예외를 잡는다 — 큐가
-    # 설정된 상태에서도 enqueue_task가 os.environ 대괄호 접근(KeyError)이나
-    # Cloud Tasks 네트워크 호출(Google API 예외)로 던질 수 있다.
+    # 감사 로그와 enqueue는 **각각 별개의 try**로 감싼다. 같은 try에 넣으면
+    # 감사 로그가 던지는 순간 제어가 except로 점프해 enqueue_claimant_review가
+    # 영영 호출되지 않는다 — 재시도해도 status != RECEIVED라 SKIPPED로 빠지므로
+    # "감사 로그 실패 시 enqueue를 지킨다"는 목적이 오히려 정반대로 깨진다.
+    # 두 예외 모두 넓게 잡는다 — 감사 로그는 Firestore 장애, enqueue는
+    # QueueNotConfigured뿐 아니라 os.environ 대괄호 접근(KeyError)이나
+    # Cloud Tasks 네트워크 호출(Google API 예외)로도 던질 수 있다.
     #
     # 이 범위는 여기서 끝난다 — _parse 앞부분(download_slack_file·parser 호출·
     # update_receipt)까지 넓히면 TransientParseError를 삼켜 불변식 I3(일시적
@@ -141,12 +143,23 @@ def _parse(receipt_id: str, receipt: dict) -> str:
                 "category_source": source.value,
             },
         )
-        # PARSED일 때만 청구자 에이전트를 부른다. FAILED는 재촉 루프 몫이다.
+    except Exception as e:
+        # 이 기록 자체가 실패해도 최선을 다한다 — PARSED 자체는 이미 남아 있으니
+        # 여기서 또 던지면 안 되고, 뒤따르는 enqueue는 반드시 시도되어야 한다.
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="CLAIMANT_ENQUEUE_FAILED",
+                reason=mask_pii(str(e)),
+                after={"receipt_id": receipt_id},
+            )
+        except Exception:
+            pass
+
+    # PARSED일 때만 청구자 에이전트를 부른다. FAILED는 재촉 루프 몫이다.
+    try:
         enqueue_claimant_review(receipt_id)
     except Exception as e:
-        # 이 기록 자체도 실패할 수 있다(예: 위에서 던진 게 Firestore 장애라면).
-        # 그래도 최선을 다한다 — PARSED 자체는 이미 남아 있으니 여기서 또
-        # 던지면 안 된다.
         try:
             record_audit_log(
                 actor=_ACTOR,
