@@ -97,6 +97,31 @@ def test_factory_returns_unavailable_parser_when_corpus_is_empty(monkeypatch, tm
     assert isinstance(parser, _UnavailableParser)
 
 
+def test_factory_returns_unavailable_parser_when_gemini_import_fails(monkeypatch):
+    """GEMINI_MODEL_ID는 있는데 gemini 모듈 import(또는 SDK 초기화)가 실패하면
+    ImportError를 그대로 터뜨려 파싱 라우트를 500으로 죽이는 대신 재시도 신호를
+    내는 _UnavailableParser로 폴백해야 한다."""
+    monkeypatch.setenv("GEMINI_MODEL_ID", "gemini-test")
+    monkeypatch.setattr(parser_module, "record_audit_log", lambda **kwargs: None)
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == "src.parsing.gemini" or name.endswith(".gemini"):
+            raise ImportError("no module named 'google.genai'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    parser = get_parser()
+
+    assert isinstance(parser, _UnavailableParser)
+    with pytest.raises(TransientParseError):
+        parser.parse(image=b"x", mimetype="image/jpeg", receipt_id="rct_1")
+
+
 def test_unavailable_parser_raises_transient_and_records_audit(monkeypatch):
     audited = []
     monkeypatch.setattr(parser_module, "record_audit_log", lambda **kwargs: audited.append(kwargs))

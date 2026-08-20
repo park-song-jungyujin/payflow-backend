@@ -139,9 +139,17 @@ def get_parser() -> ReceiptParser:
     _UnavailableParser를 돌려준다.
     """
     if os.environ.get("GEMINI_MODEL_ID"):
-        from .gemini import VertexReceiptParser
+        try:
+            from .gemini import VertexReceiptParser
 
-        return VertexReceiptParser()
+            return VertexReceiptParser()
+        except Exception as e:
+            # 모듈 부재(google-genai 미설치)나 SDK 초기화 실패(설정 오타 등)가
+            # 여기로 온다. ImportError를 그대로 던지면 파싱 라우트가 500을 내고
+            # 배포 전체가 죽는다 — 설정 하나 틀렸다고 그럴 이유가 없다.
+            reason = f"gemini import/init failed: {e}"
+            _log_unavailable_once(reason)
+            return _UnavailableParser(reason)
 
     parser = FixtureReceiptParser.from_fixtures()
     if not parser._by_receipt_id:
