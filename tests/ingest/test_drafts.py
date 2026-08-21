@@ -61,3 +61,12 @@ def test_requery_without_message_is_allowed():
     v = parse_claimant_payload({"needs_requery": True})
     assert v.needs_requery is True
     assert v.requery_message is None
+
+
+@pytest.mark.parametrize("payload", ["a string", ["a", "list"], 123, None])
+def test_rejects_non_dict_payload(payload):
+    """payload가 dict가 아니면 .get()이 없어 AttributeError로 새 나간다 — 여기서
+    먼저 InvalidDraftPayload로 걸러야 호출부(라우트)가 500이 아니라 200 + 감사
+    로그로 흡수할 수 있다."""
+    with pytest.raises(InvalidDraftPayload):
+        parse_claimant_payload(payload)

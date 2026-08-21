@@ -32,7 +32,14 @@ def parse_claimant_payload(payload: dict) -> DraftVerdict:
 
     `needs_requery`가 없거나 `bool`이 아니면 판정의 근거가 없으므로
     `InvalidDraftPayload`를 던진다. 계약에 없는 필드는 조용히 버려진다.
+
+    payload 자체가 dict가 아니면(`str`·`list`·`None` 등) `.get()`이 없어 여기서
+    `AttributeError`로 새 나간다 — 호출부(라우트)가 `InvalidDraftPayload`만 잡으므로
+    형식이 아예 다른 payload는 먼저 여기서 걸러야 한다.
     """
+    if not isinstance(payload, dict):
+        raise InvalidDraftPayload(f"payload must be a dict, got {type(payload).__name__}")
+
     if not isinstance(payload.get("needs_requery"), bool):
         raise InvalidDraftPayload("needs_requery must be a bool")
 
