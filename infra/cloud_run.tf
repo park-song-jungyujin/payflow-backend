@@ -135,6 +135,14 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "RECONCILE_DELAY_SECONDS"
         value = tostring(var.reconcile_delay_seconds)
       }
+      env {
+        name  = "GEMINI_MODEL_ID"
+        value = var.gemini_model_id
+      }
+      env {
+        name  = "VERTEX_LOCATION"
+        value = var.vertex_location
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {

@@ -41,6 +41,18 @@ variable "agent_model" {
   description = "agent-tools.md — 모델 ID는 환경변수. 해커톤 규정의 최소 버전 요건을 마지막에 한 번 더 확인한다."
 }
 
+variable "gemini_model_id" {
+  type        = string
+  default     = "gemini-3.7-flash"
+  description = "api의 영수증 파싱/검증 단발 Gemini 호출(ADK 아님)이 쓰는 모델 ID."
+}
+
+variable "vertex_location" {
+  type        = string
+  default     = "global"
+  description = "api가 Vertex AI(Gemini structured output)를 호출할 때 쓰는 리전. Cloud Run region(var.region)과 별개."
+}
+
 # --- Cloud Run 서비스별 설정 (plan.md "Cloud Run 설정" 표) ---
 variable "agent_min_instances" {
   type        = number
