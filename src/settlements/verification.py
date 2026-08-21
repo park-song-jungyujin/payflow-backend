@@ -180,9 +180,12 @@ def verify_candidates(claims: list[dict]) -> dict:
     만든다. DM 발송 자체는 이 함수의 일이 아니다 — A가 소유한 기존 재촉 루프가
     PENDING 상태의 claim_requests를 그대로 집어간다.
 
-    반환: {"passed_claims": [...], "failed_claims": [...]}. 후보 목록의 부분집합
-    두 개로 나뉘고 합치면 원래 claims와 같다(receipt가 없어 판정 불가한 claim은
-    failed_claims로 분류한다 — 열려 있는 채로 배치에 넣지 않는다).
+    반환: {"passed_claims": [...], "failed_claims": [...], "receipts": {...}}. 후보
+    목록의 부분집합 두 개로 나뉘고 합치면 원래 claims와 같다(receipt가 없어 판정
+    불가한 claim은 failed_claims로 분류한다 — 열려 있는 채로 배치에 넣지 않는다).
+    `receipts`는 이미 이 함수가 조회한 receipt_id → receipt dict다 — 호출부가
+    집행자 에이전트 enqueue(merchant_name·transaction_date 필요)에서 같은 문서를
+    다시 읽지 않도록 그대로 돌려준다.
     """
     receipt_ids = {c["receipt_id"] for c in claims}
     receipts = store.get_receipts(receipt_ids)
@@ -204,4 +207,4 @@ def verify_candidates(claims: list[dict]) -> dict:
 
     passed_claims = [c for c in claims if passed_by_receipt.get(c["receipt_id"], False)]
     failed_claims = [c for c in claims if not passed_by_receipt.get(c["receipt_id"], False)]
-    return {"passed_claims": passed_claims, "failed_claims": failed_claims}
+    return {"passed_claims": passed_claims, "failed_claims": failed_claims, "receipts": receipts}
