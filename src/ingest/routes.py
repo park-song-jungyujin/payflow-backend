@@ -19,7 +19,12 @@ from ..settlements.store import get_agent_draft
 from .drafts import InvalidDraftPayload, parse_claimant_payload
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt
 from .signature import SignatureError, verify_slack_signature
-from .store import ReceiptStoreUnavailable, apply_claimant_verdict, create_receipt_if_absent, find_recipient_by_slack_user
+from .store import (
+    ReceiptStoreUnavailable,
+    apply_claimant_verdict,
+    create_receipt_if_absent,
+    find_recipient_by_slack_user,
+)
 
 router = APIRouter()
 
@@ -168,7 +173,19 @@ def task_apply_claimant_draft(body: dict, authorization: str = Header(default=""
         )
         return {"status": "ignored", "reason": "invalid_payload"}
 
-    result = apply_claimant_verdict(receipt_id, verdict, now=datetime.now(UTC))
+    try:
+        result = apply_claimant_verdict(receipt_id, verdict, now=datetime.now(UTC))
+    except ReceiptStoreUnavailable as e:
+        # store.py 도큐스트링 — 호출부가 503으로 바꾼다. slack_events와 같은 판단:
+        # 트랜잭션이 원자적이라 재시도해도 안전하다(실패 시 PARSED로 남거나, 커밋은
+        # 됐는데 응답만 유실된 경우엔 재실행이 CAS 가드에 걸려 SKIPPED로 빠진다).
+        record_audit_log(
+            actor="api/src/ingest",
+            action="CLAIMANT_DRAFT_APPLY_FAILED",
+            reason=f"firestore transaction failed: {e}",
+            after={"receipt_id": receipt_id, "task_id": task_id},
+        )
+        raise HTTPException(status_code=503, detail="receipt store unavailable")
 
     record_audit_log(
         actor="api/src/ingest",

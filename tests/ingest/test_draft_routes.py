@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from src.ingest import routes
 from src.ingest.drafts import DraftVerdict, InvalidDraftPayload
+from src.ingest.store import ReceiptStoreUnavailable
 
 
 @pytest.fixture(autouse=True)
@@ -117,6 +118,47 @@ def test_get_agent_draft_called_with_task_id(monkeypatch):
     routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
 
     assert calls == ["CLAIMANT:rct_1"]
+
+
+@pytest.mark.parametrize("bad_payload", ["a string", ["a", "list"], 123, None])
+def test_non_dict_payload_returns_200_with_audit_log_not_500(monkeypatch, bad_payload):
+    """F1 리뷰 지적 — payload가 dict가 아니면 drafts.parse_claimant_payload가
+    InvalidDraftPayload를 던지고, 라우트는 그 경로를 그대로 흡수해 200 + 감사
+    로그로 끝나야 한다. AttributeError가 새 나가 500이 되면 안 된다."""
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft(payload=bad_payload))
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+    applied = []
+    monkeypatch.setattr(
+        routes, "apply_claimant_verdict", lambda *a, **kw: applied.append((a, kw)) or "APPLIED"
+    )
+
+    result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert result == {"status": "ignored", "reason": "invalid_payload"}
+    assert applied == []
+    assert len(audit_calls) == 1
+    assert audit_calls[0]["action"] == "CLAIMANT_DRAFT_APPLY_INVALID_PAYLOAD"
+
+
+def test_receipt_store_unavailable_returns_503_with_audit_log(monkeypatch):
+    """F2 리뷰 지적 — store.py 도큐스트링대로 ReceiptStoreUnavailable은 호출부가
+    503으로 바꿔야 한다. slack_events와 같은 계약."""
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+
+    def boom(receipt_id, verdict, *, now):
+        raise ReceiptStoreUnavailable("Failed to commit transaction in 5 attempts.")
+
+    monkeypatch.setattr(routes, "apply_claimant_verdict", boom)
+
+    with pytest.raises(HTTPException) as exc:
+        routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert exc.value.status_code == 503
+    assert len(audit_calls) == 1
+    assert audit_calls[0]["action"] == "CLAIMANT_DRAFT_APPLY_FAILED"
 
 
 def test_oidc_verified_first(monkeypatch):
