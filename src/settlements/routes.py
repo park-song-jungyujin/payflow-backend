@@ -26,6 +26,7 @@ from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups
 from ..payouts.store import (
     create_settlement_run,
+    get_claims_for_run,
     get_settlement_run,
     link_claims_to_run,
     list_settlement_runs,
@@ -33,7 +34,7 @@ from ..payouts.store import (
 from ..schemas.models import SettlementFilter
 from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
-from .store import get_agent_draft
+from .store import get_agent_draft, get_receipts
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -143,6 +144,16 @@ def create_settlement_run_route(body: dict | None = None):
     return _public_run(doc)
 
 
+def _run_claims(run_id: str) -> list[dict]:
+    """web의 "정산 명세"(plan.md 요약 카드 요건) — 이 run에 링크된 claim별 상세.
+    _claim_summary는 이미 집행자 에이전트 enqueue용으로 있던 함수를 그대로
+    재사용한다(payflow-frontend/plans/2026-08-21-web-dashboard.md "필요한
+    백엔드 변경 (a)")."""
+    claims = get_claims_for_run(run_id)
+    receipts = get_receipts({c["receipt_id"] for c in claims})
+    return [_claim_summary(c, receipts) for c in claims]
+
+
 @router.get("/settlements/runs/{run_id}")
 def get_settlement_run_route(run_id: str):
     run = get_settlement_run(run_id)
@@ -150,6 +161,7 @@ def get_settlement_run_route(run_id: str):
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
     public = _public_run(run)
     public["executor_analysis"] = _executor_analysis(run_id)
+    public["claims"] = _run_claims(run_id)
     return public
 
 
