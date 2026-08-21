@@ -134,8 +134,14 @@ def _parse(receipt_id: str, receipt: dict) -> str:
 
     # receipts의 PARSED 확정과 claim 생성을 한 트랜잭션으로 — 갈라지면 갱신은
     # 됐는데 claim 생성이 실패한 경우가 재시도로 복구되지 않는다(status !=
-    # RECEIVED라 SKIPPED로 빠진다).
-    commit_parsed_with_claim(receipt_id, updates, claim)
+    # RECEIVED라 SKIPPED로 빠진다). 이 호출이 실제 확정 지점이다 — 트랜잭션
+    # 안에서 receipt 상태를 다시 읽어 CAS로 확인하므로, 동시 전달로 여기까지
+    # 같이 온 다른 시도가 있으면 둘 중 하나만 커밋되고 나머지는 False를 받는다.
+    committed = commit_parsed_with_claim(receipt_id, updates, claim)
+    if not committed:
+        # 이미 다른 시도가 확정했다. 여기서부터 감사 로그·enqueue를 또 돌리면
+        # CLAIM_CREATED·RECEIPT_PARSED·enqueue가 두 번 일어난다.
+        return "SKIPPED"
 
     if claim is not None:
         try:

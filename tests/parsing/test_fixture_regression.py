@@ -55,11 +55,11 @@ def wired_pipeline(monkeypatch, tmp_path):
         lambda rid: {"receipt_id": rid, "recipient_id": "rcp_1", "slack_file_id": "F1", "status": "RECEIVED"},
     )
     monkeypatch.setattr(pipeline, "update_receipt", lambda rid, updates: written.update(updates))
-    monkeypatch.setattr(
-        pipeline,
-        "commit_parsed_with_claim",
-        lambda rid, updates, claim: written.update(updates),
-    )
+    def _fake_commit(rid, updates, claim):
+        written.update(updates)
+        return True
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", _fake_commit)
     monkeypatch.setattr(
         pipeline,
         "download_slack_file",
