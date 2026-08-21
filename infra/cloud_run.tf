@@ -143,6 +143,13 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "VERTEX_LOCATION"
         value = var.vertex_location
       }
+      env {
+        # 파싱 완료 후 청구자 에이전트 review를 enqueue할 때 부를 대상
+        # (parsing/enqueue.py). agent 자신의 OIDC_AUDIENCE(agent_oidc_audience)와
+        # 같은 값이어야 agent 쪽 검증(guards/oidc.py)을 통과한다.
+        name  = "AGENT_SERVICE_URL"
+        value = var.agent_oidc_audience
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {
