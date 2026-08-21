@@ -33,8 +33,11 @@ def test_created_claim_matches_downstream_query_shape():
     Claim.model_validate(claim)
 
 
-def test_filter_by_category_reaches_created_claim(monkeypatch):
-    """SettlementFilter의 account_categories로 걸러질 수 있는 형태인지."""
+def test_settlement_filter_category_matching_accepts_created_claim_shape(monkeypatch):
+    """`list_confirmed_claims`는 대역화한다 — 이 테스트가 검증하는 건
+    status/settlement_run_id 조건이 아니라, `SettlementFilter`의
+    account_categories 필터가 build_claim이 만드는 claim dict 형태와
+    호환되는지다."""
     from datetime import UTC, datetime
     from src import matching
 

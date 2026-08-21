@@ -33,10 +33,11 @@ def parse_receipt(receipt_id: str) -> str:
     영수증이 재요청 DM 대상이 된다.
 
     **예상 밖 예외 정책**: TransientParseError·PermanentParseError가 아닌 예외도
-    여기서 잡지 않는다. update_receipt(PARSED로 확정하는 쓰기)보다 앞에서 터지므로
-    부분 쓰기가 없고, 영수증은 RECEIVED로 남아 Cloud Tasks 재시도에 맡기는 게
-    안전한 기본값이다. 실패가 명백히 영구적이라고 판단되면(예: slack_file_id
-    누락) PermanentParseError로 올려 FAILED로 직접 확정한다.
+    여기서 잡지 않는다. commit_parsed_with_claim(PARSED로 확정하는 쓰기)보다
+    앞에서 터지므로 부분 쓰기가 없고, 영수증은 RECEIVED로 남아 Cloud Tasks
+    재시도에 맡기는 게 안전한 기본값이다. 실패가 명백히 영구적이라고
+    판단되면(예: slack_file_id 누락) PermanentParseError로 올려
+    update_receipt로 FAILED를 직접 확정한다.
     """
     receipt = get_receipt(receipt_id)
     if receipt is None:
@@ -124,13 +125,26 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     except ClaimNotCreatable as e:
         # 금액을 못 읽은 영수증이다. 파싱 자체는 성공했으므로 PARSED로 남기고
         # 청구만 만들지 않는다 — 0원 claim을 조용히 만드는 것보다 낫다.
-        # 감사 로그로 남겨 대시보드에서 사람이 볼 수 있게 한다.
-        record_audit_log(
-            actor=_ACTOR,
-            action="CLAIM_NOT_CREATED",
-            reason=mask_pii(str(e)),
-            after={"receipt_id": receipt_id},
-        )
+        # 감사 로그로 남겨 대시보드에서 사람이 볼 수 있게 한다. 이 감사 로그
+        # 호출만 넓게 잡는다 — 감싸지 않으면 Firestore 장애 하나로 파싱 전체가
+        # 중단되고 재시도가 Gemini를 다시 태운다.
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="CLAIM_NOT_CREATED",
+                reason=mask_pii(str(e)),
+                after={"receipt_id": receipt_id},
+            )
+        except Exception as audit_error:
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_NOT_CREATED_AUDIT_FAILED",
+                    reason=mask_pii(str(audit_error)),
+                    after={"receipt_id": receipt_id},
+                )
+            except Exception:
+                pass
 
     # receipts의 PARSED 확정과 claim 생성을 한 트랜잭션으로 — 갈라지면 갱신은
     # 됐는데 claim 생성이 실패한 경우가 재시도로 복구되지 않는다(status !=
@@ -154,8 +168,18 @@ def _parse(receipt_id: str, receipt: dict) -> str:
                     "status": claim["status"],
                 },
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # claim은 이미 커밋됐다 — 여기서 또 던지면 안 되고, 뒤따르는
+            # RECEIPT_PARSED·enqueue는 반드시 시도되어야 한다.
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_CREATED_AUDIT_FAILED",
+                    reason=mask_pii(str(e)),
+                    after={"receipt_id": receipt_id, "claim_id": claim["claim_id"]},
+                )
+            except Exception:
+                pass
 
     # 여기서부터는 PARSED가 이미 Firestore에 남은 뒤의 부수 효과다. 되돌리지
     # 않는다 — 되돌리면 Gemini 호출을 다시 태우고, 재시도해도 status != RECEIVED라
@@ -170,8 +194,8 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     # Cloud Tasks 네트워크 호출(Google API 예외)로도 던질 수 있다.
     #
     # 이 범위는 여기서 끝난다 — _parse 앞부분(download_slack_file·parser 호출·
-    # update_receipt)까지 넓히면 TransientParseError를 삼켜 불변식 I3(일시적
-    # 실패는 상태를 안 바꾸고 밖으로 나간다)이 깨진다.
+    # commit_parsed_with_claim)까지 넓히면 TransientParseError를 삼켜 불변식
+    # I3(일시적 실패는 상태를 안 바꾸고 밖으로 나간다)이 깨진다.
     try:
         record_audit_log(
             actor=_ACTOR,
