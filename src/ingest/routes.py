@@ -9,6 +9,7 @@ slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 �
 같은 receipt_id를 덮어쓰므로 멱등이고, 앞 요청이 enqueue 직전에 죽었을 수 있다.
 """
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -187,10 +188,31 @@ def task_apply_claimant_draft(body: dict, authorization: str = Header(default=""
         )
         raise HTTPException(status_code=503, detail="receipt store unavailable")
 
-    record_audit_log(
-        actor="api/src/ingest",
-        action="CLAIMANT_DRAFT_APPLIED",
-        after={"receipt_id": receipt_id, "task_id": task_id, "result": result},
-    )
+    # 커밋은 이미 끝났다 — 이 감사 로그가 던져도 500으로 뒤집으면 안 된다.
+    # 재시도하면 receipt는 이미 전이된 상태라 SKIPPED로 빠지고 "APPLIED" 기록이
+    # 영영 안 남는다. store.py의 CLAIM_DEMOTION_BLOCKED(_AUDIT_FAILED)와 같은
+    # 이중 폴백 — 재기록도 실패하면 logging으로 흔적만 남긴다.
+    try:
+        record_audit_log(
+            actor="api/src/ingest",
+            action="CLAIMANT_DRAFT_APPLIED",
+            after={"receipt_id": receipt_id, "task_id": task_id, "result": result},
+        )
+    except Exception as e:
+        try:
+            record_audit_log(
+                actor="api/src/ingest",
+                action="CLAIMANT_DRAFT_APPLIED_AUDIT_FAILED",
+                reason=str(e),
+                after={"receipt_id": receipt_id, "task_id": task_id, "result": result},
+            )
+        except Exception:
+            logging.getLogger(__name__).error(
+                "CLAIMANT_DRAFT_APPLIED audit log failed twice for receipt %s (task %s, result %s): %s",
+                receipt_id,
+                task_id,
+                result,
+                e,
+            )
 
     return {"status": "ok", "receipt_id": receipt_id, "result": result}

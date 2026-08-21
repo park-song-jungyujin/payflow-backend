@@ -161,6 +161,49 @@ def test_receipt_store_unavailable_returns_503_with_audit_log(monkeypatch):
     assert audit_calls[0]["action"] == "CLAIMANT_DRAFT_APPLY_FAILED"
 
 
+def test_success_audit_log_failure_falls_back_and_still_returns_ok(monkeypatch):
+    """F3 리뷰 지적 — CLAIMANT_DRAFT_APPLIED 감사 로그가 던져도 커밋은 이미
+    끝난 뒤라 500으로 뒤집으면 안 된다. store.py의 CLAIM_DEMOTION_BLOCKED와
+    같은 이중 폴백 — 실패하면 *_AUDIT_FAILED로 재기록해야 한다."""
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: "APPLIED")
+
+    audit_calls = []
+
+    def failing_audit(**kw):
+        audit_calls.append(kw)
+        if kw["action"] == "CLAIMANT_DRAFT_APPLIED":
+            raise RuntimeError("audit sink down")
+
+    monkeypatch.setattr(routes, "record_audit_log", failing_audit)
+
+    result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert result == {"status": "ok", "receipt_id": "rct_1", "result": "APPLIED"}
+    assert [c["action"] for c in audit_calls] == [
+        "CLAIMANT_DRAFT_APPLIED",
+        "CLAIMANT_DRAFT_APPLIED_AUDIT_FAILED",
+    ]
+
+
+def test_success_audit_log_double_failure_logs_and_still_returns_ok(monkeypatch, caplog):
+    """감사 로그 재기록마저 실패하면 logging으로 흔적만 남기고 여전히 500이
+    되면 안 된다."""
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: "APPLIED")
+    monkeypatch.setattr(
+        routes,
+        "record_audit_log",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("audit sink down")),
+    )
+
+    with caplog.at_level("ERROR"):
+        result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert result == {"status": "ok", "receipt_id": "rct_1", "result": "APPLIED"}
+    assert "CLAIMANT_DRAFT_APPLIED audit log failed twice" in caplog.text
+
+
 def test_oidc_verified_first(monkeypatch):
     """OIDC 없으면 401 — 다른 검사(task_id 등)보다 먼저 걸려야 한다."""
     from src.guards.oidc import verify_oidc as real_verify_oidc
