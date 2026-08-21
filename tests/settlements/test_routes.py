@@ -8,6 +8,9 @@ tests/guards/test_routes.py와 같은 패턴 — TestClient/ASGI를 거치지 �
 
 from datetime import date
 
+import pytest
+from fastapi import HTTPException
+
 from src.settlements import routes
 
 
@@ -163,3 +166,72 @@ def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
     _, claim_summaries, duplicate_groups = enqueue_calls[0]
     assert claim_summaries == []
     assert duplicate_groups == []
+
+
+# --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) ---
+
+
+def _run_doc(**overrides):
+    run = {"settlement_run_id": "run_1", "status": "DRAFT", "approval_token_hash": "secret"}
+    run.update(overrides)
+    return run
+
+
+def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
+    """None은 "아직 분석 안 됨"이다 — anomalies가 빈 리스트인 "이상 없음"과
+    구분해야 한다. web이 "분석 대기 중" vs "이상 없음"을 다르게 렌더링할 수 있게."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["executor_analysis"] is None
+
+
+def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
+
+    captured_task_id = []
+
+    def fake_get_draft(task_id):
+        captured_task_id.append(task_id)
+        return {
+            "payload": {
+                "anomalies": ["같은 가맹점·같은 금액 2건"],
+                "summary_text": "중복 의심 1건",
+            },
+            "created_at": "2026-08-21T00:00:00Z",
+        }
+
+    monkeypatch.setattr(routes, "get_agent_draft", fake_get_draft)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    # enqueue.py의 task_id 네임스페이스와 정확히 같은 값으로 조회해야 한다 —
+    # 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
+    assert captured_task_id == ["EXECUTOR:run_1"]
+    assert result["executor_analysis"] == {
+        "anomalies": ["같은 가맹점·같은 금액 2건"],
+        "summary_text": "중복 의심 1건",
+        "created_at": "2026-08-21T00:00:00Z",
+    }
+
+
+def test_get_run_404_does_not_read_agent_draft(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: None)
+    monkeypatch.setattr(
+        routes, "get_agent_draft", lambda task_id: (_ for _ in ()).throw(AssertionError())
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.get_settlement_run_route("run_missing")
+    assert exc_info.value.status_code == 404
+
+
+def test_get_run_still_strips_approval_token_hash(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert "approval_token_hash" not in result

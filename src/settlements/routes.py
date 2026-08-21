@@ -31,8 +31,9 @@ from ..payouts.store import (
     list_settlement_runs,
 )
 from ..schemas.models import SettlementFilter
-from .enqueue import enqueue_executor_analyze
+from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
+from .store import get_agent_draft
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -62,6 +63,25 @@ def _claim_summary(claim: dict, receipts: dict) -> dict:
 def _public_run(run: dict) -> dict:
     """schema-contract.md §6 나가는 필드 최소화 — 토큰 해시는 web으로 내보내지 않는다."""
     return {k: v for k, v in run.items() if k != "approval_token_hash"}
+
+
+def _executor_analysis(run_id: str) -> dict | None:
+    """agent_drafts.EXECUTOR를 읽는 유일한 지점. None이면 "아직 분석 안 됨"이지
+    "이상 없음"이 아니다 — web이 두 상태를 구분해 렌더링해야 한다(§9,
+    plan.md "요약 카드 — 정산 명세 + 위험 알림 렌더").
+
+    TODO: safety_report 필드도 여기 같이 추가한다 — C가 /agents/safety/report
+    호출 배선을 만들고 task_id 컨벤션을 정하면(집행자와 같은 충돌 문제가 있어
+    executor_draft_task_id처럼 agent_drafts.py, "EXECUTOR:" 로 짐작하지 않는다)."""
+    draft = get_agent_draft(executor_draft_task_id(run_id))
+    if draft is None:
+        return None
+    payload = draft["payload"]
+    return {
+        "anomalies": payload.get("anomalies", []),
+        "summary_text": payload.get("summary_text"),
+        "created_at": draft.get("created_at"),
+    }
 
 
 @router.get("/settlements")
@@ -128,7 +148,9 @@ def get_settlement_run_route(run_id: str):
     run = get_settlement_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
-    return _public_run(run)
+    public = _public_run(run)
+    public["executor_analysis"] = _executor_analysis(run_id)
+    return public
 
 
 @router.get("/settlements/runs/{run_id}/export")
