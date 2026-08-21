@@ -5,8 +5,6 @@ select_claims_for_run은 candidates.py로 옮겼다 — src/matching/duplicates.
 청구 판정)를 firestore·pydantic 없이 단위 테스트하려고 __init__.py를 비웠다.
 다른 src/* 패키지(guards, ingest 등)도 전부 빈 __init__.py다."""
 
-from datetime import date
-
 import pytest
 
 from src.matching.candidates import select_claims_for_run
@@ -105,7 +103,7 @@ def test_period_filter_excludes_claims_with_no_transaction_date(candidates):
 
 def test_period_filter_includes_claims_within_window(candidates):
     candidates["claims"] = [_claim("c1")]
-    candidates["receipts"]["rct_c1"] = {"transaction_date": date(2026, 1, 15)}
+    candidates["receipts"]["rct_c1"] = {"transaction_date": "2026-01-15"}
     result = select_claims_for_run(
         SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
     )
@@ -114,11 +112,33 @@ def test_period_filter_includes_claims_within_window(candidates):
 
 def test_period_filter_excludes_claims_outside_window(candidates):
     candidates["claims"] = [_claim("c1")]
-    candidates["receipts"]["rct_c1"] = {"transaction_date": date(2026, 2, 1)}
+    candidates["receipts"]["rct_c1"] = {"transaction_date": "2026-02-01"}
     result = select_claims_for_run(
         SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
     )
     assert result == []
+
+
+def test_period_filter_transaction_date_is_iso_string_in_real_data(candidates):
+    """파싱이 실제로 쓰는 형태(ISO 문자열)로 저장된 transaction_date가
+    date 객체인 filter.period_start/end와 비교돼도 TypeError 없이 동작해야 한다.
+    경계값(시작일 당일, 종료일 당일)도 포함해서 문자열 비교가 날짜 경계에서
+    맞는지 확인한다."""
+    candidates["claims"] = [
+        _claim("c_start", receipt_id="rct_c_start"),
+        _claim("c_end", receipt_id="rct_c_end"),
+        _claim("c_before", receipt_id="rct_c_before"),
+        _claim("c_after", receipt_id="rct_c_after"),
+    ]
+    candidates["receipts"]["rct_c_start"] = {"transaction_date": "2026-01-01"}
+    candidates["receipts"]["rct_c_end"] = {"transaction_date": "2026-01-31"}
+    candidates["receipts"]["rct_c_before"] = {"transaction_date": "2025-12-31"}
+    candidates["receipts"]["rct_c_after"] = {"transaction_date": "2026-02-01"}
+
+    result = select_claims_for_run(
+        SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
+    )
+    assert {c["claim_id"] for c in result} == {"c_start", "c_end"}
 
 
 def test_missing_receipt_document_treated_as_out_of_period(candidates):
