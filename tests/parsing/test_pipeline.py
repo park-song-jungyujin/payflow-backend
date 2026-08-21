@@ -67,6 +67,19 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline, "enqueue_claimant_review", lambda rid: state["enqueued"].append(rid)
     )
+
+    state["claims"] = []
+    state["commits"] = []
+
+    def fake_commit(receipt_id, updates, claim):
+        state["commits"].append((updates, claim))
+        state["receipts"][receipt_id].update(updates)
+        state["updates"].append((receipt_id, updates))
+        if claim is not None:
+            state["claims"].append(claim)
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", fake_commit)
+
     return state
 
 
@@ -360,3 +373,77 @@ def test_audit_log_failure_is_recorded_as_audit_failure_not_enqueue_failure(monk
     actions = [entry["action"] for entry in wired["audit"]]
     assert "RECEIPT_PARSED_AUDIT_FAILED" in actions
     assert "CLAIMANT_ENQUEUE_FAILED" not in actions
+
+
+# --- 청구 항목 생성 (Task 2) ---
+
+def test_creates_claim_when_parsed(monkeypatch, wired):
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    assert len(wired["claims"]) == 1
+    claim = wired["claims"][0]
+    assert claim["receipt_id"] == "rct_1"
+    assert claim["recipient_id"] == "rcp_1"
+    assert claim["amount_minor"] == 45000
+    assert claim["currency"] == "KRW"
+    assert claim["status"] == "CONFIRMED"
+    assert claim["settlement_run_id"] is None
+
+
+def test_claim_and_parsed_status_commit_together(monkeypatch, wired):
+    """★ 한 트랜잭션이어야 한다. 갈라지면 '파싱은 됐는데 청구가 없는' 영수증이
+    재시도로도 복구되지 않는다(status != RECEIVED라 SKIPPED로 빠진다)."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    # 커밋이 한 번, 그 안에 receipts 갱신과 claims 생성이 함께 들어갔다.
+    assert len(wired["commits"]) == 1
+    updates, claim = wired["commits"][0]
+    assert updates["status"] == "PARSED"
+    assert claim is not None and claim["receipt_id"] == "rct_1"
+
+
+def test_claim_creation_failure_leaves_receipt_received(monkeypatch, wired):
+    """트랜잭션이 실패하면 상태가 안 바뀌고 큐가 재시도한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    def boom(receipt_id, updates, claim):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", boom)
+
+    with pytest.raises(RuntimeError):
+        pipeline.parse_receipt("rct_1")
+    assert wired["receipts"]["rct_1"]["status"] == "RECEIVED"
+    assert wired["claims"] == []
+
+
+def test_no_claim_when_amount_missing(monkeypatch, wired):
+    """금액을 못 읽은 영수증은 PARSED로 남되 청구는 안 만든다.
+    0원 claim을 조용히 만드는 것보다 낫다."""
+    _install_parser(
+        monkeypatch,
+        RecordingParser(result=_clean_result(amount_text=None, currency=None, confidence=None)),
+    )
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    assert wired["claims"] == []
+    assert any(e["action"] == "CLAIM_NOT_CREATED" for e in wired["audit"])
+
+
+def test_claim_created_audit_log(monkeypatch, wired):
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    entry = next(e for e in wired["audit"] if e["action"] == "CLAIM_CREATED")
+    assert entry["after"]["receipt_id"] == "rct_1"
+    assert entry["after"]["claim_id"].startswith("clm_")
+
+
+def test_no_duplicate_claim_on_retry(monkeypatch, wired):
+    """Cloud Tasks 재시도. 두 번째 호출은 SKIPPED라 claim이 하나만 남아야 한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+    assert pipeline.parse_receipt("rct_1") == "SKIPPED"
+    assert len(wired["claims"]) == 1
