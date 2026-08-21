@@ -213,6 +213,16 @@ def test_mixed_batch_splits_correctly(fake_store, monkeypatch):
     assert [c["claim_id"] for c in outcome["failed_claims"]] == ["clm_fail"]
 
 
+def test_outcome_returns_fetched_receipts_for_reuse(fake_store, monkeypatch):
+    """호출부(routes.py)가 집행자 enqueue용 merchant_name·transaction_date를 다시
+    조회하지 않도록, 이미 읽은 receipts를 그대로 돌려준다."""
+    fake_store.receipts["rct_1"] = _receipt(verified_at="2026-08-16T00:00:00Z", status="PARSED")
+
+    outcome = verification.verify_candidates([_claim("clm_1", "rct_1")])
+
+    assert outcome["receipts"] == {"rct_1": fake_store.receipts["rct_1"]}
+
+
 # --- 순수 헬퍼 ---
 
 
