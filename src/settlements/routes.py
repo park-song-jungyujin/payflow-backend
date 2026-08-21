@@ -1,11 +1,14 @@
 """schema-contract.md §10 — GET /settlements, POST /settlements/runs,
 GET /settlements/runs/{run_id}, GET /settlements/runs/{run_id}/export.
 
-GET /settlements, POST /settlements/runs, GET /settlements/runs/{run_id}는 B 담당
-로직(결정론적 매칭, 검증 호출, 자연어 필터 → SettlementFilter)이 아직 없어
-src/matching/select_claims_for_run의 TEMP 버전(필터링만, PayPal 원장 대조·이미지
-검증 없음)을 쓴다 — A/C의 E2E 테스트가 실제 claims로 배치를 만들 수 있게 최소한만
-채웠다. TODO(B): src/matching/ 안쪽을 결정론적 매칭·검증 결과 반영으로 교체한다.
+POST /settlements/runs 순서(§7 승인 토큰 흐름): 필터로 후보 조회 → 검증(§2) →
+탈락분 제외 → 살아남은 후보만 배치에 링크. 검증이 claims CONFIRMED → IN_RUN
+전이보다 먼저 끝나야 한다 — 순서를 뒤집으면 나중에 검증 탈락한 claim이 어느
+run에도 속하지 않으면서 IN_RUN을 들고 있는 상태가 생긴다.
+
+TODO: `link_claims_to_run`(payouts/store.py)이 아직 TEMP다 — 진짜 CAS 트랜잭션이
+아니라 무조건 덮어쓰는 batch write다. schema-contract.md §2 `claims`는 이 전이를
+C(`guards/`) 담당으로 명시한다 — B 소유 파일이 아니라 여기서 고치지 않는다.
 """
 
 import os
@@ -16,7 +19,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from ulid import ULID
 
-from ..matching import select_claims_for_run
+from ..matching.candidates import select_claims_for_run
 from ..payouts.store import (
     create_settlement_run,
     get_settlement_run,
@@ -25,6 +28,7 @@ from ..payouts.store import (
 )
 from ..schemas.models import SettlementFilter
 from .export import RunNotFound, build_settlement_export
+from .verification import verify_candidates
 
 router = APIRouter()
 
@@ -42,7 +46,8 @@ def list_settlements():
 @router.post("/settlements/runs")
 def create_settlement_run_route(body: dict | None = None):
     filter = SettlementFilter(**(body or {}).get("filter", {}))
-    claims = select_claims_for_run(filter)
+    candidates = select_claims_for_run(filter)
+    claims = verify_candidates(candidates)["passed_claims"]
 
     now = datetime.now(UTC)
     run_id = f"run_{now:%y%m%d}_{str(ULID())[:12]}"

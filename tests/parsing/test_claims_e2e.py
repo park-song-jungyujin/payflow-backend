@@ -6,7 +6,7 @@ claim이 만들어지는 것만으로는 부족하다. Firestore의 `== None` �
 """
 
 from src.ingest.claims import build_claim
-from src.matching import select_claims_for_run
+from src.matching.candidates import select_claims_for_run
 from src.schemas.models import Claim, SettlementFilter
 
 
@@ -39,7 +39,7 @@ def test_settlement_filter_category_matching_accepts_created_claim_shape(monkeyp
     account_categories 필터가 build_claim이 만드는 claim dict 형태와
     호환되는지다."""
     from datetime import UTC, datetime
-    from src import matching
+    from src.matching import candidates as matching
 
     claim = build_claim(
         {
