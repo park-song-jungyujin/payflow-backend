@@ -18,6 +18,7 @@ def test_missing_queue_raises_explicitly(monkeypatch):
 def test_builds_oidc_task_for_claimant_review_route(monkeypatch):
     monkeypatch.setenv("CLOUD_TASKS_QUEUE", "payflow-queue")
     monkeypatch.setenv("TASKS_SERVICE_ACCOUNT_EMAIL", "tasks@payflow-test.iam.gserviceaccount.com")
+    monkeypatch.setenv("AGENT_SERVICE_URL", "https://payflow-agent.test.invalid")
     captured = {}
 
     class FakeClient:
@@ -32,10 +33,18 @@ def test_builds_oidc_task_for_claimant_review_route(monkeypatch):
     enqueue_claimant_review("rct_01K3M9XQ7B2F4G6H8J0K2M4N6P")
 
     request = captured["task"]["http_request"]
-    # 잠정값이다: /agents/claimant/review는 payflow-agent가 별도 Cloud Run
-    # 서비스라 이 앱에 존재하지 않는다(404). 에이전트 URL 계약이 확정되면
-    # (다른 담당자가 진행 중, 답변 대기) 이 단언도 함께 바뀌어야 한다.
-    assert request["url"] == "https://api.test.invalid/agents/claimant/review"
+    # payflow-agent는 별도 Cloud Run 서비스라 api 자신의 OIDC_AUDIENCE로는
+    # 도달할 수 없다 — URL과 OIDC 토큰 audience 둘 다 AGENT_SERVICE_URL이어야 한다.
+    assert request["url"] == "https://payflow-agent.test.invalid/agents/claimant/review"
     assert json.loads(request["body"]) == {"receipt_id": "rct_01K3M9XQ7B2F4G6H8J0K2M4N6P"}
-    assert request["oidc_token"]["audience"] == "https://api.test.invalid"
+    assert request["oidc_token"]["audience"] == "https://payflow-agent.test.invalid"
     assert captured["parent"].endswith("/queues/payflow-queue")
+
+
+def test_missing_agent_service_url_raises_queue_not_configured(monkeypatch):
+    """AGENT_SERVICE_URL이 없으면 os.environ[...] KeyError로 새 나가지 않고
+    QueueNotConfigured로 명시돼야 파이프라인이 PARSED를 유지하는 경로를 탄다."""
+    monkeypatch.setenv("CLOUD_TASKS_QUEUE", "payflow-queue")
+    monkeypatch.delenv("AGENT_SERVICE_URL", raising=False)
+    with pytest.raises(QueueNotConfigured):
+        enqueue_claimant_review("rct_01K3M9XQ7B2F4G6H8J0K2M4N6P")
