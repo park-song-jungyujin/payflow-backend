@@ -1,11 +1,15 @@
 """src/matching — TEMP(B) 필터 적용 로직(결정론적 매칭 자체는 아직 미구현이지만
-지금 있는 필터 조합 코드는 실제로 A/C의 E2E를 떠받치고 있어 회귀에 취약하다)."""
+지금 있는 필터 조합 코드는 실제로 A/C의 E2E를 떠받치고 있어 회귀에 취약하다).
+
+select_claims_for_run은 candidates.py로 옮겼다 — src/matching/duplicates.py(중복
+청구 판정)를 firestore·pydantic 없이 단위 테스트하려고 __init__.py를 비웠다.
+다른 src/* 패키지(guards, ingest 등)도 전부 빈 __init__.py다."""
 
 from datetime import date
 
 import pytest
 
-from src.matching import select_claims_for_run
+from src.matching.candidates import select_claims_for_run
 from src.schemas.models import SettlementFilter
 
 
@@ -56,7 +60,7 @@ def _claim(claim_id, **overrides):
 @pytest.fixture
 def candidates(monkeypatch):
     store = {"claims": [], "receipts": {}}
-    import src.matching as matching_mod
+    import src.matching.candidates as matching_mod
 
     monkeypatch.setattr(matching_mod, "list_confirmed_claims", lambda: store["claims"])
     monkeypatch.setattr(matching_mod, "get_client", lambda: FakeClient(store["receipts"]))
