@@ -9,6 +9,8 @@ TODO(B): 검증(schema-contract.md §2 "검증") 반영은 아직 없다. `settl
 claims CONFIRMED → IN_RUN CAS로 넘긴다.
 """
 
+from datetime import date
+
 from ..payouts.store import get_client, list_confirmed_claims
 from ..schemas.models import SettlementFilter
 
@@ -36,9 +38,15 @@ def select_claims_for_run(filter: SettlementFilter) -> list[dict]:
             txn_date = (receipts.get(c["receipt_id"]) or {}).get("transaction_date")
             if txn_date is None:
                 return False
-            if filter.period_start and txn_date < filter.period_start:
+            # transaction_date는 Firestore에 ISO 문자열로 저장된다(schema-contract.md
+            # §1 예외). filter.period_start/end는 pydantic이 date로 변환한다. 타입이
+            # 다르면 비교가 TypeError로 죽으므로 양쪽을 ISO 문자열로 정규화한다.
+            # YYYY-MM-DD는 사전순 정렬이 날짜순과 일치해 문자열 비교로 충분하다.
+            if isinstance(txn_date, date):
+                txn_date = txn_date.isoformat()
+            if filter.period_start and txn_date < filter.period_start.isoformat():
                 return False
-            if filter.period_end and txn_date > filter.period_end:
+            if filter.period_end and txn_date > filter.period_end.isoformat():
                 return False
             return True
 
