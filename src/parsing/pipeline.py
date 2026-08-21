@@ -12,6 +12,7 @@ account_category_code = UNCLASSIFIED로 표현된다 (§5).
 from datetime import UTC, datetime
 
 from ..guards.audit import record_audit_log
+from ..ingest.claims import ClaimNotCreatable, build_claim
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
 from .masking import mask_pii
@@ -19,7 +20,7 @@ from .models import amount_to_minor
 from .parser import get_parser
 from .slack_files import PermanentParseError, download_slack_file
 from .storage import get_object_store, image_key, raw_text_key
-from .store import ReceiptNotFound, get_receipt, update_receipt
+from .store import ReceiptNotFound, commit_parsed_with_claim, get_receipt, update_receipt
 
 _ACTOR = "api/src/parsing"
 
@@ -32,10 +33,11 @@ def parse_receipt(receipt_id: str) -> str:
     영수증이 재요청 DM 대상이 된다.
 
     **예상 밖 예외 정책**: TransientParseError·PermanentParseError가 아닌 예외도
-    여기서 잡지 않는다. update_receipt(PARSED로 확정하는 쓰기)보다 앞에서 터지므로
-    부분 쓰기가 없고, 영수증은 RECEIVED로 남아 Cloud Tasks 재시도에 맡기는 게
-    안전한 기본값이다. 실패가 명백히 영구적이라고 판단되면(예: slack_file_id
-    누락) PermanentParseError로 올려 FAILED로 직접 확정한다.
+    여기서 잡지 않는다. commit_parsed_with_claim(PARSED로 확정하는 쓰기)보다
+    앞에서 터지므로 부분 쓰기가 없고, 영수증은 RECEIVED로 남아 Cloud Tasks
+    재시도에 맡기는 게 안전한 기본값이다. 실패가 명백히 영구적이라고
+    판단되면(예: slack_file_id 누락) PermanentParseError로 올려
+    update_receipt로 FAILED를 직접 확정한다.
     """
     receipt = get_receipt(receipt_id)
     if receipt is None:
@@ -97,26 +99,88 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     category, source, confidence = route_category(parsed, signals)
 
     now = datetime.now(UTC)
-    update_receipt(
-        receipt_id,
-        {
-            "image_gcs_uri": image_uri,
-            "raw_text_gcs_uri": raw_text_uri,
-            # ★ 마스킹은 여기서. Firestore로 나가는 유일한 자유 텍스트다.
-            "merchant_name": mask_pii(parsed.merchant_name),
-            # §1 시각 예외 — transaction_date는 YYYY-MM-DD 문자열이다.
-            # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
-            "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
-            "parsed_amount_minor": amount_minor,
-            "currency": parsed.currency,
-            "account_category_code": category.value,
-            "category_source": source.value,
-            "parse_signals": signals.model_dump(),
-            "llm_confidence": confidence,
-            "status": "PARSED",
-            "updated_at": now,
-        },
-    )
+    updates = {
+        "image_gcs_uri": image_uri,
+        "raw_text_gcs_uri": raw_text_uri,
+        # ★ 마스킹은 여기서. Firestore로 나가는 유일한 자유 텍스트다.
+        "merchant_name": mask_pii(parsed.merchant_name),
+        # §1 시각 예외 — transaction_date는 YYYY-MM-DD 문자열이다.
+        # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
+        "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
+        "parsed_amount_minor": amount_minor,
+        "currency": parsed.currency,
+        "account_category_code": category.value,
+        "category_source": source.value,
+        "parse_signals": signals.model_dump(),
+        "llm_confidence": confidence,
+        "status": "PARSED",
+        "updated_at": now,
+    }
+
+    # claim 조립은 receipts 갱신 전이다 — build_claim에는 파싱 전 receipt가
+    # 아니라 updates가 반영된 dict를 넘겨야 금액·통화가 보인다.
+    claim = None
+    try:
+        claim = build_claim({**receipt, **updates, "receipt_id": receipt_id}, now=now)
+    except ClaimNotCreatable as e:
+        # 금액을 못 읽은 영수증이다. 파싱 자체는 성공했으므로 PARSED로 남기고
+        # 청구만 만들지 않는다 — 0원 claim을 조용히 만드는 것보다 낫다.
+        # 감사 로그로 남겨 대시보드에서 사람이 볼 수 있게 한다. 이 감사 로그
+        # 호출만 넓게 잡는다 — 감싸지 않으면 Firestore 장애 하나로 파싱 전체가
+        # 중단되고 재시도가 Gemini를 다시 태운다.
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="CLAIM_NOT_CREATED",
+                reason=mask_pii(str(e)),
+                after={"receipt_id": receipt_id},
+            )
+        except Exception as audit_error:
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_NOT_CREATED_AUDIT_FAILED",
+                    reason=mask_pii(str(audit_error)),
+                    after={"receipt_id": receipt_id},
+                )
+            except Exception:
+                pass
+
+    # receipts의 PARSED 확정과 claim 생성을 한 트랜잭션으로 — 갈라지면 갱신은
+    # 됐는데 claim 생성이 실패한 경우가 재시도로 복구되지 않는다(status !=
+    # RECEIVED라 SKIPPED로 빠진다). 이 호출이 실제 확정 지점이다 — 트랜잭션
+    # 안에서 receipt 상태를 다시 읽어 CAS로 확인하므로, 동시 전달로 여기까지
+    # 같이 온 다른 시도가 있으면 둘 중 하나만 커밋되고 나머지는 False를 받는다.
+    committed = commit_parsed_with_claim(receipt_id, updates, claim)
+    if not committed:
+        # 이미 다른 시도가 확정했다. 여기서부터 감사 로그·enqueue를 또 돌리면
+        # CLAIM_CREATED·RECEIPT_PARSED·enqueue가 두 번 일어난다.
+        return "SKIPPED"
+
+    if claim is not None:
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="CLAIM_CREATED",
+                after={
+                    "receipt_id": receipt_id,
+                    "claim_id": claim["claim_id"],
+                    "status": claim["status"],
+                },
+            )
+        except Exception as e:
+            # claim은 이미 커밋됐다 — 여기서 또 던지면 안 되고, 뒤따르는
+            # RECEIPT_PARSED·enqueue는 반드시 시도되어야 한다.
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_CREATED_AUDIT_FAILED",
+                    reason=mask_pii(str(e)),
+                    after={"receipt_id": receipt_id, "claim_id": claim["claim_id"]},
+                )
+            except Exception:
+                pass
+
     # 여기서부터는 PARSED가 이미 Firestore에 남은 뒤의 부수 효과다. 되돌리지
     # 않는다 — 되돌리면 Gemini 호출을 다시 태우고, 재시도해도 status != RECEIVED라
     # SKIPPED로 빠져 같은 부수 효과가 영영 안 돈다(ingest/routes.py와 같은 판단).
@@ -130,8 +194,8 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     # Cloud Tasks 네트워크 호출(Google API 예외)로도 던질 수 있다.
     #
     # 이 범위는 여기서 끝난다 — _parse 앞부분(download_slack_file·parser 호출·
-    # update_receipt)까지 넓히면 TransientParseError를 삼켜 불변식 I3(일시적
-    # 실패는 상태를 안 바꾸고 밖으로 나간다)이 깨진다.
+    # commit_parsed_with_claim)까지 넓히면 TransientParseError를 삼켜 불변식
+    # I3(일시적 실패는 상태를 안 바꾸고 밖으로 나간다)이 깨진다.
     try:
         record_audit_log(
             actor=_ACTOR,

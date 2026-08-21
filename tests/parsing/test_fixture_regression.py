@@ -44,8 +44,8 @@ def wired_pipeline(monkeypatch, tmp_path):
     """pipeline의 외부 경계를 전부 monkeypatch하고 Firestore write 결과를 캡처한다.
 
     실제 Firestore·Slack·GCS·Cloud Tasks에는 절대 붙지 않는다 — get_receipt/
-    update_receipt/download_slack_file/get_object_store/record_audit_log/
-    enqueue_claimant_review/get_parser 전부를 여기서 대체한다.
+    update_receipt/commit_parsed_with_claim/download_slack_file/get_object_store/
+    record_audit_log/enqueue_claimant_review/get_parser 전부를 여기서 대체한다.
     """
     written = {}
 
@@ -55,6 +55,11 @@ def wired_pipeline(monkeypatch, tmp_path):
         lambda rid: {"receipt_id": rid, "recipient_id": "rcp_1", "slack_file_id": "F1", "status": "RECEIVED"},
     )
     monkeypatch.setattr(pipeline, "update_receipt", lambda rid, updates: written.update(updates))
+    def _fake_commit(rid, updates, claim):
+        written.update(updates)
+        return True
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", _fake_commit)
     monkeypatch.setattr(
         pipeline,
         "download_slack_file",

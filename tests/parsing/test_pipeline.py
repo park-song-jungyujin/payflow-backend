@@ -13,6 +13,7 @@ from datetime import date
 import pytest
 
 from src.parsing import pipeline
+from src.parsing import store as parsing_store
 from src.parsing.models import ParsedReceipt
 from src.parsing.slack_files import PermanentParseError, SlackFile, TransientParseError
 from src.parsing.storage import LocalObjectStore
@@ -67,6 +68,20 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline, "enqueue_claimant_review", lambda rid: state["enqueued"].append(rid)
     )
+
+    state["claims"] = []
+    state["commits"] = []
+
+    def fake_commit(receipt_id, updates, claim):
+        state["commits"].append((updates, claim))
+        state["receipts"][receipt_id].update(updates)
+        state["updates"].append((receipt_id, updates))
+        if claim is not None:
+            state["claims"].append(claim)
+        return True
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", fake_commit)
+
     return state
 
 
@@ -360,3 +375,219 @@ def test_audit_log_failure_is_recorded_as_audit_failure_not_enqueue_failure(monk
     actions = [entry["action"] for entry in wired["audit"]]
     assert "RECEIPT_PARSED_AUDIT_FAILED" in actions
     assert "CLAIMANT_ENQUEUE_FAILED" not in actions
+
+
+# --- 청구 항목 생성 (Task 2) ---
+
+def test_creates_claim_when_parsed(monkeypatch, wired):
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    assert len(wired["claims"]) == 1
+    claim = wired["claims"][0]
+    assert claim["receipt_id"] == "rct_1"
+    assert claim["recipient_id"] == "rcp_1"
+    assert claim["amount_minor"] == 45000
+    assert claim["currency"] == "KRW"
+    assert claim["status"] == "CONFIRMED"
+    assert claim["settlement_run_id"] is None
+
+
+def test_claim_and_parsed_status_commit_together(monkeypatch, wired):
+    """★ 한 트랜잭션이어야 한다. 갈라지면 '파싱은 됐는데 청구가 없는' 영수증이
+    재시도로도 복구되지 않는다(status != RECEIVED라 SKIPPED로 빠진다)."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    # 커밋이 한 번, 그 안에 receipts 갱신과 claims 생성이 함께 들어갔다.
+    assert len(wired["commits"]) == 1
+    updates, claim = wired["commits"][0]
+    assert updates["status"] == "PARSED"
+    assert claim is not None and claim["receipt_id"] == "rct_1"
+
+
+def test_claim_creation_failure_leaves_receipt_received(monkeypatch, wired):
+    """트랜잭션이 실패하면 상태가 안 바뀌고 큐가 재시도한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    def boom(receipt_id, updates, claim):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", boom)
+
+    with pytest.raises(RuntimeError):
+        pipeline.parse_receipt("rct_1")
+    assert wired["receipts"]["rct_1"]["status"] == "RECEIVED"
+    assert wired["claims"] == []
+
+
+def test_no_claim_when_amount_missing(monkeypatch, wired):
+    """금액을 못 읽은 영수증은 PARSED로 남되 청구는 안 만든다.
+    0원 claim을 조용히 만드는 것보다 낫다."""
+    _install_parser(
+        monkeypatch,
+        RecordingParser(result=_clean_result(amount_text=None, currency=None, confidence=None)),
+    )
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    assert wired["claims"] == []
+    assert any(e["action"] == "CLAIM_NOT_CREATED" for e in wired["audit"])
+
+
+def test_claim_created_audit_log(monkeypatch, wired):
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    entry = next(e for e in wired["audit"] if e["action"] == "CLAIM_CREATED")
+    assert entry["after"]["receipt_id"] == "rct_1"
+    assert entry["after"]["claim_id"].startswith("clm_")
+
+
+def test_no_duplicate_claim_on_retry(monkeypatch, wired):
+    """Cloud Tasks 재시도. 두 번째 호출은 SKIPPED라 claim이 하나만 남아야 한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+    assert pipeline.parse_receipt("rct_1") == "SKIPPED"
+    assert len(wired["claims"]) == 1
+
+
+# --- F1: 동시 전달 — 트랜잭션 CAS가 False를 돌려주면 SKIPPED이고 부수 효과가 안 돈다 ---
+
+def test_parse_returns_skipped_when_commit_loses_race(monkeypatch, wired):
+    """트랜잭션 밖의 status 확인만으로는 동시 전달을 막지 못한다 — 둘째 시도가
+    commit_parsed_with_claim 안에서 CAS에 걸려 False를 받는 상황을 흉내낸다.
+    이 경우 CLAIM_CREATED·RECEIPT_PARSED 감사 로그와 enqueue가 중복 실행되면
+    안 된다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    monkeypatch.setattr(pipeline, "commit_parsed_with_claim", lambda rid, updates, claim: False)
+
+    assert pipeline.parse_receipt("rct_1") == "SKIPPED"
+    assert wired["audit"] == []
+    assert wired["enqueued"] == []
+    assert wired["claims"] == []
+
+
+# --- F1: src.parsing.store.commit_parsed_with_claim의 트랜잭션 내부 CAS ---
+#
+# 아래 fake는 ingest/tests/test_store.py의 FakeClient/FakeTransaction과 같은
+# 성격이다 — 원자성(락·ABORTED·재실행)은 검증하지 않는다. 검증하는 건 두 가지:
+# 1. status != RECEIVED(또는 문서 없음)면 쓰기가 0건인지
+# 2. 그 읽기가 모든 쓰기보다 앞에 오는지(구조 테스트)
+
+
+class _FakeSnapshot:
+    def __init__(self, data):
+        self._data = data
+        self.exists = data is not None
+
+    def get(self, field):
+        return self._data[field]
+
+
+class _FakeDocRef:
+    def __init__(self, backing, doc_id, log):
+        self._backing, self.id, self._log = backing, doc_id, log
+
+    def get(self, transaction=None):
+        self._log.append(("get", self.id, transaction is not None))
+        return _FakeSnapshot(self._backing.get(self.id))
+
+    def set(self, data):
+        self._backing[self.id] = data
+
+
+class _FakeCollection:
+    def __init__(self, backing, log):
+        self._backing, self._log = backing, log
+
+    def document(self, doc_id):
+        return _FakeDocRef(self._backing, doc_id, self._log)
+
+
+class _FakeTransaction:
+    def __init__(self, log):
+        self._log = log
+
+    def update(self, ref, data):
+        self._log.append(("update", ref.id, True))
+        ref._backing[ref.id] = {**ref._backing.get(ref.id, {}), **data}
+
+    def set(self, ref, data):
+        self._log.append(("set", ref.id, True))
+        ref.set(data)
+
+
+class _FakeClient:
+    def __init__(self, log):
+        self.data = {"receipts": {}, "claims": {}}
+        self._log = log
+
+    def collection(self, name):
+        return _FakeCollection(self.data.setdefault(name, {}), self._log)
+
+    def transaction(self):
+        return _FakeTransaction(self._log)
+
+
+@pytest.fixture
+def store_fake(monkeypatch):
+    """`@firestore.transactional`을 항등 데코레이터로 갈아끼운다 — 콜백을
+    실제 재시도 없이 바로 실행해 콜백 본문(읽기→검사→쓰기 순서)만 검증한다."""
+    log = []
+    client = _FakeClient(log)
+    monkeypatch.setattr(parsing_store, "get_client", lambda: client)
+    monkeypatch.setattr(parsing_store.firestore, "transactional", lambda fn: fn)
+    client.log = log
+    return client
+
+
+def test_commit_writes_when_receipt_is_received(store_fake):
+    store_fake.data["receipts"]["rct_1"] = {"receipt_id": "rct_1", "status": "RECEIVED"}
+    claim = {"claim_id": "clm_1", "receipt_id": "rct_1"}
+
+    committed = parsing_store.commit_parsed_with_claim("rct_1", {"status": "PARSED"}, claim)
+
+    assert committed is True
+    assert store_fake.data["receipts"]["rct_1"]["status"] == "PARSED"
+    assert store_fake.data["claims"]["clm_1"] == claim
+
+
+def test_commit_writes_zero_when_receipt_already_confirmed(store_fake):
+    """동시 전달 시나리오 — 다른 시도가 먼저 확정했으면(status != RECEIVED)
+    쓰기가 0건이어야 한다."""
+    store_fake.data["receipts"]["rct_1"] = {"receipt_id": "rct_1", "status": "PARSED"}
+    claim = {"claim_id": "clm_1", "receipt_id": "rct_1"}
+
+    committed = parsing_store.commit_parsed_with_claim("rct_1", {"status": "PARSED"}, claim)
+
+    assert committed is False
+    assert store_fake.data["claims"] == {}
+    assert not [entry for entry in store_fake.log if entry[0] in ("update", "set")]
+
+
+def test_commit_writes_zero_when_receipt_missing(store_fake):
+    claim = {"claim_id": "clm_1", "receipt_id": "rct_nope"}
+
+    committed = parsing_store.commit_parsed_with_claim("rct_nope", {"status": "PARSED"}, claim)
+
+    assert committed is False
+    assert store_fake.data["claims"] == {}
+
+
+def test_commit_read_happens_before_any_write(store_fake):
+    """구조 테스트 — ingest/test_store.py의
+    test_dedup_key_is_read_before_any_write와 같은 성격이다. receipt 읽기가
+    receipts 갱신·claims 생성보다 먼저 일어나야 트랜잭션 락이 걸린다."""
+    store_fake.data["receipts"]["rct_1"] = {"receipt_id": "rct_1", "status": "RECEIVED"}
+    claim = {"claim_id": "clm_1", "receipt_id": "rct_1"}
+
+    parsing_store.commit_parsed_with_claim("rct_1", {"status": "PARSED"}, claim)
+
+    kinds = [entry[0] for entry in store_fake.log]
+    assert kinds[0] == "get", f"첫 연산이 읽기가 아니다: {store_fake.log}"
+    first_write_index = min(kinds.index(k) for k in ("update", "set") if k in kinds)
+    assert "get" not in kinds[first_write_index:], f"쓰기 뒤에 읽기가 있다: {store_fake.log}"
+
+    first_read = store_fake.log[0]
+    assert first_read[1] == "rct_1"
+    assert first_read[2] is True, "receipt 읽기가 트랜잭션 밖에서 일어났다"
