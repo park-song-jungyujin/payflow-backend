@@ -9,12 +9,17 @@ slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 �
 같은 receipt_id를 덮어쓰므로 멱등이고, 앞 요청이 enqueue 직전에 죽었을 수 있다.
 """
 
-from fastapi import APIRouter, HTTPException, Request
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Header, HTTPException, Request
 
 from ..guards.audit import record_audit_log
+from ..guards.oidc import verify_oidc
+from ..settlements.store import get_agent_draft
+from .drafts import InvalidDraftPayload, parse_claimant_payload
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt
 from .signature import SignatureError, verify_slack_signature
-from .store import ReceiptStoreUnavailable, create_receipt_if_absent, find_recipient_by_slack_user
+from .store import ReceiptStoreUnavailable, apply_claimant_verdict, create_receipt_if_absent, find_recipient_by_slack_user
 
 router = APIRouter()
 
@@ -120,3 +125,55 @@ async def slack_events(request: Request):
         received.append(receipt_id)
 
     return {"status": "ok", "receipt_ids": received}
+
+
+@router.post("/tasks/apply-claimant-draft")
+def task_apply_claimant_draft(body: dict, authorization: str = Header(default="")):
+    """schema-contract.md §9 — 청구자 에이전트 draft를 상태 전이로 반영하는
+    Cloud Tasks 타겟. draft 읽기는 settlements/store.py의 get_agent_draft
+    (agent_drafts의 유일한 읽기)를 그대로 쓴다 — 여기서 새로 읽지 않는다.
+
+    payload가 §9 계약과 형식적으로 안 맞으면(InvalidDraftPayload) 200 +
+    감사 로그로 끝낸다 — 재시도해도 같은 payload라 큐를 계속 돌릴 이유가 없다.
+    """
+    verify_oidc(authorization)
+
+    task_id = body.get("task_id")
+    if not task_id:
+        raise HTTPException(status_code=400, detail="task_id required")
+
+    draft = get_agent_draft(task_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail=f"unknown task_id: {task_id}")
+    if draft.get("agent") != "CLAIMANT":
+        raise HTTPException(
+            status_code=400, detail=f"draft agent is {draft.get('agent')}, expected CLAIMANT"
+        )
+    if draft.get("target_type") != "RECEIPT":
+        raise HTTPException(
+            status_code=400,
+            detail=f"draft target_type is {draft.get('target_type')}, expected RECEIPT",
+        )
+
+    receipt_id = draft.get("target_id")
+
+    try:
+        verdict = parse_claimant_payload(draft.get("payload") or {})
+    except InvalidDraftPayload as e:
+        record_audit_log(
+            actor="api/src/ingest",
+            action="CLAIMANT_DRAFT_APPLY_INVALID_PAYLOAD",
+            reason=str(e),
+            after={"receipt_id": receipt_id, "task_id": task_id},
+        )
+        return {"status": "ignored", "reason": "invalid_payload"}
+
+    result = apply_claimant_verdict(receipt_id, verdict, now=datetime.now(UTC))
+
+    record_audit_log(
+        actor="api/src/ingest",
+        action="CLAIMANT_DRAFT_APPLIED",
+        after={"receipt_id": receipt_id, "task_id": task_id, "result": result},
+    )
+
+    return {"status": "ok", "receipt_id": receipt_id, "result": result}
