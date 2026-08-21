@@ -14,6 +14,7 @@ claims가 두 건 생겨 이중 지급으로 이어진다.
 대한 `transaction.get()`은 문서가 없어도 read set에 들어가 락이 걸린다.
 """
 
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -215,11 +216,21 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                 transaction.update(claim_ref, {"is_business": verdict.is_business, "updated_at": now})
         return "APPLIED", None
 
-    result, demotion_blocked_status = _run_in_transaction(_txn)
+    try:
+        result, demotion_blocked_status = _run_in_transaction(_txn)
+    except ValueError as e:
+        # create_receipt_if_absent와 같은 경계 — SDK가 트랜잭션 재시도를 소진하면
+        # ValueError를 던진다. 호출부(Task 3)가 SDK 사정을 모르게 도메인 예외로 바꾼다.
+        raise ReceiptStoreUnavailable(str(e)) from e
 
     # 감사 로그는 트랜잭션 밖에서 남긴다 — commit_parsed_with_claim(parsing/store.py)·
     # ingest/routes.py와 같은 판단이다. 이미 커밋된 상태 전이를 감사 로그 실패
     # 때문에 되돌릴 이유가 없고, Firestore add()는 어차피 트랜잭션 API가 아니다.
+    #
+    # SETTLED는 이미 돈이 나간 건이다 — 이 감사 로그가 "에이전트가 재요청이
+    # 필요하다고 판단했는데 이미 송금됨"의 유일한 기록이라 흔적 없이 삼키면
+    # 안 된다. parsing/pipeline.py의 CLAIM_CREATED/CLAIM_CREATED_AUDIT_FAILED
+    # 쌍과 같은 형태로, 실패하면 별도 액션으로 한 번 더 남긴다.
     if demotion_blocked_status is not None:
         try:
             record_audit_log(
@@ -228,7 +239,20 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                 reason=f"claim status={demotion_blocked_status}, receipt {receipt_id}이 NEEDS_REQUERY로 내려갔지만 claim은 이미 {demotion_blocked_status}라 유지됨",
                 after={"receipt_id": receipt_id, "claim_status": demotion_blocked_status},
             )
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_DEMOTION_BLOCKED_AUDIT_FAILED",
+                    reason=str(e),
+                    after={"receipt_id": receipt_id, "claim_status": demotion_blocked_status},
+                )
+            except Exception:
+                logging.getLogger(__name__).error(
+                    "CLAIM_DEMOTION_BLOCKED audit log failed twice for receipt %s (claim status=%s): %s",
+                    receipt_id,
+                    demotion_blocked_status,
+                    e,
+                )
 
     return result

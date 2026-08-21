@@ -299,6 +299,13 @@ def test_reads_before_any_write_structural(fake):
     assert first_read[1] == "receipts/rct_1"
     assert first_read[2] is True, "receipt 읽기가 트랜잭션 밖에서 일어났다"
 
+    # 첫 읽기만 확인하면 그 뒤의 claims 쿼리가 transaction= 없이 실행돼도 이
+    # 테스트는 안 죽는다 — 모든 읽기 엔트리가 트랜잭션 소속인지 봐야 한다.
+    reads = [entry for entry in fake.log[:first_write_idx] if entry[0] in ("get", "query")]
+    assert reads, f"읽기 로그가 비어 있다: {fake.log}"
+    for entry in reads:
+        assert entry[2] is True, f"트랜잭션 밖에서 일어난 읽기: {entry}"
+
 
 def test_created_claim_request_validates_against_contract(fake):
     from src.schemas.models import ClaimRequest
@@ -310,3 +317,19 @@ def test_created_claim_request_validates_against_contract(fake):
 
     request = next(iter(fake.data["claim_requests"].values()))
     ClaimRequest.model_validate(request)
+
+
+def test_claim_request_id_uses_crq_prefix_and_matches_doc_id(fake):
+    """schema-contract.md §3 — claim_request_id는 crq_{ULID()}. 문서 ID와
+    claim_request_id 필드가 어긋나면 조회 경로가 갈린다."""
+    _seed_receipt(fake)
+    _seed_claim(fake, status="CONFIRMED")
+
+    store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+
+    doc_id, request = next(iter(fake.data["claim_requests"].items()))
+    assert doc_id.startswith("crq_"), f"문서 ID가 crq_ 접두사가 아니다: {doc_id}"
+    assert request["claim_request_id"].startswith("crq_"), (
+        f"claim_request_id 필드가 crq_ 접두사가 아니다: {request['claim_request_id']}"
+    )
+    assert request["claim_request_id"] == doc_id
