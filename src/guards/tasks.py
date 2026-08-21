@@ -18,7 +18,14 @@ class QueueNotConfigured(RuntimeError):
     pass
 
 
-def enqueue_task(path: str, payload: dict, delay_seconds: int = 0) -> None:
+def enqueue_task(path: str, payload: dict, delay_seconds: int = 0, *, audience: str | None = None) -> None:
+    """`audience`가 None이면 기본값인 api 자신의 `OIDC_AUDIENCE`를 쓴다 — 이 서비스
+    안의 라우트(payouts 등)를 태우는 태스크는 그걸로 충분하다. 하지만 태스크가
+    쳐야 할 대상이 별도 Cloud Run 서비스(예: payflow-agent)일 때는 그 서비스
+    자신의 주소를 `audience`로 넘겨야 한다 — api 자신의 audience로는 그 서비스에
+    도달할 수 없고, OIDC 토큰도 대상 서비스가 검증할 수 있는 audience여야 하기
+    때문이다. URL과 OIDC 토큰의 audience는 항상 같은 값을 쓴다.
+    """
     queue = os.environ.get("CLOUD_TASKS_QUEUE")
     if not queue:
         raise QueueNotConfigured(
@@ -28,7 +35,8 @@ def enqueue_task(path: str, payload: dict, delay_seconds: int = 0) -> None:
 
     project = os.environ["GCP_PROJECT"]
     location = os.environ["CLOUD_TASKS_LOCATION"]
-    audience = os.environ["OIDC_AUDIENCE"]
+    if audience is None:
+        audience = os.environ["OIDC_AUDIENCE"]
     service_account_email = os.environ["TASKS_SERVICE_ACCOUNT_EMAIL"]
 
     client = tasks_v2.CloudTasksClient()

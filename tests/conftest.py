@@ -14,6 +14,7 @@ def _env(monkeypatch):
     monkeypatch.delenv("GCS_RECEIPTS_BUCKET", raising=False)  # 테스트는 실제 GCS에 붙지 않는다
     monkeypatch.delenv("GEMINI_MODEL_ID", raising=False)  # 개발자 .env에 값이 있어도 테스트는 fixture 파서를 써야 한다
     monkeypatch.delenv("VERTEX_LOCATION", raising=False)  # 같은 이유 — 실 SDK 클라이언트가 만들어지면 안 된다
+    monkeypatch.delenv("AGENT_SERVICE_URL", raising=False)  # 같은 이유 — 개발자 .env 값에 의존하면 안 된다
     yield
 
 
