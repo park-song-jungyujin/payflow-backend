@@ -562,6 +562,57 @@
         }
       }
     },
+    "/tasks/apply-claimant-draft": {
+      "post": {
+        "summary": "Task Apply Claimant Draft",
+        "description": "schema-contract.md §9 — 청구자 에이전트 draft를 상태 전이로 반영하는\nCloud Tasks 타겟. draft 읽기는 settlements/store.py의 get_agent_draft\n(agent_drafts의 유일한 읽기)를 그대로 쓴다 — 여기서 새로 읽지 않는다.\n\npayload가 §9 계약과 형식적으로 안 맞으면(InvalidDraftPayload) 200 +\n감사 로그로 끝낸다 — 재시도해도 같은 payload라 큐를 계속 돌릴 이유가 없다.",
+        "operationId": "task_apply_claimant_draft_tasks_apply_claimant_draft_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tasks/parse-receipt": {
       "post": {
         "summary": "Task Parse Receipt",
