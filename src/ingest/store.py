@@ -160,10 +160,14 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
         # "같은 draft 재실행"·"서로 다른 draft 두 개"에서 claim_requests가
         # 한 건만 생기는 이유다.
         snapshot = receipt_ref.get(transaction=transaction)
-        if not snapshot.exists or snapshot.get("status") != "PARSED":
+        # to_dict()가 없으면(문서 없음) 빈 dict로 둔다 — snapshot.get(field)는
+        # 필드가 없으면 KeyError를 던지는데, 그러면 이 트랜잭션이 그대로 500으로
+        # 터진다. tokens.py의 verify_and_burn_token과 같은 관용구.
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists or data.get("status") != "PARSED":
             return "SKIPPED", None
 
-        recipient_id = snapshot.get("recipient_id")
+        recipient_id = data.get("recipient_id")
 
         # claim 조회. 파싱은 영수증당 claim을 1회만 만들고(claims.py 주석) 동시
         # 생성 경로가 없다는 게 전제다 — 그래서 쿼리 결과가 0건이어도(락이
@@ -176,6 +180,16 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
             .stream(transaction=transaction)
         )
         claim_snapshot = claim_docs[0] if claim_docs else None
+        # 같은 이유로 claims 문서도 to_dict() 경유 — status 필드가 없어도 KeyError
+        # 대신 None이 되게 한다.
+        claim_data = (claim_snapshot.to_dict() or {}) if claim_snapshot is not None else None
+
+        # 필드 누락 방어. recipient_id 없는 receipts나 status 없는 claims는
+        # 계약 밖 문서다 — 그냥 흘려보내면 recipient_id=None인 claim_request가
+        # 나가거나(§3 ClaimRequest.recipient_id는 non-nullable) 상태를 알 수
+        # 없는 claim을 잘못 판단하게 된다. 쓰기 없이 SKIPPED로 멈춘다.
+        if recipient_id is None or (claim_snapshot is not None and claim_data.get("status") is None):
+            return "SKIPPED", None
 
         # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
 
@@ -184,7 +198,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
 
             demotion_blocked_status = None
             if claim_snapshot is not None:
-                claim_status = claim_snapshot.get("status")
+                claim_status = claim_data.get("status")
                 if claim_status == "CONFIRMED":
                     claim_ref = client.collection("claims").document(claim_snapshot.id)
                     transaction.update(claim_ref, {"status": "DRAFT", "updated_at": now})
@@ -209,8 +223,11 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
             )
             return "REQUERY", demotion_blocked_status
 
+        # DRAFT·CONFIRMED까지 덮어쓴다 — is_business는 approval_amount_hash에
+        # 안 들어가고 송금 금액에 영향이 없다(claims.py DEFAULT_IS_BUSINESS 참고).
+        # IN_RUN·SETTLED는 제외: 이미 배치에 점유됐거나 송금이 끝났다.
         if verdict.is_business is not None and claim_snapshot is not None:
-            claim_status = claim_snapshot.get("status")
+            claim_status = claim_data.get("status")
             if claim_status in ("DRAFT", "CONFIRMED"):
                 claim_ref = client.collection("claims").document(claim_snapshot.id)
                 transaction.update(claim_ref, {"is_business": verdict.is_business, "updated_at": now})

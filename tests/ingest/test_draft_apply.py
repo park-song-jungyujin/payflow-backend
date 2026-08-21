@@ -235,6 +235,80 @@ def test_missing_receipt_is_skipped(fake):
     assert writes == []
 
 
+def test_receipt_missing_status_field_is_skipped_not_500(fake):
+    """F1 리뷰 지적 — receipts 문서에 status 필드가 아예 없으면(과거 스키마 등)
+    snapshot.get("status")가 KeyError를 던져 500이 됐다. to_dict() 기반이면
+    None이 되고, None != "PARSED"라 기존 "PARSED 아님 → SKIPPED" 분기로 자연히
+    빠져야 한다."""
+    fake.data["receipts"]["rct_1"] = {
+        "receipt_id": "rct_1",
+        "recipient_id": "rcp_1",
+        "created_at": NOW,
+        "updated_at": NOW,
+        # status 필드 없음
+    }
+    _seed_claim(fake, status="CONFIRMED")
+
+    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+
+    assert result == "SKIPPED"
+    writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
+    assert writes == []
+    assert len(fake.data["claim_requests"]) == 0
+
+
+def test_receipt_missing_recipient_id_field_is_skipped_not_500(fake):
+    """F1 리뷰 지적 — receipts 문서에 recipient_id가 없으면
+    snapshot.get("recipient_id")가 KeyError → 500이었다. status는 PARSED라
+    "PARSED 아님" 분기로는 안 빠지므로 recipient_id 누락을 명시적으로 막아야
+    한다 — 안 그러면 recipient_id=None인 claim_request가 나가 ClaimRequest
+    스키마(non-nullable recipient_id)를 어긴다."""
+    fake.data["receipts"]["rct_1"] = {
+        "receipt_id": "rct_1",
+        "status": "PARSED",
+        "created_at": NOW,
+        "updated_at": NOW,
+        # recipient_id 필드 없음
+    }
+    _seed_claim(fake, status="CONFIRMED")
+
+    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+
+    assert result == "SKIPPED"
+    writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
+    assert writes == []
+    assert len(fake.data["claim_requests"]) == 0
+
+
+def test_claim_missing_status_field_is_skipped_not_500(fake):
+    """F1 리뷰 지적 — claims 문서에 status가 없으면 claim_snapshot.get("status")가
+    KeyError → 500이었다. status를 알 수 없는 claim은 안전하게 판단할 수 없으므로
+    receipt·claim_request 어느 쪽도 건드리지 않고 SKIPPED로 멈춰야 한다."""
+    _seed_receipt(fake)
+    fake.data["claims"]["clm_1"] = {
+        "claim_id": "clm_1",
+        "recipient_id": "rcp_1",
+        "receipt_id": "rct_1",
+        "amount_minor": 1000,
+        "currency": "KRW",
+        "account_category_code": "UNCLASSIFIED",
+        "is_business": True,
+        "settlement_run_id": None,
+        "settled_at": None,
+        "created_at": NOW,
+        "updated_at": NOW,
+        # status 필드 없음
+    }
+
+    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+
+    assert result == "SKIPPED"
+    writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
+    assert writes == []
+    assert len(fake.data["claim_requests"]) == 0
+    assert fake.data["receipts"]["rct_1"]["status"] == "PARSED"
+
+
 def test_idempotency_same_draft_applied_twice(fake):
     """같은 draft를 연속 두 번 반영해도 claim_requests는 1건이어야 한다."""
     _seed_receipt(fake)
