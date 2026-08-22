@@ -47,10 +47,11 @@ def create_verification_failed_claim_request(*, recipient_id: str, receipt_id: s
     """schema-contract.md §2 claim_requests reason — VERIFICATION_FAILED는
     receipt_id가 필수다.
 
-    CLAIM_REQUEST_TTL_SECONDS 기본값 604800초(7일)는 A의 재촉 루프가 아직
-    없어 실제 선례가 없는 임시값이다 — A가 /tasks/remind를 구현할 때 여기
-    기본값과 맞춰야 한다."""
-    ttl_seconds = int(os.environ.get("CLAIM_REQUEST_TTL_SECONDS", "604800"))
+    CLAIM_REQUEST_TTL_SECONDS 기본값은 86400초(1일)다 — src/ingest/store.py와
+    동일하고, tests/fixtures/02_parse_failure_requery.json의 claim_requests가
+    expires_at = created_at + 1일로 저장돼 있어 공유 fixture상 유일한 실제
+    선례다."""
+    ttl_seconds = int(os.environ.get("CLAIM_REQUEST_TTL_SECONDS", "86400"))
     now = datetime.now(UTC)
     claim_request_id = f"crq_{ULID()}"
     get_client().collection("claim_requests").document(claim_request_id).set(
