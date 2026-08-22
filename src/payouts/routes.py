@@ -281,6 +281,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     now = datetime.now(UTC)
     sender_item = {
         "sender_item_id": sender_item_id,
+        "org_id": run.get("org_id"),
         "settlement_run_id": run_id,
         "recipient_id": recipient_id,
         "receiver_email": recipient["paypal_email"],

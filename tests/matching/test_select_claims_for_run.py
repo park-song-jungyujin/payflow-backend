@@ -60,20 +60,20 @@ def candidates(monkeypatch):
     store = {"claims": [], "receipts": {}}
     import src.matching.candidates as matching_mod
 
-    monkeypatch.setattr(matching_mod, "list_confirmed_claims", lambda: store["claims"])
+    monkeypatch.setattr(matching_mod, "list_confirmed_claims", lambda org_id: store["claims"])
     monkeypatch.setattr(matching_mod, "get_client", lambda: FakeClient(store["receipts"]))
     return store
 
 
 def test_no_filters_returns_all_confirmed_claims(candidates):
     candidates["claims"] = [_claim("c1"), _claim("c2")]
-    result = select_claims_for_run(SettlementFilter())
+    result = select_claims_for_run("org_1", SettlementFilter())
     assert {c["claim_id"] for c in result} == {"c1", "c2"}
 
 
 def test_filters_by_recipient_ids(candidates):
     candidates["claims"] = [_claim("c1", recipient_id="rcp_1"), _claim("c2", recipient_id="rcp_2")]
-    result = select_claims_for_run(SettlementFilter(recipient_ids=["rcp_1"]))
+    result = select_claims_for_run("org_1", SettlementFilter(recipient_ids=["rcp_1"]))
     assert [c["claim_id"] for c in result] == ["c1"]
 
 
@@ -82,13 +82,13 @@ def test_filters_by_account_categories(candidates):
         _claim("c1", account_category_code="EMPLOYEE_BENEFIT"),
         _claim("c2", account_category_code="TRAVEL"),
     ]
-    result = select_claims_for_run(SettlementFilter(account_categories=["EMPLOYEE_BENEFIT"]))
+    result = select_claims_for_run("org_1", SettlementFilter(account_categories=["EMPLOYEE_BENEFIT"]))
     assert [c["claim_id"] for c in result] == ["c1"]
 
 
 def test_excludes_claim_ids(candidates):
     candidates["claims"] = [_claim("c1"), _claim("c2")]
-    result = select_claims_for_run(SettlementFilter(exclude_claim_ids=["c1"]))
+    result = select_claims_for_run("org_1", SettlementFilter(exclude_claim_ids=["c1"]))
     assert [c["claim_id"] for c in result] == ["c2"]
 
 
@@ -97,14 +97,14 @@ def test_period_filter_excludes_claims_with_no_transaction_date(candidates):
     무조건 빠져야 한다 — None을 '기간 안'으로 잘못 통과시키면 정산 누락이 조용히 생긴다."""
     candidates["claims"] = [_claim("c1")]
     candidates["receipts"]["rct_c1"] = {"transaction_date": None}
-    result = select_claims_for_run(SettlementFilter(period_start="2026-01-01"))
+    result = select_claims_for_run("org_1", SettlementFilter(period_start="2026-01-01"))
     assert result == []
 
 
 def test_period_filter_includes_claims_within_window(candidates):
     candidates["claims"] = [_claim("c1")]
     candidates["receipts"]["rct_c1"] = {"transaction_date": "2026-01-15"}
-    result = select_claims_for_run(
+    result = select_claims_for_run("org_1", 
         SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
     )
     assert [c["claim_id"] for c in result] == ["c1"]
@@ -113,7 +113,7 @@ def test_period_filter_includes_claims_within_window(candidates):
 def test_period_filter_excludes_claims_outside_window(candidates):
     candidates["claims"] = [_claim("c1")]
     candidates["receipts"]["rct_c1"] = {"transaction_date": "2026-02-01"}
-    result = select_claims_for_run(
+    result = select_claims_for_run("org_1", 
         SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
     )
     assert result == []
@@ -135,7 +135,7 @@ def test_period_filter_transaction_date_is_iso_string_in_real_data(candidates):
     candidates["receipts"]["rct_c_before"] = {"transaction_date": "2025-12-31"}
     candidates["receipts"]["rct_c_after"] = {"transaction_date": "2026-02-01"}
 
-    result = select_claims_for_run(
+    result = select_claims_for_run("org_1", 
         SettlementFilter(period_start="2026-01-01", period_end="2026-01-31")
     )
     assert {c["claim_id"] for c in result} == {"c_start", "c_end"}
@@ -145,7 +145,7 @@ def test_missing_receipt_document_treated_as_out_of_period(candidates):
     """receipt 문서 자체가 없으면(참조 무결성 깨짐) 크래시 대신 필터에서 빠뜨린다."""
     candidates["claims"] = [_claim("c1")]
     # receipts에 rct_c1을 아예 안 넣음 -> to_dict() None
-    result = select_claims_for_run(SettlementFilter(period_start="2026-01-01"))
+    result = select_claims_for_run("org_1", SettlementFilter(period_start="2026-01-01"))
     assert result == []
 
 
@@ -155,7 +155,7 @@ def test_filters_combine_with_and_semantics(candidates):
         _claim("c2", recipient_id="rcp_1", account_category_code="TRAVEL"),
         _claim("c3", recipient_id="rcp_2", account_category_code="EMPLOYEE_BENEFIT"),
     ]
-    result = select_claims_for_run(
+    result = select_claims_for_run("org_1", 
         SettlementFilter(recipient_ids=["rcp_1"], account_categories=["EMPLOYEE_BENEFIT"])
     )
     assert [c["claim_id"] for c in result] == ["c1"]

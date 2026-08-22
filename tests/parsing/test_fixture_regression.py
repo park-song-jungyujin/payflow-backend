@@ -52,7 +52,13 @@ def wired_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline,
         "get_receipt",
-        lambda rid: {"receipt_id": rid, "recipient_id": "rcp_1", "slack_file_id": "F1", "status": "RECEIVED"},
+        lambda rid: {
+            "receipt_id": rid,
+            "org_id": "org_1",
+            "recipient_id": "rcp_1",
+            "slack_file_id": "F1",
+            "status": "RECEIVED",
+        },
     )
     monkeypatch.setattr(pipeline, "update_receipt", lambda rid, updates: written.update(updates))
     def _fake_commit(rid, updates, claim):
@@ -63,7 +69,7 @@ def wired_pipeline(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline,
         "download_slack_file",
-        lambda file_id: SlackFile(data=b"\xff\xd8img", mimetype="image/jpeg", ext="jpg"),
+        lambda file_id, org_id: SlackFile(data=b"\xff\xd8img", mimetype="image/jpeg", ext="jpg"),
     )
     monkeypatch.setattr(pipeline, "get_object_store", lambda: LocalObjectStore(tmp_path))
     monkeypatch.setattr(pipeline, "record_audit_log", lambda **kwargs: None)

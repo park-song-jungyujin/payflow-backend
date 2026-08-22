@@ -18,6 +18,7 @@ def test_created_claim_matches_downstream_query_shape():
     claim = build_claim(
         {
             "receipt_id": "rct_1",
+            "org_id": "org_1",
             "recipient_id": "rcp_1",
             "parsed_amount_minor": 76500,
             "currency": "KRW",
@@ -44,6 +45,7 @@ def test_settlement_filter_category_matching_accepts_created_claim_shape(monkeyp
     claim = build_claim(
         {
             "receipt_id": "rct_1",
+            "org_id": "org_1",
             "recipient_id": "rcp_1",
             "parsed_amount_minor": 76500,
             "currency": "KRW",
@@ -51,10 +53,10 @@ def test_settlement_filter_category_matching_accepts_created_claim_shape(monkeyp
         },
         now=datetime.now(UTC),
     )
-    monkeypatch.setattr(matching, "list_confirmed_claims", lambda: [claim])
+    monkeypatch.setattr(matching, "list_confirmed_claims", lambda org_id: [claim])
 
-    picked = select_claims_for_run(SettlementFilter(account_categories=["EMPLOYEE_BENEFIT"]))
+    picked = select_claims_for_run("org_1", SettlementFilter(account_categories=["EMPLOYEE_BENEFIT"]))
     assert [c["claim_id"] for c in picked] == [claim["claim_id"]]
 
-    none_picked = select_claims_for_run(SettlementFilter(account_categories=["TRAVEL"]))
+    none_picked = select_claims_for_run("org_1", SettlementFilter(account_categories=["TRAVEL"]))
     assert none_picked == []

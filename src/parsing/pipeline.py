@@ -74,7 +74,7 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         # PermanentParseError로 올려 FAILED로 확정한다 — 그래야 재요청 DM이 나간다.
         raise PermanentParseError(f"receipt {receipt_id} has no slack_file_id")
 
-    slack_file = download_slack_file(slack_file_id)
+    slack_file = download_slack_file(slack_file_id, receipt["org_id"])
     image_uri = store.put(
         key=image_key(receipt_id, slack_file.ext),
         data=slack_file.data,

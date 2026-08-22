@@ -26,6 +26,7 @@ def _signals(**overrides) -> VerificationSignals:
 def _receipt(**overrides) -> dict:
     defaults = dict(
         receipt_id="rct_1",
+        org_id="org_1",
         recipient_id="rcp_1",
         image_gcs_uri="gs://payflow-demo/receipts/x.jpg",
         parsed_amount_minor=10000,
@@ -109,8 +110,8 @@ def fake_store(monkeypatch):
     def fake_save(receipt_id, *, passed, signals):
         calls["save"].append((receipt_id, passed))
 
-    def fake_create_cr(*, recipient_id, receipt_id):
-        calls["claim_request"].append((recipient_id, receipt_id))
+    def fake_create_cr(*, org_id, recipient_id, receipt_id):
+        calls["claim_request"].append((org_id, recipient_id, receipt_id))
         return "crq_fake"
 
     monkeypatch.setattr(verification.store, "get_receipts", fake_get_receipts)
@@ -180,7 +181,7 @@ def test_uncached_failure_creates_claim_request(fake_store, monkeypatch):
     assert outcome["passed_claims"] == []
     assert [c["claim_id"] for c in outcome["failed_claims"]] == ["clm_1"]
     assert fake_store.calls["save"] == [("rct_1", False)]
-    assert fake_store.calls["claim_request"] == [("rcp_9", "rct_1")]
+    assert fake_store.calls["claim_request"] == [("org_1", "rcp_9", "rct_1")]
 
 
 def test_missing_receipt_excluded_without_calling_model(fake_store, monkeypatch):

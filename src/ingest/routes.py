@@ -11,10 +11,11 @@ slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 �
 
 from fastapi import APIRouter, HTTPException, Request
 
+from ..auth.store import get_slack_workspace_by_team
 from ..guards.audit import record_audit_log
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt
 from .signature import SignatureError, verify_slack_signature
-from .store import ReceiptStoreUnavailable, create_receipt_if_absent, find_recipient_by_slack_user
+from .store import ReceiptStoreUnavailable, create_receipt_if_absent, find_or_create_recipient
 
 router = APIRouter()
 
@@ -58,15 +59,21 @@ async def slack_events(request: Request):
     if not files:
         return {"status": "ignored"}
 
-    recipient = find_recipient_by_slack_user(event.get("user", ""))
-    if recipient is None:
-        # 조용히 버리지 않는다. 안내 DM은 재촉 루프(범위 밖)가 붙을 때 함께 단다.
+    team_id = payload.get("team_id", "")
+    workspace = get_slack_workspace_by_team(team_id)
+    if workspace is None:
+        # 이 team_id로 앱을 설치한 기관이 없다 — 서명은 통과했지만(앱 전체
+        # 단위 시크릿) 어느 기관 데이터로 쓸지 알 수 없으므로 거부한다.
         record_audit_log(
             actor="api/src/ingest",
             action="RECEIPT_INGEST_SKIPPED",
-            reason=f"unregistered slack_user_id: {event.get('user')}",
+            reason=f"unregistered slack team_id: {team_id}",
         )
-        return {"status": "ignored", "reason": "unregistered_user"}
+        raise HTTPException(status_code=401, detail="workspace not installed")
+
+    org_id = workspace["org_id"]
+    # 초대 절차 없이 최초 메시지 시점에 자동 등록한다(org 스코핑과 로그인).
+    recipient = find_or_create_recipient(org_id, event.get("user", ""))
 
     deferred = [f["id"] for f in files[MAX_FILES_PER_EVENT:]]
     if deferred:
@@ -82,6 +89,7 @@ async def slack_events(request: Request):
     for slack_file in files:
         try:
             receipt_id, created = create_receipt_if_absent(
+                org_id=org_id,
                 recipient_id=recipient["recipient_id"],
                 slack_file_id=slack_file["id"],
                 slack_channel_id=event["channel"],

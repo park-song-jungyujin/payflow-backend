@@ -36,10 +36,11 @@ def _post(client, payload: dict, *, timestamp: str | None = None, secret: str = 
     )
 
 
-def _file_message(file_ids: list[str]) -> dict:
+def _file_message(file_ids: list[str], team_id: str = "T01ABCDEF") -> dict:
     return {
         "type": "event_callback",
         "event_id": "Ev01ABCDEF",
+        "team_id": team_id,
         "event": {
             "type": "message",
             "user": "U01ABCDEF",
@@ -54,19 +55,24 @@ def _file_message(file_ids: list[str]) -> dict:
 def client(monkeypatch):
     calls = {"created": [], "enqueued": []}
 
-    def fake_create(*, recipient_id, slack_file_id, slack_channel_id, slack_message_ts):
+    def fake_create(*, org_id, recipient_id, slack_file_id, slack_channel_id, slack_message_ts):
         seen = [c["slack_file_id"] for c in calls["created"]]
         if slack_file_id in seen:
             return f"rct_{slack_file_id}", False
         calls["created"].append(
-            {"recipient_id": recipient_id, "slack_file_id": slack_file_id}
+            {"org_id": org_id, "recipient_id": recipient_id, "slack_file_id": slack_file_id}
         )
         return f"rct_{slack_file_id}", True
 
     monkeypatch.setattr(
         routes,
-        "find_recipient_by_slack_user",
-        lambda uid: {"recipient_id": "rcp_1"} if uid == "U01ABCDEF" else None,
+        "get_slack_workspace_by_team",
+        lambda team_id: {"org_id": "org_1"} if team_id == "T01ABCDEF" else None,
+    )
+    monkeypatch.setattr(
+        routes,
+        "find_or_create_recipient",
+        lambda org_id, slack_user_id: {"recipient_id": "rcp_1"},
     )
     monkeypatch.setattr(routes, "create_receipt_if_absent", fake_create)
     monkeypatch.setattr(
@@ -111,7 +117,7 @@ def test_image_upload_creates_receipt_and_enqueues(client):
     response = _post(client, _file_message(["F_AAA"]))
     assert response.status_code == 200
     assert client.calls["created"] == [
-        {"recipient_id": "rcp_1", "slack_file_id": "F_AAA"}
+        {"org_id": "org_1", "recipient_id": "rcp_1", "slack_file_id": "F_AAA"}
     ]
     assert client.calls["enqueued"] == ["rct_F_AAA"]
 
@@ -133,11 +139,24 @@ def test_slack_retry_does_not_duplicate_receipt(client):
     assert client.calls["enqueued"] == ["rct_F_AAA", "rct_F_AAA"]
 
 
-def test_unregistered_user_is_acked_without_receipt(client):
+def test_unregistered_user_is_lazily_registered(client):
+    """org 스코핑과 로그인 — 초대 절차 없이 최초 메시지 시점에 자동 등록한다.
+    더 이상 "unregistered_user"로 조용히 버려지지 않는다."""
     payload = _file_message(["F_AAA"])
     payload["event"]["user"] = "U_NOBODY"
     response = _post(client, payload)
     assert response.status_code == 200
+    assert client.calls["created"] == [
+        {"org_id": "org_1", "recipient_id": "rcp_1", "slack_file_id": "F_AAA"}
+    ]
+
+
+def test_unknown_workspace_is_rejected(client):
+    """team_id로 설치된 워크스페이스를 못 찾으면 서명은 통과했어도 어느
+    기관 데이터로 쓸지 알 수 없으므로 거부한다."""
+    payload = _file_message(["F_AAA"], team_id="T_UNKNOWN")
+    response = _post(client, payload)
+    assert response.status_code == 401
     assert client.calls["created"] == []
 
 
