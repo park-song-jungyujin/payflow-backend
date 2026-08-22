@@ -14,15 +14,31 @@ claims가 두 건 생겨 이중 지급으로 이어진다.
 대한 `transaction.get()`은 문서가 없어도 read set에 들어가 락이 걸린다.
 """
 
-from datetime import UTC, datetime
+import logging
+import os
+from datetime import UTC, datetime, timedelta
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from ulid import ULID
 
+from ..guards.audit import record_audit_log
+from ..ingest.drafts import DraftVerdict
 from ..payouts.store import get_client
 
 DEDUP_COLLECTION = "receipt_dedup_keys"
+
+_ACTOR = "api/src/ingest"
+
+# schema-contract.md에도, .env·infra 어디에도 없다 — 이 변수는 의도적으로 미결이다.
+# settlements/store.py의 같은 이름 변수(기본값 604800초, 검증 실패 재촉용)와는
+# 별개 용도라 기본값이 다르다. 나중에 정리가 필요하면 두 값을 합칠지 논의한다.
+CLAIM_REQUEST_TTL_SECONDS = int(os.environ.get("CLAIM_REQUEST_TTL_SECONDS", "86400"))
+
+# 강등하면 안 되는 claim 상태 — 이미 배치에 점유됐거나(IN_RUN) 송금이 끝났다(SETTLED).
+# 강등하면 "어느 run에도 안 속하면서 settlement_run_id를 들고 있는" 계약 밖 상태가
+# 생긴다. claim은 그대로 두고 감사 로그로 불일치만 남긴다.
+_CLAIM_STATUSES_NOT_DEMOTABLE = {"IN_RUN", "SETTLED"}
 
 
 class ReceiptStoreUnavailable(RuntimeError):
@@ -123,3 +139,137 @@ def create_receipt_if_absent(
         # SDK는 재시도 소진 시 ValueError("Failed to commit transaction in N attempts.")
         # 를 던진다. 경계에서 도메인 예외로 바꿔 라우트가 SDK 사정을 모르게 한다.
         raise ReceiptStoreUnavailable(str(e)) from e
+
+
+def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datetime) -> str:
+    """청구자 에이전트의 draft 판정을 receipts.status·claims.status·claim_requests
+    생성에 **한 트랜잭션**으로 반영한다. `"REQUERY"` / `"APPLIED"` / `"SKIPPED"`를 돌려준다.
+
+    갈라놓으면 "영수증은 NEEDS_REQUERY인데 claim은 CONFIRMED"인 창이 생긴다 — 그
+    사이 정산 배치가 돌면 분쟁 중인 영수증이 송금된다. 재시도로도 안 메워진다:
+    두 번째 시도는 이미 NEEDS_REQUERY라 아래 CAS 가드에 걸려 SKIPPED로 빠진다.
+    `create_receipt_if_absent`(이 파일)·`commit_parsed_with_claim`(parsing/store.py)와
+    같은 패턴이다 — 모든 읽기가 모든 쓰기보다 앞에 온다.
+    """
+    client = get_client()
+    receipt_ref = client.collection("receipts").document(receipt_id)
+
+    def _txn(transaction):
+        # receipts를 read set에 넣어 락을 건다. 동시 시도 중 하나는 ABORTED로
+        # 재실행되고, 재실행 시점에는 status != PARSED를 보고 멈춘다 — 이게
+        # "같은 draft 재실행"·"서로 다른 draft 두 개"에서 claim_requests가
+        # 한 건만 생기는 이유다.
+        snapshot = receipt_ref.get(transaction=transaction)
+        # to_dict()가 없으면(문서 없음) 빈 dict로 둔다 — snapshot.get(field)는
+        # 필드가 없으면 KeyError를 던지는데, 그러면 이 트랜잭션이 그대로 500으로
+        # 터진다. tokens.py의 verify_and_burn_token과 같은 관용구.
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists or data.get("status") != "PARSED":
+            return "SKIPPED", None
+
+        recipient_id = data.get("recipient_id")
+
+        # claim 조회. 파싱은 영수증당 claim을 1회만 만들고(claims.py 주석) 동시
+        # 생성 경로가 없다는 게 전제다 — 그래서 쿼리 결과가 0건이어도(락이
+        # 안 걸려도) 안전하다. 청구 분할처럼 한 영수증에서 claim이 여럿 생기는
+        # 기능이 붙으면 이 전제가 깨지므로 그때 다시 봐야 한다.
+        claim_docs = list(
+            client.collection("claims")
+            .where(filter=FieldFilter("receipt_id", "==", receipt_id))
+            .limit(1)
+            .stream(transaction=transaction)
+        )
+        claim_snapshot = claim_docs[0] if claim_docs else None
+        # 같은 이유로 claims 문서도 to_dict() 경유 — status 필드가 없어도 KeyError
+        # 대신 None이 되게 한다.
+        claim_data = (claim_snapshot.to_dict() or {}) if claim_snapshot is not None else None
+
+        # 필드 누락 방어. recipient_id 없는 receipts나 status 없는 claims는
+        # 계약 밖 문서다 — 그냥 흘려보내면 recipient_id=None인 claim_request가
+        # 나가거나(§3 ClaimRequest.recipient_id는 non-nullable) 상태를 알 수
+        # 없는 claim을 잘못 판단하게 된다. 쓰기 없이 SKIPPED로 멈춘다.
+        if recipient_id is None or (claim_snapshot is not None and claim_data.get("status") is None):
+            return "SKIPPED", None
+
+        # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
+
+        if verdict.needs_requery:
+            transaction.update(receipt_ref, {"status": "NEEDS_REQUERY", "updated_at": now})
+
+            demotion_blocked_status = None
+            if claim_snapshot is not None:
+                claim_status = claim_data.get("status")
+                if claim_status == "CONFIRMED":
+                    claim_ref = client.collection("claims").document(claim_snapshot.id)
+                    transaction.update(claim_ref, {"status": "DRAFT", "updated_at": now})
+                elif claim_status in _CLAIM_STATUSES_NOT_DEMOTABLE:
+                    demotion_blocked_status = claim_status
+
+            claim_request_id = f"crq_{ULID()}"
+            transaction.set(
+                client.collection("claim_requests").document(claim_request_id),
+                {
+                    "claim_request_id": claim_request_id,
+                    "recipient_id": recipient_id,
+                    "receipt_id": receipt_id,
+                    "reason": "AMOUNT_MISMATCH",
+                    "slack_dm_ts": None,
+                    "reminded_at": None,
+                    "expires_at": now + timedelta(seconds=CLAIM_REQUEST_TTL_SECONDS),
+                    "status": "PENDING",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            return "REQUERY", demotion_blocked_status
+
+        # DRAFT·CONFIRMED까지 덮어쓴다 — is_business는 approval_amount_hash에
+        # 안 들어가고 송금 금액에 영향이 없다(claims.py DEFAULT_IS_BUSINESS 참고).
+        # IN_RUN·SETTLED는 제외: 이미 배치에 점유됐거나 송금이 끝났다.
+        if verdict.is_business is not None and claim_snapshot is not None:
+            claim_status = claim_data.get("status")
+            if claim_status in ("DRAFT", "CONFIRMED"):
+                claim_ref = client.collection("claims").document(claim_snapshot.id)
+                transaction.update(claim_ref, {"is_business": verdict.is_business, "updated_at": now})
+        return "APPLIED", None
+
+    try:
+        result, demotion_blocked_status = _run_in_transaction(_txn)
+    except ValueError as e:
+        # create_receipt_if_absent와 같은 경계 — SDK가 트랜잭션 재시도를 소진하면
+        # ValueError를 던진다. 호출부(Task 3)가 SDK 사정을 모르게 도메인 예외로 바꾼다.
+        raise ReceiptStoreUnavailable(str(e)) from e
+
+    # 감사 로그는 트랜잭션 밖에서 남긴다 — commit_parsed_with_claim(parsing/store.py)·
+    # ingest/routes.py와 같은 판단이다. 이미 커밋된 상태 전이를 감사 로그 실패
+    # 때문에 되돌릴 이유가 없고, Firestore add()는 어차피 트랜잭션 API가 아니다.
+    #
+    # SETTLED는 이미 돈이 나간 건이다 — 이 감사 로그가 "에이전트가 재요청이
+    # 필요하다고 판단했는데 이미 송금됨"의 유일한 기록이라 흔적 없이 삼키면
+    # 안 된다. parsing/pipeline.py의 CLAIM_CREATED/CLAIM_CREATED_AUDIT_FAILED
+    # 쌍과 같은 형태로, 실패하면 별도 액션으로 한 번 더 남긴다.
+    if demotion_blocked_status is not None:
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="CLAIM_DEMOTION_BLOCKED",
+                reason=f"claim status={demotion_blocked_status}, receipt {receipt_id}이 NEEDS_REQUERY로 내려갔지만 claim은 이미 {demotion_blocked_status}라 유지됨",
+                after={"receipt_id": receipt_id, "claim_status": demotion_blocked_status},
+            )
+        except Exception as e:
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="CLAIM_DEMOTION_BLOCKED_AUDIT_FAILED",
+                    reason=str(e),
+                    after={"receipt_id": receipt_id, "claim_status": demotion_blocked_status},
+                )
+            except Exception:
+                logging.getLogger(__name__).error(
+                    "CLAIM_DEMOTION_BLOCKED audit log failed twice for receipt %s (claim status=%s): %s",
+                    receipt_id,
+                    demotion_blocked_status,
+                    e,
+                )
+
+    return result

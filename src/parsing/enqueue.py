@@ -23,4 +23,13 @@ def enqueue_claimant_review(receipt_id: str) -> None:
     agent_service_url = os.environ.get("AGENT_SERVICE_URL")
     if not agent_service_url:
         raise QueueNotConfigured("AGENT_SERVICE_URL not configured — 청구자 에이전트 서비스 주소가 없다.")
-    enqueue_task("/agents/claimant/review", {"receipt_id": receipt_id}, audience=agent_service_url)
+    # task_id는 agent_drafts 문서 ID다(schema-contract.md §9, 925df98 컨벤션) —
+    # 에이전트 이름으로 네임스페이스해 다른 에이전트가 같은 id로 같은 문서를
+    # 덮어쓰지 않게 한다. receipt_id에서 결정론적으로 나오므로 파싱 재시도로
+    # 에이전트가 두 번 불려도 draft 문서는 하나다.
+    task_id = f"CLAIMANT:{receipt_id}"
+    enqueue_task(
+        "/agents/claimant/review",
+        {"receipt_id": receipt_id, "task_id": task_id},
+        audience=agent_service_url,
+    )

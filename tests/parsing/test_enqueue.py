@@ -36,7 +36,10 @@ def test_builds_oidc_task_for_claimant_review_route(monkeypatch):
     # payflow-agent는 별도 Cloud Run 서비스라 api 자신의 OIDC_AUDIENCE로는
     # 도달할 수 없다 — URL과 OIDC 토큰 audience 둘 다 AGENT_SERVICE_URL이어야 한다.
     assert request["url"] == "https://payflow-agent.test.invalid/agents/claimant/review"
-    assert json.loads(request["body"]) == {"receipt_id": "rct_01K3M9XQ7B2F4G6H8J0K2M4N6P"}
+    assert json.loads(request["body"]) == {
+        "receipt_id": "rct_01K3M9XQ7B2F4G6H8J0K2M4N6P",
+        "task_id": "CLAIMANT:rct_01K3M9XQ7B2F4G6H8J0K2M4N6P",
+    }
     assert request["oidc_token"]["audience"] == "https://payflow-agent.test.invalid"
     assert captured["parent"].endswith("/queues/payflow-queue")
 
