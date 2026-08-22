@@ -53,3 +53,8 @@ output "ci_agent_workload_identity_provider" {
 output "ci_agent_deployer_service_account" {
   value = google_service_account.agent_deployer.email
 }
+
+output "terraform_admin_service_account" {
+  value       = google_service_account.terraform_admin.email
+  description = "infra/ 전체 apply 권한. GCP 리소스(VM/Cloud Run)에 이 SA를 붙여서 씀 — 키 JSON 발급 금지."
+}

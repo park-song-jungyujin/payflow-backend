@@ -11,6 +11,7 @@ locals {
     "sts.googleapis.com",            # WIF 토큰 교환 (CI)
     "cloudbuild.googleapis.com",     # gcloud run deploy --source
     "artifactregistry.googleapis.com",
+    "cloudresourcemanager.googleapis.com", # terraform_admin.tf의 google_project_iam_member가 project IAM 정책을 읽고 쓰는 데 필요
   ]
 }
 
