@@ -562,6 +562,23 @@
         }
       }
     },
+    "/slack/interactions": {
+      "post": {
+        "summary": "Slack Interactions",
+        "description": "schema-contract.md §10 — 버튼 응답. Slack 앱 설정의 Interactivity Request URL.\n\n이게 없으면 `RESPONDED`가 영영 안 생겨 모든 claim_request가 만료된다.\n\n**본문이 form-encoded다**(`payload=<json>`). 서명은 여기서도 raw body 기준이라\n/slack/events와 같은 함수를 쓴다 — 파싱한 값을 다시 직렬화하면 서명이 깨진다.\n\n**Slack은 3초 안에 200을 원한다.** 하는 일이 Firestore 트랜잭션 하나뿐이라\n큐로 넘기지 않는다. 다만 실패해도 500을 내지 않는다 — Slack이 재전송하면\n같은 버튼 클릭이 여러 번 오고, 그때마다 사용자에게는 오류 배너가 뜬다.",
+        "operationId": "slack_interactions_slack_interactions_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/tasks/apply-claimant-draft": {
       "post": {
         "summary": "Task Apply Claimant Draft",

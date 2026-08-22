@@ -16,7 +16,11 @@ from fastapi import HTTPException
 
 from src.ingest import routes, store
 from src.ingest.reminders import ReminderAction
-from src.ingest.slack_client import SlackSendPermanent, SlackSendTransient
+from src.ingest.slack_client import (
+    CLAIM_REQUEST_ACTION_ID,
+    SlackSendPermanent,
+    SlackSendTransient,
+)
 from src.ingest.store import ReceiptStoreUnavailable
 
 NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC)
@@ -63,8 +67,10 @@ def env(monkeypatch):
         "post_result": "1755500000.000100",
     }
 
-    def fake_post(*, channel, text, thread_ts=None):
-        state["sent"].append({"channel": channel, "text": text, "thread_ts": thread_ts})
+    def fake_post(*, channel, text, thread_ts=None, blocks=None):
+        state["sent"].append(
+            {"channel": channel, "text": text, "thread_ts": thread_ts, "blocks": blocks}
+        )
         result = state["post_result"]
         if isinstance(result, Exception):
             raise result
@@ -212,13 +218,31 @@ def test_draft_read_uses_claimant_task_id(env, monkeypatch):
 
 def test_sends_dm_when_receipt_has_no_slack_thread(env):
     routes.task_remind({"claim_request_id": "crq_1"})
-    assert env["sent"] == [
-        {
-            "channel": "U_CLAIMANT",
-            "text": "영수증 금액을 확인해 주세요",
-            "thread_ts": None,
-        }
+    sent = env["sent"]
+    assert len(sent) == 1
+    assert sent[0]["channel"] == "U_CLAIMANT"
+    assert sent[0]["text"] == "영수증 금액을 확인해 주세요"
+    assert sent[0]["thread_ts"] is None
+
+
+def test_dm_carries_the_response_button(env):
+    """버튼이 없으면 RESPONDED가 영영 안 생겨 모든 요청이 만료된다.
+    value에 claim_request_id가 실려야 /slack/interactions가 대상을 안다."""
+    routes.task_remind({"claim_request_id": "crq_1"})
+
+    blocks = env["sent"][0]["blocks"]
+    buttons = [
+        el
+        for block in blocks
+        if block["type"] == "actions"
+        for el in block["elements"]
     ]
+    assert [b["action_id"] for b in buttons] == [CLAIM_REQUEST_ACTION_ID]
+    assert buttons[0]["value"] == "crq_1"
+    # 문안은 코드가 짓지 않는다 — 에이전트가 쓴 것이 그대로 블록에 들어간다.
+    assert any(
+        block.get("text", {}).get("text") == "영수증 금액을 확인해 주세요" for block in blocks
+    )
 
 
 def test_sends_thread_reply_when_receipt_has_both_slack_fields(env):
