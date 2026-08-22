@@ -24,6 +24,7 @@ from ulid import ULID
 
 from ..guards.audit import record_audit_log
 from ..ingest.drafts import DraftVerdict
+from ..ingest.reminders import ReminderAction, decide
 from ..payouts.store import get_client
 
 DEDUP_COLLECTION = "receipt_dedup_keys"
@@ -39,6 +40,10 @@ CLAIM_REQUEST_TTL_SECONDS = int(os.environ.get("CLAIM_REQUEST_TTL_SECONDS", "864
 # 강등하면 "어느 run에도 안 속하면서 settlement_run_id를 들고 있는" 계약 밖 상태가
 # 생긴다. claim은 그대로 두고 감사 로그로 불일치만 남긴다.
 _CLAIM_STATUSES_NOT_DEMOTABLE = {"IN_RUN", "SETTLED"}
+
+# 재촉 루프가 손대도 되는 claim_request 상태. RESPONDED·EXPIRED는 이미 끝난
+# 건이라 덮으면 사람이 방금 누른 응답이 사라진다.
+_CLAIM_REQUEST_STATUSES_OPEN = {"PENDING", "REMINDED"}
 
 
 class ReceiptStoreUnavailable(RuntimeError):
@@ -273,3 +278,96 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                 )
 
     return result
+
+
+def _claim_request_ref(claim_request_id: str):
+    return get_client().collection("claim_requests").document(claim_request_id)
+
+
+def get_claim_request(claim_request_id: str) -> dict | None:
+    """재촉 루프가 판정에 쓸 원본 문서. 없으면 None이다."""
+    snapshot = _claim_request_ref(claim_request_id).get()
+    return snapshot.to_dict() if snapshot.exists else None
+
+
+def claim_send_slot(
+    claim_request_id: str, *, expected_action: ReminderAction, now: datetime
+) -> bool:
+    """발송 직전 CAS. 판정이 여전히 유효하면 True.
+
+    태스크가 중복 전달되면 같은 DM이 두 번 나간다. 트랜잭션 안에서 `transaction=`
+    으로 다시 읽어 락을 걸고, 지금 문서로 다시 판정해 호출자가 들고 온 판정과
+    같은지 본다. 그 사이 사람이 답했거나 다른 워커가 이미 보냈으면 판정이 달라져
+    False가 된다.
+
+    **여기서 예약 표시를 하지 않는다.** 순서는 "발송 먼저 → 표시"다 — 미리
+    표시해두면 Slack 발송이 실패했을 때 아무도 재시도하지 않는 조용한 유실이
+    된다. 기록은 발송에 성공한 뒤 `record_sent`가 한다.
+    """
+
+    def _txn(transaction):
+        snapshot = _claim_request_ref(claim_request_id).get(transaction=transaction)
+        # apply_claimant_verdict와 같은 관용구 — snapshot.get(field)는 필드가
+        # 없으면 KeyError를 던진다.
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists:
+            return False
+        return decide(data, now=now) == expected_action
+
+    try:
+        return _run_in_transaction(_txn)
+    except ValueError as e:
+        raise ReceiptStoreUnavailable(str(e)) from e
+
+
+def record_sent(
+    claim_request_id: str, *, slack_ts: str, action: ReminderAction, now: datetime
+) -> None:
+    """발송 성공을 기록한다. SEND_INITIAL이면 `slack_dm_ts`, SEND_REMINDER면
+    `status = REMINDED` + `reminded_at`.
+
+    발송과 기록 사이에 사람이 답했을 수 있다. RESPONDED·EXPIRED면 아무것도 쓰지
+    않는다 — 이미 나간 DM은 되돌릴 수 없지만 응답을 덮어쓰는 건 막을 수 있다.
+    """
+
+    def _txn(transaction):
+        ref = _claim_request_ref(claim_request_id)
+        snapshot = ref.get(transaction=transaction)
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists or data.get("status") not in _CLAIM_REQUEST_STATUSES_OPEN:
+            return
+
+        # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
+
+        if action == ReminderAction.SEND_INITIAL:
+            # 최초 발송은 아직 재촉이 아니다 — status는 PENDING에 둔다.
+            transaction.update(ref, {"slack_dm_ts": slack_ts, "updated_at": now})
+        elif action == ReminderAction.SEND_REMINDER:
+            # slack_dm_ts는 스레드 루트라 재촉 응답 ts로 덮지 않는다.
+            transaction.update(
+                ref, {"status": "REMINDED", "reminded_at": now, "updated_at": now}
+            )
+
+    try:
+        _run_in_transaction(_txn)
+    except ValueError as e:
+        raise ReceiptStoreUnavailable(str(e)) from e
+
+
+def mark_expired(claim_request_id: str, *, now: datetime) -> None:
+    """만료 처리. RESPONDED면 건드리지 않는다 — 사람이 방금 누른 응답을 만료
+    태스크가 덮으면 응답이 사라진다."""
+
+    def _txn(transaction):
+        ref = _claim_request_ref(claim_request_id)
+        snapshot = ref.get(transaction=transaction)
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists or data.get("status") not in _CLAIM_REQUEST_STATUSES_OPEN:
+            return
+
+        transaction.update(ref, {"status": "EXPIRED", "updated_at": now})
+
+    try:
+        _run_in_transaction(_txn)
+    except ValueError as e:
+        raise ReceiptStoreUnavailable(str(e)) from e
