@@ -10,6 +10,7 @@ slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 �
 """
 
 import logging
+import math
 import os
 from datetime import UTC, datetime
 
@@ -303,13 +304,26 @@ def _next_delay_seconds(action: ReminderAction, claim_request: dict, now: dateti
     판단이다. 추측한 시각으로 예약하면 아직 유효한 건이 일찍 만료된다.
     """
     if action == ReminderAction.SEND_INITIAL:
-        # schema-contract.md §11 — 데모 20초, 실제 86400초.
-        return int(os.environ.get("REMINDER_DELAY_SECONDS", "20"))
+        # docs/README.md — "환경변수 하나로 데모(20초)와 실제(86400초)를 전환한다".
+        # **기본값은 실제 값이다.** 데모는 어차피 REMINDER_DELAY_SECONDS=20을
+        # 세팅하는 시나리오이고(README 재촉 루프 E2E 체크리스트), 이 변수는 아직
+        # .env·infra 어디에도 없어서 배포는 이 기본값으로 돈다 — 여기가 20이면
+        # 실제 청구자가 최초 DM 20초 뒤에 재촉을 받는다. 데모가 하루 걸리는 건
+        # env 하나로 끝나는 눈에 보이는 실패고, 프로덕션이 20초 만에 사람을
+        # 재촉하는 건 눈에 안 보이는 실패다. store.py의 같은 파일권
+        # CLAIM_REQUEST_TTL_SECONDS 기본값(86400)과도 이제 앞뒤가 맞는다.
+        return int(os.environ.get("REMINDER_DELAY_SECONDS", "86400"))
 
     expires_at = parse_expires_at(claim_request.get("expires_at"))
     if expires_at is None:
         return None
-    remaining = int((expires_at - now).total_seconds())
+    # **올림이다.** int()는 0 방향 절삭이라 Firestore 타임스탬프(마이크로초가
+    # 있다)에서는 다음 깨어남이 expires_at보다 최대 1초 이르게 잡힌다. 그 태스크가
+    # 도착하면 status는 REMINDED인데 now < expires_at이라 decide()가 SKIP을 내고,
+    # SKIP 분기는 재예약하지 않는다 — claim_request가 REMINDED에 영구 정체하고
+    # 영수증도 NEEDS_REQUERY로 남는다. 큐 전달이 보통 예정보다 늦다는 데
+    # 정확성을 의탁할 수 없다.
+    remaining = math.ceil((expires_at - now).total_seconds())
     return None if remaining < 0 else remaining
 
 

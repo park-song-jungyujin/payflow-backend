@@ -332,15 +332,50 @@ def test_successful_initial_send_records_and_reschedules(env):
     assert "CLAIM_REQUEST_SENT" in _actions(env)
 
 
-def test_reminder_send_reschedules_to_expiry(env):
-    env["claim_request"] = _claim_request(
-        slack_dm_ts="1755500000.000100", expires_at=datetime.now(UTC) + timedelta(seconds=300)
-    )
+def test_initial_reschedule_defaults_to_one_day(env, monkeypatch):
+    """이 env는 아직 .env·infra 어디에도 없다 — 배포는 기본값으로 돈다. 그래서
+    기본값은 실제 값(86400)이어야 한다. 데모는 20을 넣어 덮는 쪽이다
+    (docs/README.md "환경변수 하나로 데모와 실제를 전환한다")."""
+    monkeypatch.delenv("REMINDER_DELAY_SECONDS", raising=False)
     routes.task_remind({"claim_request_id": "crq_1"})
+    assert env["enqueued"] == [("crq_1", 86400)]
+
+
+def test_reminder_send_reschedules_to_expiry(env):
+    """다음 깨어남은 **expires_at 이후**여야 한다.
+
+    절삭(`int()`)하면 마이크로초가 있는 Firestore 타임스탬프에서 깨어남이
+    expires_at보다 이르게 잡히고, 그 태스크는 아직 만료 전이라 decide()가 SKIP을
+    내며 SKIP은 재예약하지 않는다 — claim_request가 REMINDED에 영구 정체한다.
+    그래서 `delay`가 남은 시간을 **덮는지**를 조인다. 범위로 느슨하게 보면
+    1초 모자란 값이 그대로 통과한다.
+    """
+    before = datetime.now(UTC)
+    # 소수부를 남긴다 — 절삭과 올림이 갈리는 지점이 여기다.
+    expires_at = before + timedelta(seconds=300, microseconds=500000)
+    env["claim_request"] = _claim_request(slack_dm_ts="1755500000.000100", expires_at=expires_at)
+
+    routes.task_remind({"claim_request_id": "crq_1"})
+
     assert env["recorded"][0][2] == ReminderAction.SEND_REMINDER
     claim_request_id, delay = env["enqueued"][0]
     assert claim_request_id == "crq_1"
-    assert 290 <= delay <= 300
+    # 라우트의 now는 before 이후다 — before + delay가 expires_at을 덮으면
+    # 실제 예약 시각은 반드시 만료 이후다.
+    assert before + timedelta(seconds=delay) >= expires_at, (
+        f"delay={delay}s는 expires_at을 덮지 못한다 — 깨어난 태스크가 SKIP으로 빠진다"
+    )
+
+
+def test_reminder_reschedule_rounds_up_sub_second_remainder(env):
+    """1초 미만의 잔여도 올려야 한다. 내리면 delay가 0이 되어 만료 전에 깨어난다."""
+    before = datetime.now(UTC)
+    expires_at = before + timedelta(microseconds=400000)
+    env["claim_request"] = _claim_request(slack_dm_ts="1755500000.000100", expires_at=expires_at)
+
+    routes.task_remind({"claim_request_id": "crq_1"})
+
+    assert env["enqueued"][0][1] >= 1
 
 
 def test_reminder_send_without_expires_at_does_not_reschedule(env):
