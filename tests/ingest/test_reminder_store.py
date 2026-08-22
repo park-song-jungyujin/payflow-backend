@@ -127,6 +127,14 @@ def test_record_sent_reminder_marks_reminded(fake):
     assert doc["slack_dm_ts"] == "1755500000.000100"
 
 
+def test_record_sent_initial_does_not_overwrite_existing_root_ts(fake):
+    """동시 워커 둘이 모두 슬롯을 얻는 잔여 창. 두 번째 기록이 스레드 루트 ts를
+    나중 값으로 밀면 이후 재촉이 엉뚱한 스레드에 달린다."""
+    _seed(fake, slack_dm_ts="1755500000.000100")
+    store.record_sent("crq_1", slack_ts="1755500009.000900", action=ReminderAction.SEND_INITIAL, now=NOW)
+    assert fake.data["claim_requests"]["crq_1"]["slack_dm_ts"] == "1755500000.000100"
+
+
 def test_record_sent_does_not_overwrite_responded(fake):
     """발송과 기록 사이에 사람이 답했으면 그 응답이 이긴다."""
     _seed(fake, status="RESPONDED", slack_dm_ts="1755500000.000100")

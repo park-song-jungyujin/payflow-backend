@@ -340,6 +340,12 @@ def record_sent(
         # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
 
         if action == ReminderAction.SEND_INITIAL:
+            # 이미 루트 ts가 있으면 덮지 않는다. 동시 워커 둘이 모두 슬롯을 얻는
+            # 잔여 창에서 두 번째 기록이 스레드 루트를 나중 값으로 밀어버리면
+            # 이후 재촉이 엉뚱한 스레드에 달린다 — SEND_REMINDER 분기가
+            # slack_dm_ts를 건드리지 않는 것과 같은 논리다.
+            if data.get("slack_dm_ts"):
+                return
             # 최초 발송은 아직 재촉이 아니다 — status는 PENDING에 둔다.
             transaction.update(ref, {"slack_dm_ts": slack_ts, "updated_at": now})
         elif action == ReminderAction.SEND_REMINDER:
