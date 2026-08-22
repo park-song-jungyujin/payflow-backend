@@ -368,6 +368,34 @@ def record_sent(
         raise ReceiptStoreUnavailable(str(e)) from e
 
 
+def mark_responded(claim_request_id: str, *, now: datetime) -> bool:
+    """버튼 응답. `PENDING`·`REMINDED`에서만 `RESPONDED`로 간다.
+
+    이미 `EXPIRED`면 되살리지 않는다 — 만료된 요청을 응답으로 되돌리면 재촉
+    루프의 종결 상태가 뒤집힌다(사람이 만료 뒤 옛 DM의 버튼을 눌러도 마찬가지다).
+    이미 `RESPONDED`면 아무것도 안 하고 False다 — Slack은 같은 상호작용을
+    재전송할 수 있고, 그때 updated_at만 계속 밀리면 감사 기록이 흐려진다.
+
+    돌려주는 bool은 "이 호출이 실제로 전이시켰는가"다. 감사 로그를 한 번만
+    남기려고 호출부가 쓴다.
+    """
+
+    def _txn(transaction):
+        ref = _claim_request_ref(claim_request_id)
+        snapshot = ref.get(transaction=transaction)
+        data = snapshot.to_dict() or {}
+        if not snapshot.exists or data.get("status") not in _CLAIM_REQUEST_STATUSES_OPEN:
+            return False
+
+        transaction.update(ref, {"status": "RESPONDED", "updated_at": now})
+        return True
+
+    try:
+        return _run_in_transaction(_txn)
+    except ValueError as e:
+        raise ReceiptStoreUnavailable(str(e)) from e
+
+
 def mark_expired(claim_request_id: str, *, now: datetime) -> None:
     """만료 처리. RESPONDED면 건드리지 않는다 — 사람이 방금 누른 응답을 만료
     태스크가 덮으면 응답이 사라진다."""

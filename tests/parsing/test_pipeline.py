@@ -8,6 +8,7 @@
    재요청 DM이 잘못 나간다
 """
 
+import json
 from datetime import date
 
 import pytest
@@ -66,7 +67,7 @@ def wired(monkeypatch, tmp_path):
         pipeline, "record_audit_log", lambda **kwargs: state["audit"].append(kwargs)
     )
     monkeypatch.setattr(
-        pipeline, "enqueue_claimant_review", lambda rid: state["enqueued"].append(rid)
+        pipeline, "enqueue_claimant_review", lambda rid, *, receipt: state["enqueued"].append(rid)
     )
 
     state["claims"] = []
@@ -298,6 +299,25 @@ def test_enqueues_claimant_review_only_on_parsed(monkeypatch, wired):
     assert wired["enqueued"] == ["rct_1"]
 
 
+def test_snapshot_carries_raw_text_uri_not_the_raw_text(monkeypatch, wired):
+    """§9 입력 계약은 `raw_text_gcs_uri`다. 원문 자체를 태스크 본문에 실으면
+    Cloud Tasks 큐에 영속화되고 로그에 남으며, 에이전트 컨텍스트를 타고
+    audit_logs로 샐 경로(§2가 금지)가 열린다. 마스킹으로는 못 막는다 —
+    money-safety.md의 마스킹 대상 4종(카드번호·CVC·주민등록번호·여권번호)에
+    사업자번호·전화번호는 없다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    sent = {}
+    monkeypatch.setattr(
+        pipeline, "enqueue_claimant_review", lambda rid, *, receipt: sent.update(receipt)
+    )
+
+    pipeline.parse_receipt("rct_1")
+
+    assert sent["raw_text_gcs_uri"].endswith("raw_text/rct_1.txt")
+    assert "raw_text" not in sent
+    assert "02-1234-5678" not in json.dumps(sent, ensure_ascii=False)
+
+
 def test_does_not_enqueue_on_failure(monkeypatch, wired):
     """FAILED는 재촉 루프 몫이지 청구자 에이전트 검토 대상이 아니다."""
     _install_parser(monkeypatch, RecordingParser(error=PermanentParseError("unreadable")))
@@ -311,7 +331,7 @@ def test_enqueue_failure_does_not_undo_parsed(monkeypatch, wired):
 
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
 
-    def boom(receipt_id):
+    def boom(receipt_id, *, receipt):
         raise QueueNotConfigured("CLOUD_TASKS_QUEUE not configured")
 
     monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)
@@ -328,7 +348,7 @@ def test_enqueue_failure_other_than_queue_not_configured_does_not_undo_parsed(mo
     status != RECEIVED라 SKIPPED로 빠져 청구자 에이전트 호출이 영영 사라진다."""
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
 
-    def boom(receipt_id):
+    def boom(receipt_id, *, receipt):
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)

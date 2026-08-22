@@ -160,8 +160,10 @@ def env(monkeypatch):
         "ts_seq": iter(f"17226828{n:02d}.000100" for n in range(10, 99)),
     }
 
-    def fake_post(*, channel, text, thread_ts=None):
-        state["sent"].append({"channel": channel, "text": text, "thread_ts": thread_ts})
+    def fake_post(*, channel, text, thread_ts=None, blocks=None):
+        state["sent"].append(
+            {"channel": channel, "text": text, "thread_ts": thread_ts, "blocks": blocks}
+        )
         return next(state["ts_seq"])
 
     monkeypatch.setattr(routes, "post_message", fake_post)

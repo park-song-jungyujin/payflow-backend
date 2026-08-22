@@ -1,4 +1,4 @@
-"""schema-contract.md §10 — POST /slack/events (A 소유).
+"""schema-contract.md §10 — POST /slack/events · /slack/interactions (A 소유).
 
 architecture.md §비동기: 서명검증 → Firestore raw 저장 → enqueue → 200, 목표 0.5s.
 **3초 안에 200을 돌려주는 게 이 라우트의 유일한 성능 요구다.** 파일 다운로드,
@@ -9,10 +9,12 @@ slack_file_id로 하고, 이 라우트는 재전송이어도 enqueue는 다시 �
 같은 receipt_id를 덮어쓰므로 멱등이고, 앞 요청이 enqueue 직전에 죽었을 수 있다.
 """
 
+import json
 import logging
 import math
 import os
 from datetime import UTC, datetime
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
@@ -25,7 +27,13 @@ from .drafts import InvalidDraftPayload, parse_claimant_payload
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt, enqueue_remind
 from .reminders import ReminderAction, decide, parse_expires_at
 from .signature import SignatureError, verify_slack_signature
-from .slack_client import SlackSendPermanent, SlackSendTransient, post_message
+from .slack_client import (
+    CLAIM_REQUEST_ACTION_ID,
+    SlackSendPermanent,
+    SlackSendTransient,
+    post_message,
+    requery_blocks,
+)
 from .store import (
     CLAIM_REQUEST_TTL_SECONDS,
     ReceiptStoreUnavailable,
@@ -35,6 +43,7 @@ from .store import (
     find_recipient_by_slack_user,
     get_claim_request,
     mark_expired,
+    mark_responded,
     record_sent,
 )
 
@@ -142,6 +151,92 @@ async def slack_events(request: Request):
         received.append(receipt_id)
 
     return {"status": "ok", "receipt_ids": received}
+
+
+@router.post("/slack/interactions")
+async def slack_interactions(request: Request):
+    """schema-contract.md §10 — 버튼 응답. Slack 앱 설정의 Interactivity Request URL.
+
+    이게 없으면 `RESPONDED`가 영영 안 생겨 모든 claim_request가 만료된다.
+
+    **본문이 form-encoded다**(`payload=<json>`). 서명은 여기서도 raw body 기준이라
+    /slack/events와 같은 함수를 쓴다 — 파싱한 값을 다시 직렬화하면 서명이 깨진다.
+
+    **Slack은 3초 안에 200을 원한다.** 하는 일이 Firestore 트랜잭션 하나뿐이라
+    큐로 넘기지 않는다. 다만 실패해도 500을 내지 않는다 — Slack이 재전송하면
+    같은 버튼 클릭이 여러 번 오고, 그때마다 사용자에게는 오류 배너가 뜬다.
+    """
+    raw_body = await request.body()
+    try:
+        verify_slack_signature(
+            raw_body,
+            request.headers.get("X-Slack-Request-Timestamp", ""),
+            request.headers.get("X-Slack-Signature", ""),
+        )
+    except SignatureError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+
+    # python-multipart(Form 의존성)를 끌어오지 않는다 — 필요한 건 키 하나다.
+    fields = parse_qs(raw_body.decode("utf-8"))
+    raw_payload = (fields.get("payload") or [""])[0]
+    try:
+        payload = json.loads(raw_payload)
+    except ValueError:
+        # 서명은 통과했으므로 Slack이 보낸 게 맞다. 모양을 모르면 무시한다 —
+        # 400을 내면 Slack이 재전송하는데 다시 불러도 같은 본문이다.
+        _audit_best_effort(
+            actor="api/src/ingest",
+            action="SLACK_INTERACTION_UNPARSABLE",
+            reason="payload field is not valid JSON",
+        )
+        return {"status": "ignored", "reason": "unparsable"}
+
+    if payload.get("type") != "block_actions":
+        # view_submission·shortcut 등은 아직 쓰지 않는다.
+        return {"status": "ignored", "reason": "unsupported_type"}
+
+    actions = payload.get("actions") or []
+    action = next(
+        (a for a in actions if isinstance(a, dict) and a.get("action_id") == CLAIM_REQUEST_ACTION_ID),
+        None,
+    )
+    if action is None:
+        return {"status": "ignored", "reason": "unsupported_action"}
+
+    claim_request_id = action.get("value")
+    if not claim_request_id:
+        _audit_best_effort(
+            actor="api/src/ingest",
+            action="SLACK_INTERACTION_NO_TARGET",
+            reason=f"{CLAIM_REQUEST_ACTION_ID} without a claim_request_id value",
+        )
+        return {"status": "ignored", "reason": "no_target"}
+
+    now = datetime.now(UTC)
+    try:
+        transitioned = mark_responded(claim_request_id, now=now)
+    except ReceiptStoreUnavailable as e:
+        # 트랜잭션 소진. 다시 부르면 될 실패지만 Slack 재전송에 기대지 않는다 —
+        # 사람에게는 이미 오류로 보이고, 남은 건 만료뿐이라 조용히 사라지지 않는다.
+        _audit_best_effort(
+            actor="api/src/ingest",
+            action="CLAIM_REQUEST_RESPONSE_FAILED",
+            reason=str(e),
+            after={"claim_request_id": claim_request_id},
+        )
+        return {"status": "ignored", "reason": "store_unavailable"}
+
+    if not transitioned:
+        # 이미 RESPONDED(재전송)이거나 EXPIRED다. 만료를 응답으로 되살리지 않는다.
+        return {"status": "ignored", "reason": "not_open"}
+
+    record_audit_log(
+        actor="api/src/ingest",
+        action="CLAIM_REQUEST_RESPONDED",
+        reason=f"slack_user_id={(payload.get('user') or {}).get('id')}",
+        after={"claim_request_id": claim_request_id, "status": "RESPONDED"},
+    )
+    return {"status": "ok", "claim_request_id": claim_request_id}
 
 
 @router.post("/tasks/apply-claimant-draft")
@@ -464,7 +559,12 @@ def task_remind(body: dict, authorization: str = Header(default="")):
             return {"status": "ignored", "reason": "slot_taken"}
 
         try:
-            slack_ts = post_message(channel=channel, text=message, thread_ts=thread_ts)
+            slack_ts = post_message(
+                channel=channel,
+                text=message,
+                thread_ts=thread_ts,
+                blocks=requery_blocks(message, claim_request_id),
+            )
         except SlackSendTransient as e:
             # 아직 아무것도 기록하지 않았다 — 재시도가 처음부터 다시 돈다.
             raise HTTPException(status_code=503, detail=f"slack send failed: {e}")
