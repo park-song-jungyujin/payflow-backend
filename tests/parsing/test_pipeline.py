@@ -39,6 +39,7 @@ def wired(monkeypatch, tmp_path):
         "receipts": {
             "rct_1": {
                 "receipt_id": "rct_1",
+                "org_id": "org_1",
                 "recipient_id": "rcp_1",
                 "slack_file_id": "F01ABCDEF",
                 "status": "RECEIVED",
@@ -59,7 +60,7 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pipeline,
         "download_slack_file",
-        lambda file_id: SlackFile(data=b"\xff\xd8img", mimetype="image/jpeg", ext="jpg"),
+        lambda file_id, org_id: SlackFile(data=b"\xff\xd8img", mimetype="image/jpeg", ext="jpg"),
     )
     monkeypatch.setattr(pipeline, "get_object_store", lambda: LocalObjectStore(tmp_path))
     monkeypatch.setattr(

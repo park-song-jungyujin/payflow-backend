@@ -41,6 +41,36 @@ CLAIM_REQUEST_TTL_SECONDS = int(os.environ.get("CLAIM_REQUEST_TTL_SECONDS", "864
 _CLAIM_STATUSES_NOT_DEMOTABLE = {"IN_RUN", "SETTLED"}
 
 
+def find_or_create_recipient(org_id: str, slack_user_id: str) -> dict:
+    """schema-contract.md "org 스코핑과 로그인" — 초대 절차 없이 최초 메시지
+    시점에 `recipients`를 만든다. 이미 있으면 그대로 돌려준다.
+
+    Slack 프로필(`display_name`·이메일)을 조회하지 않는다 — 첫 영수증 처리에
+    필요하지 않고, PayPal 지급에 필요한 `paypal_email`은 어차피 별도 등록
+    절차가 있어야 한다(범위 밖). 최소 필드로 자리만 만든다."""
+    existing = find_recipient_by_slack_user(org_id, slack_user_id)
+    if existing is not None:
+        return existing
+
+    recipient_id = f"rcp_{ULID()}"
+    now = datetime.now(UTC)
+    doc = {
+        "recipient_id": recipient_id,
+        "org_id": org_id,
+        "slack_user_id": slack_user_id,
+        "paypal_email": "",
+        "display_name": slack_user_id,
+        "monthly_paid_minor": 0,
+        "monthly_period": now.strftime("%Y-%m"),
+        "verified": False,
+        "status": "ACTIVE",
+        "created_at": now,
+        "updated_at": now,
+    }
+    get_client().collection("recipients").document(recipient_id).set(doc)
+    return doc
+
+
 class ReceiptStoreUnavailable(RuntimeError):
     """영수증을 저장하지 못했다. 호출부가 503으로 바꾼다.
 
@@ -63,12 +93,15 @@ def _run_in_transaction(fn):
     return firestore.transactional(fn)(client.transaction())
 
 
-def find_recipient_by_slack_user(slack_user_id: str) -> dict | None:
+def find_recipient_by_slack_user(org_id: str, slack_user_id: str) -> dict | None:
     """schema-contract.md §2 — recipients의 Slack ID 매핑 조회는 A 소유다.
-    단일 동등 필터라 복합 색인이 필요 없다."""
+    `slack_user_id`는 워크스페이스(기관) 안에서만 유일하므로 `org_id`와
+    함께 걸러야 다른 기관의 동명 ID와 안 겹친다. 두 동등 필터라 복합 색인이
+    필요하다(Firestore가 첫 호출에 콘솔 링크를 준다)."""
     docs = (
         get_client()
         .collection("recipients")
+        .where(filter=FieldFilter("org_id", "==", org_id))
         .where(filter=FieldFilter("slack_user_id", "==", slack_user_id))
         .limit(1)
         .stream()
@@ -79,6 +112,7 @@ def find_recipient_by_slack_user(slack_user_id: str) -> dict | None:
 
 def create_receipt_if_absent(
     *,
+    org_id: str,
     recipient_id: str,
     slack_file_id: str,
     slack_channel_id: str,
@@ -122,6 +156,7 @@ def create_receipt_if_absent(
             get_client().collection("receipts").document(receipt_id),
             {
                 "receipt_id": receipt_id,
+                "org_id": org_id,
                 "recipient_id": recipient_id,
                 "slack_file_id": slack_file_id,
                 "slack_channel_id": slack_channel_id,
@@ -168,6 +203,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
             return "SKIPPED", None
 
         recipient_id = data.get("recipient_id")
+        org_id = data.get("org_id")
 
         # claim 조회. 파싱은 영수증당 claim을 1회만 만들고(claims.py 주석) 동시
         # 생성 경로가 없다는 게 전제다 — 그래서 쿼리 결과가 0건이어도(락이
@@ -184,11 +220,15 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
         # 대신 None이 되게 한다.
         claim_data = (claim_snapshot.to_dict() or {}) if claim_snapshot is not None else None
 
-        # 필드 누락 방어. recipient_id 없는 receipts나 status 없는 claims는
-        # 계약 밖 문서다 — 그냥 흘려보내면 recipient_id=None인 claim_request가
-        # 나가거나(§3 ClaimRequest.recipient_id는 non-nullable) 상태를 알 수
-        # 없는 claim을 잘못 판단하게 된다. 쓰기 없이 SKIPPED로 멈춘다.
-        if recipient_id is None or (claim_snapshot is not None and claim_data.get("status") is None):
+        # 필드 누락 방어. recipient_id·org_id 없는 receipts나 status 없는 claims는
+        # 계약 밖 문서다 — 그냥 흘려보내면 recipient_id=None이거나 org_id=None인
+        # claim_request가 나가거나(§3 ClaimRequest는 둘 다 non-nullable) 상태를
+        # 알 수 없는 claim을 잘못 판단하게 된다. 쓰기 없이 SKIPPED로 멈춘다.
+        if (
+            recipient_id is None
+            or org_id is None
+            or (claim_snapshot is not None and claim_data.get("status") is None)
+        ):
             return "SKIPPED", None
 
         # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
@@ -210,6 +250,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                 client.collection("claim_requests").document(claim_request_id),
                 {
                     "claim_request_id": claim_request_id,
+                    "org_id": org_id,
                     "recipient_id": recipient_id,
                     "receipt_id": receipt_id,
                     "reason": "AMOUNT_MISMATCH",

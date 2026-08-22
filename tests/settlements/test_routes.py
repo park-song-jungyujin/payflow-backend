@@ -42,7 +42,12 @@ class _FakeStub:
 
 
 def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
-    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: claims)
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda org_id, filter: claims)
     monkeypatch.setattr(
         routes,
         "verify_candidates",
@@ -73,7 +78,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
     stub, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
     run_id, claim_summaries, duplicate_groups = enqueue_calls[0]
@@ -100,7 +105,7 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
     }
     _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
 
-    routes.create_settlement_run_route(body={})
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, _, duplicate_groups = enqueue_calls[0]
     assert len(duplicate_groups) == 1
@@ -112,7 +117,7 @@ def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_missing")]
     _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts={})
 
-    routes.create_settlement_run_route(body={})
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, claim_summaries, _ = enqueue_calls[0]
     assert claim_summaries[0]["merchant_name"] is None
@@ -127,7 +132,7 @@ def test_enqueue_failure_does_not_break_run_creation(monkeypatch):
         monkeypatch, claims=claims, receipts=receipts, enqueue_error=RuntimeError("boom")
     )
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert result["status"] == "DRAFT"
     assert len(stub.created) == 1  # 배치는 정상적으로 만들어졌다
@@ -153,7 +158,7 @@ def test_audit_log_failure_does_not_mask_response(monkeypatch):
         lambda **kw: (_ for _ in ()).throw(RuntimeError("firestore down")),
     )
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert result["status"] == "DRAFT"
 
@@ -161,7 +166,7 @@ def test_audit_log_failure_does_not_mask_response(monkeypatch):
 def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
     _, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
 
-    routes.create_settlement_run_route(body={})
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, claim_summaries, duplicate_groups = enqueue_calls[0]
     assert claim_summaries == []
@@ -172,9 +177,23 @@ def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
 
 
 def _run_doc(**overrides):
-    run = {"settlement_run_id": "run_1", "status": "DRAFT", "approval_token_hash": "secret"}
+    run = {
+        "settlement_run_id": "run_1",
+        "org_id": "org_1",
+        "status": "DRAFT",
+        "approval_token_hash": "secret",
+    }
     run.update(overrides)
     return run
+
+
+@pytest.fixture(autouse=True)
+def _session(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
 
 
 def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
@@ -183,7 +202,7 @@ def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["executor_analysis"] is None
 
@@ -205,7 +224,7 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
 
     monkeypatch.setattr(routes, "get_agent_draft", fake_get_draft)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     # enqueue.py의 task_id 네임스페이스와 정확히 같은 값으로 조회해야 한다 —
     # 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
@@ -224,7 +243,7 @@ def test_get_run_404_does_not_read_agent_draft(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        routes.get_settlement_run_route("run_missing")
+        routes.get_settlement_run_route("run_missing", authorization="Bearer t")
     assert exc_info.value.status_code == 404
 
 
@@ -232,6 +251,6 @@ def test_get_run_still_strips_approval_token_hash(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert "approval_token_hash" not in result

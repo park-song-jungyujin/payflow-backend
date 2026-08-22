@@ -43,7 +43,7 @@ def save_verification_result(receipt_id: str, *, passed: bool, signals: Verifica
     )
 
 
-def create_verification_failed_claim_request(*, recipient_id: str, receipt_id: str) -> str:
+def create_verification_failed_claim_request(*, org_id: str, recipient_id: str, receipt_id: str) -> str:
     """schema-contract.md §2 claim_requests reason — VERIFICATION_FAILED는
     receipt_id가 필수다.
 
@@ -57,6 +57,7 @@ def create_verification_failed_claim_request(*, recipient_id: str, receipt_id: s
     get_client().collection("claim_requests").document(claim_request_id).set(
         {
             "claim_request_id": claim_request_id,
+            "org_id": org_id,
             "recipient_id": recipient_id,
             "receipt_id": receipt_id,
             "reason": "VERIFICATION_FAILED",

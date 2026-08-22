@@ -46,19 +46,19 @@ class FakeDocRef:
 
 
 class FakeQuery:
-    """where().limit().stream() 체인. recipients 조회에만 쓰인다."""
+    """where().where().limit().stream() 체인(AND). recipients 조회에만 쓰인다."""
 
-    def __init__(self, docs, field=None, value=None, limit=None):
-        self._docs, self._field, self._value, self._limit = docs, field, value, limit
+    def __init__(self, docs, filters=None, limit=None):
+        self._docs, self._filters, self._limit = docs, filters or [], limit
 
     def where(self, filter=None):
-        return FakeQuery(self._docs, filter.field_path, filter.value, self._limit)
+        return FakeQuery(self._docs, [*self._filters, (filter.field_path, filter.value)], self._limit)
 
     def limit(self, n):
-        return FakeQuery(self._docs, self._field, self._value, n)
+        return FakeQuery(self._docs, self._filters, n)
 
     def stream(self, transaction=None):
-        hits = [d for d in self._docs if d.get(self._field) == self._value]
+        hits = [d for d in self._docs if all(d.get(f) == v for f, v in self._filters)]
         return iter([FakeSnapshot(d) for d in (hits[: self._limit] if self._limit else hits)])
 
 
@@ -128,6 +128,7 @@ def fake(monkeypatch):
 
 def _create(**overrides):
     kwargs = {
+        "org_id": "org_1",
         "recipient_id": "rcp_1",
         "slack_file_id": "F01ABCDEF",
         "slack_channel_id": "C01ABCDEF",
@@ -140,13 +141,14 @@ def _create(**overrides):
 def test_finds_recipient_by_slack_user(fake):
     fake.data["recipients"]["rcp_1"] = {
         "recipient_id": "rcp_1",
+        "org_id": "org_1",
         "slack_user_id": "U01ABCDEF",
     }
-    assert store.find_recipient_by_slack_user("U01ABCDEF")["recipient_id"] == "rcp_1"
+    assert store.find_recipient_by_slack_user("org_1", "U01ABCDEF")["recipient_id"] == "rcp_1"
 
 
 def test_unknown_slack_user_returns_none(fake):
-    assert store.find_recipient_by_slack_user("U_NOBODY") is None
+    assert store.find_recipient_by_slack_user("org_1", "U_NOBODY") is None
 
 
 def test_creates_receipt_in_received_status(fake):

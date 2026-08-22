@@ -82,6 +82,7 @@ def _seed_pre_verdict_state(fake, receipt_id, claim_id, recipient_id="rcp_e2e"):
     스냅샷(NEEDS_REQUERY)은 여기서 쓰지 않는다 — 그건 판정이 반영된 *뒤*의 상태다."""
     fake.data["receipts"][receipt_id] = {
         "receipt_id": receipt_id,
+        "org_id": "org_1",
         "recipient_id": recipient_id,
         "status": "PARSED",
         "created_at": NOW,

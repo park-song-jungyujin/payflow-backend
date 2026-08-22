@@ -53,6 +53,7 @@ class FakeClient:
 def _run(**overrides):
     run = {
         "settlement_run_id": "run_1",
+        "org_id": "org_1",
         "status": "DRAFT",
     }
     run.update(overrides)
@@ -61,6 +62,11 @@ def _run(**overrides):
 
 @pytest.fixture(autouse=True)
 def _patch(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
     monkeypatch.setattr(routes.firestore, "transactional", lambda fn: fn)
     monkeypatch.setattr(routes, "check_caps", lambda run: None)
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
@@ -88,7 +94,7 @@ def _wire_store(monkeypatch, run, current_store_doc=None):
 def test_unknown_run_returns_404(monkeypatch):
     _wire_store(monkeypatch, None)
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 404
 
 
@@ -96,7 +102,7 @@ def test_non_draft_run_returns_409(monkeypatch):
     run = _run(status="APPROVED")
     _wire_store(monkeypatch, run)
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 409
 
 
@@ -114,7 +120,7 @@ def test_failed_run_can_be_reapproved_for_retry(monkeypatch):
         ],
     )
 
-    result = routes.approve_settlement_run("run_1")
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
 
     assert result["status"] == "APPROVED"
     assert "approval_token" in result
@@ -128,7 +134,7 @@ def test_empty_claims_returns_422_and_does_not_issue_token(monkeypatch):
     monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: [])
 
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 422
 
 
@@ -149,7 +155,7 @@ def test_fx_lookup_failure_returns_502(monkeypatch):
     monkeypatch.setattr(routes, "fetch_fx_rate", boom)
 
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 502
 
 
@@ -168,7 +174,7 @@ def test_base_currency_only_claims_skip_fx_lookup(monkeypatch):
     calls = []
     monkeypatch.setattr(routes, "fetch_fx_rate", lambda *a: calls.append(a) or Decimal("1"))
 
-    result = routes.approve_settlement_run("run_1")
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
 
     assert calls == []
     assert result["total_amount_minor"] == 1000
@@ -181,7 +187,7 @@ def test_cap_violation_returns_403_and_does_not_issue_token(monkeypatch):
     monkeypatch.setattr(routes, "check_caps", lambda run: "MAX_AMOUNT_PER_BATCH_MINOR exceeded")
 
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 403
 
 
@@ -189,10 +195,9 @@ def test_successful_approval_returns_raw_token_never_the_hash(monkeypatch):
     run = _run()
     _wire_store(monkeypatch, run)
 
-    result = routes.approve_settlement_run("run_1", {"approved_by": "alice"})
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
 
     assert result["status"] == "APPROVED"
-    assert result["approved_by"] == "alice"
     assert "approval_token" in result
     assert "approval_token_hash" not in result
     # 응답의 평문 토큰을 해시하면 실제 저장된 해시와 일치해야 한다(같은 토큰).
@@ -208,20 +213,22 @@ def test_successful_approval_sets_expiry_using_configured_ttl(monkeypatch):
     monkeypatch.setenv("APPROVAL_TOKEN_TTL_SECONDS", "60")
 
     before = datetime.now(UTC)
-    result = routes.approve_settlement_run("run_1")
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
     after = datetime.now(UTC)
 
     expires_at = result["approval_token_expires_at"]
     assert before + timedelta(seconds=59) <= expires_at <= after + timedelta(seconds=61)
 
 
-def test_default_approver_used_when_body_omitted(monkeypatch):
+def test_approved_by_comes_from_session_not_client_input(monkeypatch):
+    """세션에서 검증된 신원으로 채운다 — 클라이언트가 보낸 값을 신뢰하지 않는다
+    (예전엔 body의 approved_by를 그대로 믿었다 — 신원 스푸핑 구멍)."""
     run = _run()
     _wire_store(monkeypatch, run)
 
-    result = routes.approve_settlement_run("run_1", None)
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
 
-    assert result["approved_by"] == "demo_approver"
+    assert result["approved_by"] == "alice@example.com"
 
 
 def test_concurrent_double_approval_second_caller_rejected(monkeypatch):
@@ -233,5 +240,5 @@ def test_concurrent_double_approval_second_caller_rejected(monkeypatch):
     monkeypatch.setattr(routes, "get_client", lambda: FakeClient(already_approved_in_store))
 
     with pytest.raises(HTTPException) as exc:
-        routes.approve_settlement_run("run_1")
+        routes.approve_settlement_run("run_1", authorization="Bearer t")
     assert exc.value.status_code == 409

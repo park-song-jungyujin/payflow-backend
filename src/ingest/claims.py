@@ -47,6 +47,7 @@ def build_claim(receipt: dict, *, now: datetime) -> dict:
     amount_minor = receipt.get("parsed_amount_minor")
     currency = receipt.get("currency")
     recipient_id = receipt.get("recipient_id")
+    org_id = receipt.get("org_id")
 
     # 금액 없는 청구를 0원으로 만들지 않는다. 못 만들면 안 만드는 게 맞다 —
     # 영수증은 PARSED로 남고 사람이 대시보드에서 볼 수 있다.
@@ -62,6 +63,7 @@ def build_claim(receipt: dict, *, now: datetime) -> dict:
 
     return {
         "claim_id": f"clm_{ULID()}",
+        "org_id": org_id,
         "recipient_id": recipient_id,
         "receipt_id": receipt["receipt_id"],
         "amount_minor": amount_minor,

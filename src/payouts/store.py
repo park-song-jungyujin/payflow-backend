@@ -29,8 +29,13 @@ def get_settlement_run(run_id: str) -> dict | None:
     return doc.to_dict() if doc.exists else None
 
 
-def list_settlement_runs() -> list[dict]:
-    docs = get_client().collection("settlement_runs").stream()
+def list_settlement_runs(org_id: str) -> list[dict]:
+    docs = (
+        get_client()
+        .collection("settlement_runs")
+        .where(filter=FieldFilter("org_id", "==", org_id))
+        .stream()
+    )
     return [d.to_dict() for d in docs]
 
 
@@ -66,11 +71,13 @@ def get_claims_for_run(run_id: str) -> list[dict]:
     return [d.to_dict() for d in docs]
 
 
-def list_confirmed_claims() -> list[dict]:
-    """TEMP(B): 매칭 후보 조회. status=CONFIRMED이고 아직 배치에 안 묶인 것 전체.
-    PayPal 원장 대조는 하지 않는다 — 필터링만 한다. src/matching/이 실제 매칭으로
-    교체되면 이 함수를 대체하거나 그 안에서만 쓰게 된다."""
+def list_confirmed_claims(org_id: str) -> list[dict]:
+    """TEMP(B): 매칭 후보 조회. status=CONFIRMED이고 아직 배치에 안 묶인 것 전체,
+    같은 기관 소속만. PayPal 원장 대조는 하지 않는다 — 필터링만 한다. src/matching/이
+    실제 매칭으로 교체되면 이 함수를 대체하거나 그 안에서만 쓰게 된다."""
     docs = get_client().collection("claims").where(
+        filter=FieldFilter("org_id", "==", org_id)
+    ).where(
         filter=FieldFilter("status", "==", "CONFIRMED")
     ).where(
         filter=FieldFilter("settlement_run_id", "==", None)

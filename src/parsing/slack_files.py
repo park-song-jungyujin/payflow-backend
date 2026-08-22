@@ -11,11 +11,12 @@
 일시적 실패에 FAILED를 찍으면 멀쩡한 영수증이 재요청 DM 대상이 된다.
 """
 
-import os
 import re
 
 import requests as http_requests
 from pydantic import BaseModel
+
+from ..auth.store import get_slack_workspace_by_org
 
 _SLACK_FILES_INFO = "https://slack.com/api/files.info"
 _TIMEOUT_SECONDS = 20
@@ -47,16 +48,16 @@ class SlackFile(BaseModel):
     ext: str
 
 
-def _bot_token() -> str:
-    token = os.environ.get("SLACK_BOT_TOKEN")
-    if not token:
+def _bot_token(org_id: str) -> str:
+    workspace = get_slack_workspace_by_org(org_id)
+    if workspace is None:
         # 설정 누락이지 영수증 문제가 아니다. 영구 실패로 찍으면 안 된다.
-        raise TransientParseError("SLACK_BOT_TOKEN not configured")
-    return token
+        raise TransientParseError(f"no slack_workspaces installed for org_id={org_id}")
+    return workspace["bot_token"]
 
 
-def download_slack_file(slack_file_id: str) -> SlackFile:
-    headers = {"Authorization": f"Bearer {_bot_token()}"}
+def download_slack_file(slack_file_id: str, org_id: str) -> SlackFile:
+    headers = {"Authorization": f"Bearer {_bot_token(org_id)}"}
 
     try:
         info = http_requests.get(

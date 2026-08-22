@@ -201,7 +201,7 @@ def verify_candidates(claims: list[dict]) -> dict:
         store.save_verification_result(receipt_id, passed=passed, signals=signals)
         if not passed:
             store.create_verification_failed_claim_request(
-                recipient_id=receipt["recipient_id"], receipt_id=receipt_id
+                org_id=receipt["org_id"], recipient_id=receipt["recipient_id"], receipt_id=receipt_id
             )
         passed_by_receipt[receipt_id] = passed
 

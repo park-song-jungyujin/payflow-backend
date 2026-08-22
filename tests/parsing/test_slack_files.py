@@ -27,7 +27,11 @@ class FakeResponse:
 
 @pytest.fixture(autouse=True)
 def _bot_token(monkeypatch):
-    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setattr(
+        slack_files,
+        "get_slack_workspace_by_org",
+        lambda org_id: {"bot_token": "xoxb-test"},
+    )
 
 
 def _wire(monkeypatch, info_response, download_response=None):
@@ -54,7 +58,7 @@ def test_downloads_with_bearer_token(monkeypatch):
         FakeResponse(content=b"\xff\xd8jpegbytes", headers={"Content-Type": "image/jpeg"}),
     )
 
-    result = slack_files.download_slack_file("F01ABCDEF")
+    result = slack_files.download_slack_file("F01ABCDEF", "org_1")
 
     assert result.data == b"\xff\xd8jpegbytes"
     assert result.mimetype == "image/jpeg"
@@ -64,7 +68,7 @@ def test_downloads_with_bearer_token(monkeypatch):
 
 def test_looks_up_url_via_files_info(monkeypatch):
     calls = _wire(monkeypatch, _ok_info(), FakeResponse(content=b"x", headers={"Content-Type": "image/jpeg"}))
-    slack_files.download_slack_file("F01ABCDEF")
+    slack_files.download_slack_file("F01ABCDEF", "org_1")
     assert "files.info" in calls[0]["url"]
     assert calls[0]["params"] == {"file": "F01ABCDEF"}
 
@@ -73,13 +77,13 @@ def test_html_login_page_is_permanent_failure(monkeypatch):
     """토큰 스코프가 모자라면 Slack이 200 + HTML을 준다. 이미지로 착각하면 안 된다."""
     _wire(monkeypatch, _ok_info(), FakeResponse(content=b"<html>login", headers={"Content-Type": "text/html"}))
     with pytest.raises(PermanentParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_slack_api_error_is_permanent(monkeypatch):
     _wire(monkeypatch, FakeResponse(json_body={"ok": False, "error": "file_not_found"}))
     with pytest.raises(PermanentParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 @pytest.mark.parametrize("status", [429, 500, 502, 503])
@@ -88,7 +92,7 @@ def test_retryable_status_is_transient(monkeypatch, status):
     상태를 안 바꾸고 Cloud Tasks가 다시 부르게 둔다."""
     _wire(monkeypatch, _ok_info(), FakeResponse(status_code=status, headers={"Content-Type": "text/plain"}))
     with pytest.raises(TransientParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_network_error_is_transient(monkeypatch):
@@ -97,14 +101,14 @@ def test_network_error_is_transient(monkeypatch):
 
     monkeypatch.setattr(slack_files.http_requests, "get", boom)
     with pytest.raises(TransientParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_missing_bot_token_is_transient(monkeypatch):
     """설정 누락이지 영수증 문제가 아니다. FAILED로 찍어 재요청 DM을 보내면 안 된다."""
-    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    monkeypatch.setattr(slack_files, "get_slack_workspace_by_org", lambda org_id: None)
     with pytest.raises(TransientParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 class RaisingJsonResponse:
@@ -124,14 +128,14 @@ def test_files_info_retryable_status_is_transient(monkeypatch, status):
     """files.info 자체가 재시도 대상 상태 코드를 주는 경로."""
     _wire(monkeypatch, FakeResponse(status_code=status))
     with pytest.raises(TransientParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_files_info_non_json_body_is_transient(monkeypatch):
     """F1: files.info가 200 + 비-JSON 본문을 주면 인프라 이상이지 영수증 속성이 아니다."""
     _wire(monkeypatch, RaisingJsonResponse())
     with pytest.raises(TransientParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_files_info_non_retryable_error_is_permanent(monkeypatch):
@@ -141,7 +145,7 @@ def test_files_info_non_retryable_error_is_permanent(monkeypatch):
         FakeResponse(status_code=404, json_body={"ok": False, "error": "file_not_found"}),
     )
     with pytest.raises(PermanentParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_ok_true_but_missing_file_key_is_permanent(monkeypatch):
@@ -150,21 +154,21 @@ def test_ok_true_but_missing_file_key_is_permanent(monkeypatch):
     info = FakeResponse(json_body={"ok": True})
     _wire(monkeypatch, info)
     with pytest.raises(PermanentParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_missing_url_private_is_permanent(monkeypatch):
     info = FakeResponse(json_body={"ok": True, "file": {"mimetype": "image/jpeg", "filetype": "jpg"}})
     _wire(monkeypatch, info)
     with pytest.raises(PermanentParseError):
-        slack_files.download_slack_file("F01ABCDEF")
+        slack_files.download_slack_file("F01ABCDEF", "org_1")
 
 
 def test_unknown_mimetype_falls_back_to_safe_filetype(monkeypatch):
     """알려진 4개 mimetype 밖이면 filetype 폴백을 쓰되, 안전한 값만 통과시킨다."""
     info = _ok_info(mimetype="image/gif")
     _wire(monkeypatch, info, FakeResponse(content=b"gifbytes", headers={"Content-Type": "image/gif"}))
-    result = slack_files.download_slack_file("F01ABCDEF")
+    result = slack_files.download_slack_file("F01ABCDEF", "org_1")
     assert result.ext == "jpg"  # _ok_info의 filetype 기본값
 
 
@@ -181,5 +185,5 @@ def test_unsafe_filetype_falls_back_to_bin(monkeypatch):
         }
     )
     _wire(monkeypatch, info, FakeResponse(content=b"gifbytes", headers={"Content-Type": "image/gif"}))
-    result = slack_files.download_slack_file("F01ABCDEF")
+    result = slack_files.download_slack_file("F01ABCDEF", "org_1")
     assert result.ext == "bin"

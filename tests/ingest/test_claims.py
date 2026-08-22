@@ -26,6 +26,7 @@ NOW = datetime(2026, 8, 21, 1, 37, tzinfo=UTC)
 def _receipt(**overrides) -> dict:
     r = {
         "receipt_id": "rct_1",
+        "org_id": "org_1",
         "recipient_id": "rcp_1",
         "parsed_amount_minor": 76500,
         "currency": "KRW",
