@@ -306,12 +306,14 @@ def _next_delay_seconds(action: ReminderAction, claim_request: dict, now: dateti
     if action == ReminderAction.SEND_INITIAL:
         # docs/README.md — "환경변수 하나로 데모(20초)와 실제(86400초)를 전환한다".
         # **기본값은 실제 값이다.** 데모는 어차피 REMINDER_DELAY_SECONDS=20을
-        # 세팅하는 시나리오이고(README 재촉 루프 E2E 체크리스트), 이 변수는 아직
-        # .env·infra 어디에도 없어서 배포는 이 기본값으로 돈다 — 여기가 20이면
-        # 실제 청구자가 최초 DM 20초 뒤에 재촉을 받는다. 데모가 하루 걸리는 건
-        # env 하나로 끝나는 눈에 보이는 실패고, 프로덕션이 20초 만에 사람을
-        # 재촉하는 건 눈에 안 보이는 실패다. store.py의 같은 파일권
-        # CLAIM_REQUEST_TTL_SECONDS 기본값(86400)과도 이제 앞뒤가 맞는다.
+        # 세팅하는 시나리오이고(README 재촉 루프 E2E 체크리스트), 여기가 20이면
+        # env를 안 넣은 환경의 청구자가 최초 DM 20초 뒤에 재촉을 받는다. 데모가
+        # 하루 걸리는 건 env 하나로 끝나는 눈에 보이는 실패고, 프로덕션이 20초
+        # 만에 사람을 재촉하는 건 눈에 안 보이는 실패다. store.py의 같은 파일권
+        # CLAIM_REQUEST_TTL_SECONDS 기본값(86400)과도 앞뒤가 맞는다.
+        #
+        # 배포는 infra/cloud_run.tf가 이 값을 주입한다(var.reminder_delay_seconds,
+        # 현재 20 — 데모용). 즉 배포 환경에서 도는 값은 이 기본값이 아니라 20이다.
         return int(os.environ.get("REMINDER_DELAY_SECONDS", "86400"))
 
     expires_at = parse_expires_at(claim_request.get("expires_at"))
