@@ -16,10 +16,13 @@ class ReminderAction(StrEnum):
     SKIP = "SKIP"
 
 
-def _parse_expires_at(value) -> datetime | None:
+def parse_expires_at(value) -> datetime | None:
     """Firestore 문서는 datetime으로도, ISO 문자열로도 온다(src/matching/duplicates.py
     의 transaction_date 처리와 같은 관용구). 없거나 형식이 깨졌으면 None —
-    만료 여부를 추측하지 않는다."""
+    만료 여부를 추측하지 않는다.
+
+    라우트가 다음 깨어남 시각을 계산할 때 같은 해석을 써야 해서 공개한다.
+    여기서 None인 값을 라우트가 다르게 읽으면 판정과 예약이 어긋난다."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -32,7 +35,7 @@ def _parse_expires_at(value) -> datetime | None:
 
 def decide(claim_request: dict, *, now: datetime) -> ReminderAction:
     status = claim_request.get("status")
-    expires_at = _parse_expires_at(claim_request.get("expires_at"))
+    expires_at = parse_expires_at(claim_request.get("expires_at"))
 
     if status == "PENDING":
         if not claim_request.get("slack_dm_ts"):
