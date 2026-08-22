@@ -7,9 +7,18 @@
 직후다. FAILED·NEEDS_REQUERY에서는 부르지 않는다.
 
 **파싱 스냅샷을 태스크 본문에 싣는다.** 청구자 에이전트는 `{receipt_id, task_id}`만
-받으면 영수증 내용을 볼 방법이 없다(GCS 접근 없음, Firestore 직접 접근은
-agent_sessions 하나만 예외). 안전 확인 에이전트(settlement_run 스냅샷)·집행자
-(candidate_claims)와 같은 방식으로, 여기서도 파싱 결과를 본문에 실어 보낸다.
+받으면 영수증 내용을 볼 방법이 없다(shared/api_client.py에 읽기 기능 없음,
+Firestore 직접 접근은 agent_sessions 하나만 예외). 안전 확인 에이전트
+(settlement_run 스냅샷)·집행자(candidate_claims)와 같은 방식으로, 여기서도 파싱
+결과를 본문에 실어 보낸다.
+
+**원문은 URI로만 보낸다** — §9 입력 계약이 `raw_text_gcs_uri`다. 원문 자체를
+본문에 실으면 Cloud Tasks 큐에 영속화되고 요청 로그에 남으며, 에이전트 컨텍스트에
+통째로 들어가 before_tool_callback 감사 기록이나 draft의 `reason` 필드를 타고
+audit_logs로 샐 경로가 생긴다 — §2가 명시적으로 금지한 경로다. 마스킹으로는 못
+막는다(money-safety.md의 대상 4종에 사업자번호·전화번호가 없다). 에이전트는 이
+URI로 GCS에서 직접 읽어 `<untrusted_receipt_text>`로 격리한다 — agent SA의
+storage.objectViewer는 `raw_text/` 프리픽스 한정이다(infra/storage.tf).
 """
 
 import os
@@ -19,7 +28,8 @@ from ..guards.tasks import QueueNotConfigured, enqueue_task
 __all__ = ["QueueNotConfigured", "enqueue_claimant_review"]
 
 # §6 최소화 — Firestore 문서를 통째로 보내지 않는다. recipient_id·status·
-# slack_*·gcs_*는 에이전트가 알 필요 없는, 판단에 불필요한 식별자다.
+# slack_*·image_gcs_uri는 에이전트가 알 필요 없는, 판단에 불필요한 식별자다.
+# raw_text(원문 자체)도 여기 없다 — 위 docstring 참조.
 _SNAPSHOT_FIELDS = (
     "merchant_name",
     "transaction_date",
@@ -27,7 +37,7 @@ _SNAPSHOT_FIELDS = (
     "currency",
     "account_category_code",
     "parse_confidence",
-    "raw_text",
+    "raw_text_gcs_uri",
 )
 
 
