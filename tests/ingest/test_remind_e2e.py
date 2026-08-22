@@ -25,6 +25,7 @@ import pytest
 
 from src.ingest import routes, store
 from src.ingest.reminders import ReminderAction
+from src.schemas.models import ClaimRequest
 
 from tests.ingest.test_draft_apply import FakeClient, FakeTransaction
 
@@ -80,14 +81,15 @@ def test_fixture_corpus_is_not_empty():
     assert FIXTURE_05_DATA.get("receipts"), f"{FIXTURE_05}에 receipts가 없다"
 
 
-def test_fixture_05_timeline_is_the_expected_three_transitions():
-    """fixture 05의 타임라인이 이 스위트가 재현하려는 그 상태 기계인지 고정한다."""
-    actions = [entry["action"] for entry in FIXTURE_05_DATA["audit_logs"]]
-    assert actions == [
-        "CLAIM_REQUEST_CREATED",
-        "CLAIM_REQUEST_REMINDED",
-        "CLAIM_REQUEST_EXPIRED",
-    ]
+FIXTURE_05_AUDIT_ACTIONS = [entry["action"] for entry in FIXTURE_05_DATA["audit_logs"]]
+
+# fixture 05가 적어둔 감사 로그 액션 이름. **코드가 내는 이름과 다르다** — 아래
+# test_code_audit_actions_drift_from_the_fixture가 그 차이를 명시적으로 고정한다.
+FIXTURE_05_EXPECTED_AUDIT_ACTIONS = [
+    "CLAIM_REQUEST_CREATED",
+    "CLAIM_REQUEST_REMINDED",
+    "CLAIM_REQUEST_EXPIRED",
+]
 
 
 # --- 시나리오 상수 (전부 fixture에서 읽는다) ---
@@ -108,6 +110,8 @@ RECIPIENTS = {
     for data in (FIXTURE_05_DATA, FIXTURE_02_DATA)
     for r in data.get("recipients", [])
 }
+# agent_drafts의 문서 키 — routes._requery_message가 `CLAIMANT:{receipt_id}`로 조립한다.
+DRAFT_TASK_IDS = {f"CLAIMANT:{receipt_id}" for receipt_id in RECEIPTS}
 
 CREATED_AT = CLAIM_REQUEST_05["created_at"]
 REMINDED_AT = CLAIM_REQUEST_05["reminded_at"]
@@ -150,6 +154,7 @@ def env(monkeypatch):
         "sent": [],
         "enqueued": [],
         "audit": [],
+        "draft_task_ids": [],
         "ts_seq": iter(f"17226828{n:02d}.000100" for n in range(10, 99)),
     }
 
@@ -168,11 +173,16 @@ def env(monkeypatch):
     # settlements store) — fixture 문서를 그대로 돌려주는 스텁으로 둔다.
     monkeypatch.setattr(routes, "get_receipt", lambda _id: RECEIPTS.get(_id))
     monkeypatch.setattr(routes, "get_recipient", lambda _id: RECIPIENTS.get(_id))
-    monkeypatch.setattr(
-        routes,
-        "get_agent_draft",
-        lambda task_id: {"payload": {"needs_requery": True, "requery_message": REQUERY_MESSAGE}},
-    )
+
+    def fake_get_agent_draft(task_id):
+        # routes._requery_message가 조립하는 키는 `CLAIMANT:{receipt_id}`다.
+        # 아무 task_id에나 payload를 돌려주면 그 조립이 검증되지 않는다.
+        state["draft_task_ids"].append(task_id)
+        if task_id not in DRAFT_TASK_IDS:
+            return None
+        return {"payload": {"needs_requery": True, "requery_message": REQUERY_MESSAGE}}
+
+    monkeypatch.setattr(routes, "get_agent_draft", fake_get_agent_draft)
     return state
 
 
@@ -240,8 +250,6 @@ def test_fixture_05_full_loop_pending_to_reminded_to_expired(env):
 
     # --- t0 + REMINDER_DELAY_SECONDS: 재촉 ---
     clock.advance(INITIAL_DELAY)
-    assert clock.value == REMINDED_AT, "fixture 타임라인의 재촉 시각과 어긋난다"
-
     result = _remind()
     assert result["action"] == ReminderAction.SEND_REMINDER.value
     assert len(env["sent"]) == 2
@@ -275,6 +283,68 @@ def test_fixture_05_full_loop_pending_to_reminded_to_expired(env):
 
     # 문서는 처음부터 끝까지 한 건이다.
     assert len(client.data["claim_requests"]) == 1
+
+    # 끝난 문서도 계약을 벗어나지 않는다(reason 주입 사유는 아래 스키마 테스트 참고).
+    ClaimRequest.model_validate({**_stored(client), "reason": "AMOUNT_MISMATCH"})
+
+
+def test_code_audit_actions_drift_from_the_fixture(env):
+    """**이 테스트는 fixture와 코드가 일치함을 보이지 않는다 — 어긋남을 고정한다.**
+
+    fixture 05의 `audit_logs`는 CLAIM_REQUEST_CREATED / _REMINDED / _EXPIRED인데,
+    루프를 끝까지 돌려도 코드가 실제로 내는 건 CLAIM_REQUEST_SENT(최초·재촉 공통)
+    두 건 + CLAIM_REQUEST_EXPIRED 한 건이다. **CLAIM_REQUEST_CREATED와
+    CLAIM_REQUEST_REMINDED는 코드 어디서도 기록되지 않는다.** 액션 이름을 맞추려면
+    src/ 수정이 필요하므로(이 태스크의 소유 밖) 여기서는 드리프트를 드러내
+    고정해두고, 어느 쪽이 바뀌든 이 테스트가 먼저 깨지게 한다.
+    """
+    client, clock = env["client"], env["clock"]
+    _seed_pending(client)
+
+    _remind()
+    clock.advance(INITIAL_DELAY)
+    _remind()
+    clock.advance(env["enqueued"][1][1])
+    _remind()
+
+    assert _actions(env) == [
+        "CLAIM_REQUEST_SENT",
+        "CLAIM_REQUEST_SENT",
+        "CLAIM_REQUEST_EXPIRED",
+    ]
+    assert FIXTURE_05_AUDIT_ACTIONS == FIXTURE_05_EXPECTED_AUDIT_ACTIONS
+    # 드리프트 그 자체 — 겹치는 건 EXPIRED 하나뿐이다.
+    assert set(FIXTURE_05_AUDIT_ACTIONS) - set(_actions(env)) == {
+        "CLAIM_REQUEST_CREATED",
+        "CLAIM_REQUEST_REMINDED",
+    }
+
+
+def test_fixture_claim_request_docs_match_the_schema_except_reason(env):
+    """fixture 02·05의 claim_request가 계약(§3 ClaimRequest)에 맞는지 조인다.
+
+    `reason`은 **두 fixture 모두 빠져 있는데 스키마에서는 필수다**(models.py의
+    ClaimRequest.reason: ReminderReason). fixture는 이 태스크에서 수정 금지라
+    그 한 필드만 주입해 나머지 전 필드(status enum · expires_at 타입 ·
+    slack_dm_ts 타입 · 시각 필드)를 계약에 건다. 주입한 값은 검증 대상이 아니고,
+    `reason` 부재 자체는 리포트에 어긋남으로 올린다.
+    """
+    for path, raw in ((FIXTURE_05, CLAIM_REQUESTS_05[0]), (FIXTURE_02, CLAIM_REQUESTS_02[0])):
+        assert "reason" not in raw, (
+            f"{path}의 claim_request에 reason이 생겼다 — 주입 없이 그대로 검증해야 한다"
+        )
+        ClaimRequest.model_validate({**_doc(raw), "reason": "AMOUNT_MISMATCH"})
+
+
+def test_requery_message_is_read_with_the_claimant_task_id(env):
+    """DM 문안은 `agent_drafts/CLAIMANT:{receipt_id}`에서만 온다 — 키 조립이
+    어긋나면 문안을 못 찾아 발송 자체가 없어야 한다."""
+    client = env["client"]
+    _seed_pending(client)
+
+    _remind()
+
+    assert env["draft_task_ids"] == [f"CLAIMANT:{CLAIM_REQUEST_05['receipt_id']}"]
 
 
 def test_expired_claim_request_is_terminal(env):
@@ -394,13 +464,26 @@ def test_crash_between_send_and_record_duplicates_only_the_dm(env, monkeypatch):
     assert len(client.data["claim_requests"]) == 1
 
 
-def test_redelivery_after_record_does_not_repeat_the_initial_dm(env):
-    """위 테스트의 대조군 — 표시(`record_sent`)까지 끝난 뒤의 재전달은 **최초 DM을
-    다시 내지 않는다.** slack_dm_ts가 남아 있어 판정이 SEND_INITIAL에서 벗어나기
-    때문이다. 즉 중복 창은 "발송과 표시 사이" 딱 거기 하나다.
+def test_redelivery_after_record_collapses_the_reminder_window(env):
+    """위 테스트의 대조군이자 **알려진 결함의 고정이다.**
 
-    (이 재전달은 예정보다 이른 재촉으로 소비된다 — 상태 기계상 다음 칸이고,
-    그 뒤로도 재촉은 늘지 않는다.)"""
+    좋은 쪽: 표시(`record_sent`)까지 끝난 뒤의 재전달은 최초 DM을 다시 내지
+    않는다 — `slack_dm_ts`가 남아 판정이 SEND_INITIAL에서 벗어난다. 중복 DM 창은
+    "발송과 표시 사이" 하나뿐이다.
+
+    **결함:** 그 재전달이 SKIP으로 빠지지 않고 `SEND_REMINDER`가 된다.
+    `decide`는 PENDING + slack_dm_ts를 보면 (만료 전인 한) 곧장 재촉으로 넘기고,
+    `claim_send_slot`은 "이 태스크가 최초 발송용으로 예약된 것"인지 구분할 근거가
+    문서에 없어 CAS로도 못 막는다. 결과는 **최초 DM 1초 뒤에 재촉 DM이 나가고
+    `REMINDER_DELAY_SECONDS` 창이 통째로 붕괴하는 것** — 사람은 하루 뒤가 아니라
+    즉시 재촉을 받는다. Cloud Tasks의 at-least-once 전달에서 재전달은 예외가
+    아니라 정상 동작이다.
+
+    고치려면 판정이 시각을 봐야 한다: claim_request에 "다음 재촉 예정 시각"
+    (혹은 최초 발송 시각)을 남기고 `decide`가 `now < next_reminder_at`이면 SKIP을
+    내는 것. 그러면 `claim_send_slot`의 재판정이 그대로 가드가 된다. src/ 수정은
+    이 태스크의 소유 밖이라 여기서는 현재 동작을 드러내 고정만 한다.
+    """
     client, clock = env["client"], env["clock"]
     _seed_pending(client)
 
