@@ -115,7 +115,7 @@ def test_fixture_claimant_draft_transitions_receipt_and_claim(fake, fixture_path
 
     _seed_pre_verdict_state(fake, receipt_id, claim_id)
 
-    result = store.apply_claimant_verdict(receipt_id, verdict, now=NOW)
+    result, _ = store.apply_claimant_verdict(receipt_id, verdict, now=NOW)
 
     assert result == "REQUERY"
     assert fake.data["receipts"][receipt_id]["status"] == "NEEDS_REQUERY"
