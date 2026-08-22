@@ -66,7 +66,7 @@ def wired(monkeypatch, tmp_path):
         pipeline, "record_audit_log", lambda **kwargs: state["audit"].append(kwargs)
     )
     monkeypatch.setattr(
-        pipeline, "enqueue_claimant_review", lambda rid: state["enqueued"].append(rid)
+        pipeline, "enqueue_claimant_review", lambda rid, *, receipt: state["enqueued"].append(rid)
     )
 
     state["claims"] = []
@@ -311,7 +311,7 @@ def test_enqueue_failure_does_not_undo_parsed(monkeypatch, wired):
 
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
 
-    def boom(receipt_id):
+    def boom(receipt_id, *, receipt):
         raise QueueNotConfigured("CLOUD_TASKS_QUEUE not configured")
 
     monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)
@@ -328,7 +328,7 @@ def test_enqueue_failure_other_than_queue_not_configured_does_not_undo_parsed(mo
     status != RECEIVED라 SKIPPED로 빠져 청구자 에이전트 호출이 영영 사라진다."""
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
 
-    def boom(receipt_id):
+    def boom(receipt_id, *, receipt):
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr(pipeline, "enqueue_claimant_review", boom)
