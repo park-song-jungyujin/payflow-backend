@@ -24,7 +24,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from src.ingest import routes, store
+from src.ingest.drafts import DraftVerdict
 from src.ingest.reminders import ReminderAction
+from src.ingest.slack_client import SlackSendPermanent
 from src.schemas.models import ClaimRequest
 
 from tests.ingest.test_draft_apply import FakeClient, FakeTransaction
@@ -394,6 +396,114 @@ def test_fixture_02_claim_request_resumes_at_reminder(env):
     assert result["action"] == ReminderAction.EXPIRE.value
     assert _stored(client, claim_request_id)["status"] == "EXPIRED"
     assert len(env["sent"]) == 1
+
+
+# --- 기본값끼리의 관계 (env 미설정) ---
+
+
+def _seed_receipt_and_create_request(client, now):
+    """`apply_claimant_verdict`가 **실제로** claim_request를 만들게 한다.
+
+    fixture의 `expires_at`(TTL의 2배)을 빌려 쓰면 코드가 만드는 관계를 한 번도
+    검증하지 않는다. 여기서는 코드가 쓴 `expires_at`(= now + CLAIM_REQUEST_TTL_SECONDS)
+    위에서 코드 기본 지연으로 루프를 돌린다.
+    """
+    receipt_id = RECEIPT_05["receipt_id"]
+    client.data["receipts"][receipt_id] = {
+        "receipt_id": receipt_id,
+        "recipient_id": RECIPIENT_05["recipient_id"],
+        "status": "PARSED",
+        "created_at": now,
+        "updated_at": now,
+    }
+    result, claim_request_id = store.apply_claimant_verdict(
+        receipt_id, DraftVerdict(needs_requery=True), now=now
+    )
+    assert result == "REQUERY"
+    return claim_request_id
+
+
+def test_code_default_delay_and_code_made_ttl_produce_exactly_one_reminder(env, monkeypatch):
+    """**env를 아무것도 안 넣은 상태에서 재촉이 실제로 1회 나가는지.**
+
+    이 관계가 깨지면(기본 지연 >= TTL) 최초 DM 뒤의 깨어남이 `expires_at`과 겹쳐
+    decide()가 SEND_REMINDER 대신 EXPIRE를 낸다 — 재촉 DM이 0회 나가고
+    CLAIM_REQUEST_EXPIRED만 정상처럼 남는다. 큐 전달 지연과 무관한 결정론적 결과다.
+    """
+    monkeypatch.delenv("REMINDER_DELAY_SECONDS", raising=False)
+    client, clock = env["client"], env["clock"]
+    t0 = clock.value
+
+    claim_request_id = _seed_receipt_and_create_request(client, t0)
+    expires_at = _stored(client, claim_request_id)["expires_at"]
+    assert expires_at == t0 + timedelta(seconds=store.CLAIM_REQUEST_TTL_SECONDS)
+
+    # t0: 최초 DM + 재촉 예약
+    assert _remind(claim_request_id)["action"] == ReminderAction.SEND_INITIAL.value
+    assert len(env["sent"]) == 1
+    _, delay = env["enqueued"][0]
+    assert clock.value + timedelta(seconds=delay) < expires_at, (
+        f"기본 지연 {delay}s가 만료({(expires_at - t0).total_seconds():.0f}s)를 넘거나 겹친다 "
+        "— 깨어난 태스크가 EXPIRE로 빠져 재촉 DM이 0회 나간다"
+    )
+
+    # t0 + 기본 지연: 재촉이 **실제로** 나간다
+    clock.advance(delay)
+    assert _remind(claim_request_id)["action"] == ReminderAction.SEND_REMINDER.value
+    assert len(env["sent"]) == 2, "기본 설정에서 재촉 DM이 나가지 않았다"
+    assert _stored(client, claim_request_id)["status"] == "REMINDED"
+
+    # expires_at: 만료. DM은 최초 1 + 재촉 1 = 정확히 2번.
+    clock.advance(env["enqueued"][1][1])
+    assert _remind(claim_request_id)["action"] == ReminderAction.EXPIRE.value
+    assert _stored(client, claim_request_id)["status"] == "EXPIRED"
+    assert len(env["sent"]) == 2
+
+
+# --- 발송 없이 끝나는 경로도 EXPIRED에 도달한다 ---
+
+
+def _run_until_expired(env, claim_request_id, expected_reason):
+    """발송이 없는 채로 끝난 깨어남 하나 → 붙은 만료 태스크 → EXPIRED."""
+    client, clock = env["client"], env["clock"]
+    result = _remind(claim_request_id)
+    assert result == {"status": "ignored", "reason": expected_reason}
+    assert len(env["enqueued"]) == 1, (
+        "재예약이 없다 — /tasks/remind는 자기 재예약이 유일한 생명선이라 "
+        "claim_request가 PENDING에 영구 고착한다(만료조차 안 된다)"
+    )
+    _, delay = env["enqueued"][0]
+    clock.advance(delay)
+
+    assert _remind(claim_request_id)["action"] == ReminderAction.EXPIRE.value
+    assert _stored(client, claim_request_id)["status"] == "EXPIRED"
+
+
+def test_no_message_path_still_reaches_expired(env, monkeypatch):
+    """문안이 없으면 DM은 못 보내지만, 건은 EXPIRED로 닫혀야 한다."""
+    monkeypatch.setattr(routes, "get_agent_draft", lambda _task_id: None)
+    _seed_pending(env["client"])
+    _run_until_expired(env, CLAIM_REQUEST_05["claim_request_id"], "no_message")
+    assert env["sent"] == []
+
+
+def test_no_target_path_still_reaches_expired(env, monkeypatch):
+    """recipient에 slack_user_id가 없어도 건은 EXPIRED로 닫혀야 한다."""
+    monkeypatch.setattr(routes, "get_recipient", lambda _id: None)
+    _seed_pending(env["client"])
+    _run_until_expired(env, CLAIM_REQUEST_05["claim_request_id"], "no_target")
+    assert env["sent"] == []
+
+
+def test_permanent_send_failure_path_still_reaches_expired(env, monkeypatch):
+    """봇이 채널에 없어 not_in_channel이 나도(가장 잦은 실패) 건은 EXPIRED로 닫힌다."""
+
+    def boom(**_kw):
+        raise SlackSendPermanent("chat.postMessage error: not_in_channel")
+
+    monkeypatch.setattr(routes, "post_message", boom)
+    _seed_pending(env["client"])
+    _run_until_expired(env, CLAIM_REQUEST_05["claim_request_id"], "send_failed")
 
 
 # --- 크래시 창: 발송 성공 + 표시 실패 ---

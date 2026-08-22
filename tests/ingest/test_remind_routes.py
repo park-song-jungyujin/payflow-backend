@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import HTTPException
 
-from src.ingest import routes
+from src.ingest import routes, store
 from src.ingest.reminders import ReminderAction
 from src.ingest.slack_client import SlackSendPermanent, SlackSendTransient
 from src.ingest.store import ReceiptStoreUnavailable
@@ -30,7 +30,10 @@ def _claim_request(**overrides):
         "reason": "AMOUNT_MISMATCH",
         "slack_dm_ts": None,
         "reminded_at": None,
-        "expires_at": NOW + timedelta(hours=12),
+        # **실제 시각 기준이다.** 라우트의 now는 진짜 datetime.now(UTC)라서
+        # NOW(고정 상수) 기준으로 잡으면 시간이 흐를수록 만료된 문서가 되고,
+        # 그러면 decide()가 SEND_INITIAL이 아니라 EXPIRE를 낸다.
+        "expires_at": datetime.now(UTC) + timedelta(hours=12),
         "status": "PENDING",
         "created_at": NOW,
         "updated_at": NOW,
@@ -96,6 +99,16 @@ def _actions(state):
     return [entry["action"] for entry in state["audit"]]
 
 
+def _only_enqueued_delay(state):
+    """발송 없이 끝나는 경로가 붙인 만료 태스크의 지연. 정확히 1건이어야 한다."""
+    assert len(state["enqueued"]) == 1, (
+        f"재예약이 {len(state['enqueued'])}건이다 — 0건이면 claim_request가 PENDING에 영구 고착한다"
+    )
+    claim_request_id, delay = state["enqueued"][0]
+    assert claim_request_id == "crq_1"
+    return delay
+
+
 # --- 입력 검증 ---
 
 
@@ -155,6 +168,19 @@ def test_missing_draft_does_not_send(env):
     assert result == {"status": "ignored", "reason": "no_message"}
     assert env["sent"] == []
     assert _actions(env) == ["CLAIM_REQUEST_NO_MESSAGE"]
+    # 문안이 없어도 건은 닫혀야 한다 — 만료 태스크가 붙는다.
+    assert _only_enqueued_delay(env) == pytest.approx(12 * 3600, abs=2)
+
+
+def test_no_message_schedules_expiry_even_if_the_audit_sink_is_down(env, monkeypatch):
+    """생명선은 감사 로그보다 먼저 붙는다 — 싱크가 죽어 500이 나도 만료 태스크는 남는다."""
+    env["draft"] = None
+    monkeypatch.setattr(
+        routes, "record_audit_log", lambda **kw: (_ for _ in ()).throw(RuntimeError("audit sink down"))
+    )
+    with pytest.raises(RuntimeError):
+        routes.task_remind({"claim_request_id": "crq_1"})
+    assert _only_enqueued_delay(env) == pytest.approx(12 * 3600, abs=2)
 
 
 @pytest.mark.parametrize("message", [None, "", "   ", 123, {"text": "x"}])
@@ -233,6 +259,8 @@ def test_no_slack_target_does_not_send(env):
     assert result == {"status": "ignored", "reason": "no_target"}
     assert env["sent"] == []
     assert _actions(env) == ["CLAIM_REQUEST_NO_TARGET"]
+    # 보낼 곳이 없어도 건은 닫혀야 한다 — 만료 태스크가 붙는다.
+    assert _only_enqueued_delay(env) == pytest.approx(12 * 3600, abs=2)
 
 
 def test_unknown_recipient_does_not_send(env):
@@ -302,8 +330,9 @@ def test_permanent_slack_failure_returns_200_with_audit_log(env):
     result = routes.task_remind({"claim_request_id": "crq_1"})
     assert result == {"status": "ignored", "reason": "send_failed"}
     assert env["recorded"] == []
-    assert env["enqueued"] == []
     assert "CLAIM_REQUEST_SEND_FAILED" in _actions(env)
+    # 발송은 실패했지만 건은 닫혀야 한다 — 만료 태스크가 붙는다.
+    assert _only_enqueued_delay(env) == pytest.approx(12 * 3600, abs=2)
 
 
 def test_store_unavailable_returns_503(env, monkeypatch):
@@ -311,6 +340,22 @@ def test_store_unavailable_returns_503(env, monkeypatch):
         raise ReceiptStoreUnavailable("Failed to commit transaction in 5 attempts.")
 
     monkeypatch.setattr(routes, "claim_send_slot", boom)
+    with pytest.raises(HTTPException) as exc:
+        routes.task_remind({"claim_request_id": "crq_1"})
+    assert exc.value.status_code == 503
+
+
+def test_store_unavailable_stays_503_when_the_audit_sink_is_down(env, monkeypatch):
+    """감사 로그가 맨몸으로 호출되면 싱크가 죽었을 때 503이 500으로 뒤집힌다 —
+    큐가 보는 재시도 신호가 바뀐다."""
+
+    def boom(_id, *, expected_action, now):
+        raise ReceiptStoreUnavailable("Failed to commit transaction in 5 attempts.")
+
+    monkeypatch.setattr(routes, "claim_send_slot", boom)
+    monkeypatch.setattr(
+        routes, "record_audit_log", lambda **kw: (_ for _ in ()).throw(RuntimeError("audit sink down"))
+    )
     with pytest.raises(HTTPException) as exc:
         routes.task_remind({"claim_request_id": "crq_1"})
     assert exc.value.status_code == 503
@@ -332,13 +377,30 @@ def test_successful_initial_send_records_and_reschedules(env):
     assert "CLAIM_REQUEST_SENT" in _actions(env)
 
 
-def test_initial_reschedule_defaults_to_one_day(env, monkeypatch):
-    """이 env는 아직 .env·infra 어디에도 없다 — 배포는 기본값으로 돈다. 그래서
-    기본값은 실제 값(86400)이어야 한다. 데모는 20을 넣어 덮는 쪽이다
-    (docs/README.md "환경변수 하나로 데모와 실제를 전환한다")."""
+def test_initial_reschedule_default_stays_under_the_ttl(env, monkeypatch):
+    """이 env는 로컬 `.env`에 없다 — 기본값으로 도는 환경이 실재한다.
+
+    **기본 지연은 CLAIM_REQUEST_TTL_SECONDS보다 반드시 짧아야 한다.** 같으면
+    `apply_claimant_verdict`가 만든 `expires_at = t0 + TTL`과 재촉 깨어남이
+    정확히 겹쳐 decide()가 EXPIRE로 빠지고 재촉 DM이 0회 나간다. 리터럴로
+    고정하지 않고 TTL과의 **관계**를 조인다 — 어느 쪽 기본값을 바꿔도 여기서 걸린다.
+    """
     monkeypatch.delenv("REMINDER_DELAY_SECONDS", raising=False)
     routes.task_remind({"claim_request_id": "crq_1"})
-    assert env["enqueued"] == [("crq_1", 86400)]
+    (_, delay), = env["enqueued"]
+    assert delay < store.CLAIM_REQUEST_TTL_SECONDS, (
+        f"기본 지연 {delay}s가 TTL {store.CLAIM_REQUEST_TTL_SECONDS}s 이상이다 — 재촉이 만료에 먹힌다"
+    )
+
+
+def test_non_integer_delay_env_fails_before_sending(env, monkeypatch):
+    """env가 비정수면 ValueError는 나야 한다 — 다만 **발송 전에** 나야 한다.
+    발송 뒤에 나면 DM은 이미 갔는데 재예약이 영영 안 붙는 흡수 상태가 된다."""
+    monkeypatch.setenv("REMINDER_DELAY_SECONDS", "1h")
+    with pytest.raises(ValueError):
+        routes.task_remind({"claim_request_id": "crq_1"})
+    assert env["sent"] == [], "지연 파싱이 발송보다 뒤에 있다 — DM이 나간 뒤 500이 난다"
+    assert env["recorded"] == []
 
 
 def test_reminder_send_reschedules_to_expiry(env):

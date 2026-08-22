@@ -27,6 +27,7 @@ from .reminders import ReminderAction, decide, parse_expires_at
 from .signature import SignatureError, verify_slack_signature
 from .slack_client import SlackSendPermanent, SlackSendTransient, post_message
 from .store import (
+    CLAIM_REQUEST_TTL_SECONDS,
     ReceiptStoreUnavailable,
     apply_claimant_verdict,
     claim_send_slot,
@@ -295,44 +296,76 @@ def _resolve_target(claim_request: dict, receipt_id: str | None) -> tuple[str, s
     return slack_user_id, claim_request.get("slack_dm_ts")
 
 
+# 최초 발송과 재촉 사이의 기본 간격. **CLAIM_REQUEST_TTL_SECONDS에서 파생시킨다 —
+# 고정 리터럴로 두면 안 된다.** 이 값이 TTL과 같으면(둘 다 86400이던 이전 상태)
+# apply_claimant_verdict가 만든 `expires_at = t0 + TTL`과 최초 발송 뒤 깨어남
+# 시각이 정확히 겹쳐서, 깨어난 태스크가 decide()에서 SEND_REMINDER가 아니라
+# EXPIRE로 빠진다. 큐 전달 지연과 무관한 결정론적 결과다 — env를 아무것도 안 넣은
+# 환경에서 **재촉 DM이 0회 나가고** CLAIM_REQUEST_EXPIRED만 정상처럼 남는다.
+# TTL의 절반으로 두면 TTL을 env로 바꿔도 "재촉이 만료보다 먼저"라는 관계가 유지된다.
+#
+# 배포는 infra/cloud_run.tf가 이 값을 주입한다(var.reminder_delay_seconds,
+# 현재 20 — 데모용). 즉 배포 환경에서 도는 값은 이 기본값이 아니다.
+# docs/README.md — "환경변수 하나로 데모(20초)와 실제를 전환한다".
+_DEFAULT_REMINDER_DELAY_SECONDS = str(CLAIM_REQUEST_TTL_SECONDS // 2)
+
+
+def _expiry_delay_seconds(claim_request: dict, now: datetime) -> int | None:
+    """`expires_at`까지 남은 초. 만료 시각을 모르면(파싱 실패·부재) None —
+    decide()가 그 경우 SKIP을 내는 것과 같은 판단이다. 추측한 시각으로 예약하면
+    아직 유효한 건이 일찍 만료된다.
+
+    **올림이다.** int()는 0 방향 절삭이라 Firestore 타임스탬프(마이크로초가
+    있다)에서는 다음 깨어남이 expires_at보다 최대 1초 이르게 잡힌다. 그 태스크가
+    도착하면 아직 만료 전이라 decide()가 SKIP을 내고, SKIP 분기는 재예약하지
+    않는다 — claim_request가 영구 정체하고 영수증도 NEEDS_REQUERY로 남는다.
+    큐 전달이 보통 예정보다 늦다는 데 정확성을 의탁할 수 없다.
+    """
+    expires_at = parse_expires_at(claim_request.get("expires_at"))
+    if expires_at is None:
+        return None
+    remaining = math.ceil((expires_at - now).total_seconds())
+    return None if remaining < 0 else remaining
+
+
 def _next_delay_seconds(action: ReminderAction, claim_request: dict, now: datetime) -> int | None:
     """다음 깨어남까지의 초. 예약하지 않아야 하면 None.
 
     최초 발송 뒤에는 REMINDER_DELAY_SECONDS 뒤에 재촉을 깨우고, 재촉을 보낸
-    뒤에는 `expires_at`에 맞춰 만료 태스크를 깨운다. 만료 시각을 모르면(파싱
-    실패·부재) 예약하지 않는다 — decide()가 그 경우 SKIP을 내는 것과 같은
-    판단이다. 추측한 시각으로 예약하면 아직 유효한 건이 일찍 만료된다.
+    뒤에는 `expires_at`에 맞춰 만료 태스크를 깨운다.
     """
     if action == ReminderAction.SEND_INITIAL:
-        # docs/README.md — "환경변수 하나로 데모(20초)와 실제(86400초)를 전환한다".
-        # **기본값은 실제 값이다.** 데모는 어차피 REMINDER_DELAY_SECONDS=20을
-        # 세팅하는 시나리오이고(README 재촉 루프 E2E 체크리스트), 여기가 20이면
-        # env를 안 넣은 환경의 청구자가 최초 DM 20초 뒤에 재촉을 받는다. 데모가
-        # 하루 걸리는 건 env 하나로 끝나는 눈에 보이는 실패고, 프로덕션이 20초
-        # 만에 사람을 재촉하는 건 눈에 안 보이는 실패다. store.py의 같은 파일권
-        # CLAIM_REQUEST_TTL_SECONDS 기본값(86400)과도 앞뒤가 맞는다.
-        #
-        # 배포는 infra/cloud_run.tf가 이 값을 주입한다(var.reminder_delay_seconds,
-        # 현재 20 — 데모용). 즉 배포 환경에서 도는 값은 이 기본값이 아니라 20이다.
-        return int(os.environ.get("REMINDER_DELAY_SECONDS", "86400"))
+        return int(os.environ.get("REMINDER_DELAY_SECONDS", _DEFAULT_REMINDER_DELAY_SECONDS))
+    return _expiry_delay_seconds(claim_request, now)
 
-    expires_at = parse_expires_at(claim_request.get("expires_at"))
-    if expires_at is None:
-        return None
-    # **올림이다.** int()는 0 방향 절삭이라 Firestore 타임스탬프(마이크로초가
-    # 있다)에서는 다음 깨어남이 expires_at보다 최대 1초 이르게 잡힌다. 그 태스크가
-    # 도착하면 status는 REMINDED인데 now < expires_at이라 decide()가 SKIP을 내고,
-    # SKIP 분기는 재예약하지 않는다 — claim_request가 REMINDED에 영구 정체하고
-    # 영수증도 NEEDS_REQUERY로 남는다. 큐 전달이 보통 예정보다 늦다는 데
-    # 정확성을 의탁할 수 없다.
-    remaining = math.ceil((expires_at - now).total_seconds())
-    return None if remaining < 0 else remaining
+
+def _schedule_expiry(claim_request_id: str, claim_request: dict, now: datetime) -> None:
+    """발송 없이 끝나는 경로의 생명선. `/tasks/remind`는 **자기 재예약이 유일한
+    생명선이다** — Cloud Scheduler도 스윕 크론도 없다. 재예약을 안 붙이고 200으로
+    끝내면 claim_request가 PENDING에 영구 고착하고(만료조차 안 된다) receipt는
+    NEEDS_REQUERY, claim은 DRAFT로 남아 정산 run 선정(CONFIRMED만 진입)에서
+    영구 제외된다 — 정당한 지출이 감사 로그 한 줄만 남기고 영영 지급되지 않는다.
+
+    그래서 이 경로들도 `expires_at`에 만료 태스크를 건다. 재촉 DM을 다시 시도하는
+    게 아니다(같은 실패가 반복될 뿐이다) — 건을 EXPIRED로 닫아 사람이 볼 수 있는
+    종착에 도달시키는 것이다.
+    """
+    delay_seconds = _expiry_delay_seconds(claim_request, now)
+    if delay_seconds is not None:
+        _try_enqueue_remind(claim_request_id, delay_seconds)
 
 
 def _try_enqueue_remind(claim_request_id: str, delay_seconds: int) -> None:
     """enqueue 실패는 삼킨다. 상태 전이도 Slack 발송도 이미 끝난 뒤라 여기서
     500을 내면 재시도가 CAS에 걸려 아무 일도 못 하고 같은 자리에서 다시 죽는다.
-    parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 형태다."""
+    parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 형태다.
+
+    **여기서 삼킨 실패는 루프를 끊는다.** REMIND_ENQUEUE_FAILED가 남았다는 건
+    다음 깨어남이 없다는 뜻이고(자기 재예약이 유일한 생명선이다), 그 건은
+    PENDING/REMINDED에 고착한다. 다른 흡수 상태들과 달리 이건 같은 수단으로 못
+    고친다 — 재예약 수단 자체가 실패한 것이다. 복구는 큐 밖에서 와야 한다:
+    감사 로그의 REMIND_ENQUEUE_FAILED를 보고 수동 재개하거나, 스윕 크론
+    (infra/ 소유)이 생기면 거기서 줍는다."""
     try:
         enqueue_remind(claim_request_id, delay_seconds=delay_seconds)
     except Exception as e:
@@ -396,6 +429,9 @@ def task_remind(body: dict, authorization: str = Header(default="")):
         message = _requery_message(receipt_id)
         if message is None:
             # 문안이 없으면 보내지 않는다. 재시도해도 draft는 그대로다.
+            # 만료 태스크를 **감사 로그보다 먼저** 건다 — 감사 싱크가 죽어서
+            # 500으로 뒤집혀도 생명선은 이미 붙어 있어야 한다.
+            _schedule_expiry(claim_request_id, claim_request, now)
             record_audit_log(
                 actor="api/src/ingest",
                 action="CLAIM_REQUEST_NO_MESSAGE",
@@ -406,6 +442,7 @@ def task_remind(body: dict, authorization: str = Header(default="")):
 
         target = _resolve_target(claim_request, receipt_id)
         if target is None:
+            _schedule_expiry(claim_request_id, claim_request, now)
             record_audit_log(
                 actor="api/src/ingest",
                 action="CLAIM_REQUEST_NO_TARGET",
@@ -414,6 +451,13 @@ def task_remind(body: dict, authorization: str = Header(default="")):
             )
             return {"status": "ignored", "reason": "no_target"}
         channel, thread_ts = target
+
+        # **다음 지연은 발송 전에 계산한다.** REMINDER_DELAY_SECONDS가 비정수면
+        # int()가 ValueError를 던지는데, 이 계산이 발송 뒤에 있으면 DM은 이미
+        # 나간 뒤 500이 나고 재예약은 영영 안 붙는다 — 위 _schedule_expiry가
+        # 없애려는 것과 같은 종류의 흡수 상태다. 발송 전이면 아무것도 하지 않은
+        # 채 500이 되고 재시도가 처음부터 다시 돈다.
+        delay_seconds = _next_delay_seconds(action, claim_request, now)
 
         # 발송 직전 CAS. 태스크가 중복 전달되면 같은 DM이 두 번 나간다.
         if not claim_send_slot(claim_request_id, expected_action=action, now=now):
@@ -425,6 +469,11 @@ def task_remind(body: dict, authorization: str = Header(default="")):
             # 아직 아무것도 기록하지 않았다 — 재시도가 처음부터 다시 돈다.
             raise HTTPException(status_code=503, detail=f"slack send failed: {e}")
         except SlackSendPermanent as e:
+            # not_in_channel/channel_not_found. 다시 보내도 같은 실패라 재시도는
+            # 안 하지만, 건은 닫아야 한다 — 봇이 채널에 초대돼 있지 않으면
+            # _resolve_target이 고르는 스레드 경로 전체가 여기로 빠진다
+            # (DM 폴백은 계획서가 명시적으로 미결로 올린 범위 밖이다).
+            _schedule_expiry(claim_request_id, claim_request, now)
             _audit_best_effort(
                 actor="api/src/ingest",
                 action="CLAIM_REQUEST_SEND_FAILED",
@@ -436,8 +485,9 @@ def task_remind(body: dict, authorization: str = Header(default="")):
         record_sent(claim_request_id, slack_ts=slack_ts, action=action, now=now)
     except ReceiptStoreUnavailable as e:
         # store.py 도큐스트링 — 호출부가 503으로 바꾼다. 트랜잭션이 원자적이라
-        # 재시도해도 안전하다.
-        record_audit_log(
+        # 재시도해도 안전하다. 감사 로그는 best-effort다 — 여기서 던지면 503이
+        # 500으로 뒤집혀 큐가 보는 재시도 신호가 바뀐다.
+        _audit_best_effort(
             actor="api/src/ingest",
             action="CLAIM_REQUEST_STORE_UNAVAILABLE",
             reason=f"firestore transaction failed: {e}",
@@ -455,7 +505,6 @@ def task_remind(body: dict, authorization: str = Header(default="")):
         },
     )
 
-    delay_seconds = _next_delay_seconds(action, claim_request, now)
     if delay_seconds is not None:
         _try_enqueue_remind(claim_request_id, delay_seconds)
 

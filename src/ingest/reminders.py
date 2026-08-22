@@ -38,11 +38,18 @@ def decide(claim_request: dict, *, now: datetime) -> ReminderAction:
     expires_at = parse_expires_at(claim_request.get("expires_at"))
 
     if status == "PENDING":
+        # **만료가 최초 발송보다 앞선다.** 최초 DM이 못 나간 채(문안 부재·대상 부재·
+        # Slack 논리 오류) 만료 시각을 넘긴 건이 여기로 다시 오면, 예전에는
+        # SEND_INITIAL을 다시 내서 같은 실패를 무한히 반복했다. 만료 시각이 지난
+        # 요청은 DM이 나갔든 아니든 끝난 요청이다 — 그래야 라우트가 그 경로들에
+        # 걸어둔 만료 태스크가 실제로 EXPIRED에 도달한다.
+        if expires_at is not None and now >= expires_at:
+            return ReminderAction.EXPIRE
         if not claim_request.get("slack_dm_ts"):
             return ReminderAction.SEND_INITIAL
         if expires_at is None:
             return ReminderAction.SKIP
-        return ReminderAction.EXPIRE if now >= expires_at else ReminderAction.SEND_REMINDER
+        return ReminderAction.SEND_REMINDER
 
     if status == "REMINDED":
         if expires_at is None:

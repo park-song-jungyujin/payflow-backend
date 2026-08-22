@@ -15,6 +15,25 @@ def test_pending_without_dm_sends_initial():
     assert decide(claim_request, now=NOW) == ReminderAction.SEND_INITIAL
 
 
+def test_pending_without_dm_after_expiry_expires():
+    """최초 DM이 못 나간 채(문안 부재·대상 부재·Slack 논리 오류) 만료 시각을 넘긴
+    건은 EXPIRE다. SEND_INITIAL을 다시 내면 같은 실패를 무한 반복하고, 라우트가
+    그 경로들에 걸어둔 만료 태스크가 EXPIRED에 도달하지 못한다."""
+    claim_request = {"status": "PENDING", "expires_at": BEFORE_EXPIRES}
+    assert decide(claim_request, now=NOW) == ReminderAction.EXPIRE
+
+
+def test_pending_without_dm_boundary_now_equals_expires_at_expires():
+    claim_request = {"status": "PENDING", "expires_at": NOW}
+    assert decide(claim_request, now=NOW) == ReminderAction.EXPIRE
+
+
+def test_pending_without_dm_and_without_expires_at_still_sends_initial():
+    """만료 시각을 모르면 만료로 추측하지 않는다 — 최초 발송은 그대로 시도한다."""
+    claim_request = {"status": "PENDING"}
+    assert decide(claim_request, now=NOW) == ReminderAction.SEND_INITIAL
+
+
 def test_pending_with_dm_before_expiry_sends_reminder():
     claim_request = {"status": "PENDING", "slack_dm_ts": "123.456", "expires_at": AFTER_EXPIRES}
     assert decide(claim_request, now=NOW) == ReminderAction.SEND_REMINDER
