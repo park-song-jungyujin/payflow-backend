@@ -184,7 +184,9 @@ def task_apply_claimant_draft(body: dict, authorization: str = Header(default=""
         return {"status": "ignored", "reason": "invalid_payload"}
 
     try:
-        result = apply_claimant_verdict(receipt_id, verdict, now=datetime.now(UTC))
+        result, claim_request_id = apply_claimant_verdict(
+            receipt_id, verdict, now=datetime.now(UTC)
+        )
     except ReceiptStoreUnavailable as e:
         # store.py 도큐스트링 — 호출부가 503으로 바꾼다. slack_events와 같은 판단:
         # 트랜잭션이 원자적이라 재시도해도 안전하다(실패 시 PARSED로 남거나, 커밋은
@@ -223,6 +225,13 @@ def task_apply_claimant_draft(body: dict, authorization: str = Header(default=""
                 result,
                 e,
             )
+
+    # 재요청이 필요하다고 판정됐으면 재촉 루프를 곧바로 깨운다(delay 0) — 최초 DM은
+    # 이 첫 깨어남이 보낸다. 실패는 삼킨다: 전이는 이미 커밋됐고 여기서 500을 내면
+    # 재시도가 CAS 가드에 걸려 SKIPPED로 빠져 재촉이 영영 안 붙는다.
+    # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 형태다.
+    if result == "REQUERY" and claim_request_id:
+        _try_enqueue_remind(claim_request_id, 0)
 
     return {"status": "ok", "receipt_id": receipt_id, "result": result}
 

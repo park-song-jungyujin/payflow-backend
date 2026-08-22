@@ -146,9 +146,17 @@ def create_receipt_if_absent(
         raise ReceiptStoreUnavailable(str(e)) from e
 
 
-def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datetime) -> str:
+def apply_claimant_verdict(
+    receipt_id: str, verdict: DraftVerdict, *, now: datetime
+) -> tuple[str, str | None]:
     """청구자 에이전트의 draft 판정을 receipts.status·claims.status·claim_requests
-    생성에 **한 트랜잭션**으로 반영한다. `"REQUERY"` / `"APPLIED"` / `"SKIPPED"`를 돌려준다.
+    생성에 **한 트랜잭션**으로 반영한다.
+
+    `(result, claim_request_id)`를 돌려준다. result는 `"REQUERY"` / `"APPLIED"` /
+    `"SKIPPED"`이고, `claim_request_id`는 REQUERY로 새 claim_request를 만들었을
+    때만 채워진다. 호출부가 이 id로 재촉 루프를 깨워야 하는데, 트랜잭션 안에서
+    만든 id를 밖에서 다시 쿼리로 찾으면 같은 receipt에 과거 claim_request가
+    있을 때 어느 쪽인지 구분할 수 없다.
 
     갈라놓으면 "영수증은 NEEDS_REQUERY인데 claim은 CONFIRMED"인 창이 생긴다 — 그
     사이 정산 배치가 돌면 분쟁 중인 영수증이 송금된다. 재시도로도 안 메워진다:
@@ -170,7 +178,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
         # 터진다. tokens.py의 verify_and_burn_token과 같은 관용구.
         data = snapshot.to_dict() or {}
         if not snapshot.exists or data.get("status") != "PARSED":
-            return "SKIPPED", None
+            return "SKIPPED", None, None
 
         recipient_id = data.get("recipient_id")
 
@@ -194,7 +202,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
         # 나가거나(§3 ClaimRequest.recipient_id는 non-nullable) 상태를 알 수
         # 없는 claim을 잘못 판단하게 된다. 쓰기 없이 SKIPPED로 멈춘다.
         if recipient_id is None or (claim_snapshot is not None and claim_data.get("status") is None):
-            return "SKIPPED", None
+            return "SKIPPED", None, None
 
         # --- 여기서부터 쓰기. 위 읽기가 전부 끝난 뒤여야 한다. ---
 
@@ -226,7 +234,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                     "updated_at": now,
                 },
             )
-            return "REQUERY", demotion_blocked_status
+            return "REQUERY", demotion_blocked_status, claim_request_id
 
         # DRAFT·CONFIRMED까지 덮어쓴다 — is_business는 approval_amount_hash에
         # 안 들어가고 송금 금액에 영향이 없다(claims.py DEFAULT_IS_BUSINESS 참고).
@@ -236,10 +244,10 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
             if claim_status in ("DRAFT", "CONFIRMED"):
                 claim_ref = client.collection("claims").document(claim_snapshot.id)
                 transaction.update(claim_ref, {"is_business": verdict.is_business, "updated_at": now})
-        return "APPLIED", None
+        return "APPLIED", None, None
 
     try:
-        result, demotion_blocked_status = _run_in_transaction(_txn)
+        result, demotion_blocked_status, claim_request_id = _run_in_transaction(_txn)
     except ValueError as e:
         # create_receipt_if_absent와 같은 경계 — SDK가 트랜잭션 재시도를 소진하면
         # ValueError를 던진다. 호출부(Task 3)가 SDK 사정을 모르게 도메인 예외로 바꾼다.
@@ -277,7 +285,7 @@ def apply_claimant_verdict(receipt_id: str, verdict: DraftVerdict, *, now: datet
                     e,
                 )
 
-    return result
+    return result, claim_request_id
 
 
 def _claim_request_ref(claim_request_id: str):
