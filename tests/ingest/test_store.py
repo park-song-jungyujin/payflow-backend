@@ -157,7 +157,7 @@ def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypat
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
     doc = store.create_recipient_from_slack(
-        slack_user_id="U_NEW", paypal_email="new-user@example.com"
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
     )
 
     assert doc["slack_user_id"] == "U_NEW"
@@ -165,7 +165,7 @@ def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypat
     assert doc["verified"] is False
     assert doc["status"] == "ACTIVE"
     assert "password" not in doc
-    assert store.find_recipient_by_slack_user("U_NEW")["paypal_email"] == "new-user@example.com"
+    assert store.find_recipient_by_slack_user("org_1", "U_NEW")["paypal_email"] == "new-user@example.com"
 
 
 def test_create_recipient_from_slack_defaults_display_name_to_slack_id(fake, monkeypatch):
@@ -173,7 +173,9 @@ def test_create_recipient_from_slack_defaults_display_name_to_slack_id(fake, mon
     화면에 빈 칸보다는 원시 ID가 낫다."""
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
-    doc = store.create_recipient_from_slack(slack_user_id="U_NEW", paypal_email="new-user@example.com")
+    doc = store.create_recipient_from_slack(
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
+    )
 
     assert doc["display_name"] == "U_NEW"
 
@@ -182,7 +184,7 @@ def test_create_recipient_from_slack_uses_given_display_name(fake, monkeypatch):
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
     doc = store.create_recipient_from_slack(
-        slack_user_id="U_NEW", paypal_email="new-user@example.com", display_name="박수현"
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com", display_name="박수현"
     )
 
     assert doc["display_name"] == "박수현"
@@ -192,13 +194,19 @@ def test_create_recipient_from_slack_writes_audit_log(fake, monkeypatch):
     audit_calls = []
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: audit_calls.append(kw))
 
-    store.create_recipient_from_slack(slack_user_id="U_NEW", paypal_email="new-user@example.com")
+    store.create_recipient_from_slack(
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
+    )
 
     assert audit_calls == [
         {
             "actor": "api/src/ingest",
             "action": "RECIPIENT_SELF_REGISTERED",
-            "after": {"recipient_id": audit_calls[0]["after"]["recipient_id"], "slack_user_id": "U_NEW"},
+            "after": {
+                "recipient_id": audit_calls[0]["after"]["recipient_id"],
+                "org_id": "org_1",
+                "slack_user_id": "U_NEW",
+            },
         }
     ]
 

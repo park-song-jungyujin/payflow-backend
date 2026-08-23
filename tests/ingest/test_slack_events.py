@@ -64,9 +64,14 @@ def client(monkeypatch):
         )
         return f"rct_{slack_file_id}", True
 
-    def fake_register(*, slack_user_id, paypal_email, display_name=None):
+    def fake_register(*, org_id, slack_user_id, paypal_email, display_name=None):
         calls["registered"].append(
-            {"slack_user_id": slack_user_id, "paypal_email": paypal_email, "display_name": display_name}
+            {
+                "org_id": org_id,
+                "slack_user_id": slack_user_id,
+                "paypal_email": paypal_email,
+                "display_name": display_name,
+            }
         )
         return {"recipient_id": "rcp_new", "slack_user_id": slack_user_id, "paypal_email": paypal_email}
 
@@ -77,8 +82,10 @@ def client(monkeypatch):
     )
     monkeypatch.setattr(
         routes,
-        "find_or_create_recipient",
-        lambda org_id, slack_user_id: {"recipient_id": "rcp_1"},
+        "find_recipient_by_slack_user",
+        lambda org_id, slack_user_id: (
+            {"recipient_id": "rcp_1"} if slack_user_id == "U01ABCDEF" else None
+        ),
     )
     monkeypatch.setattr(routes, "create_receipt_if_absent", fake_create)
     monkeypatch.setattr(routes, "create_recipient_from_slack", fake_register)
@@ -153,17 +160,14 @@ def test_slack_retry_does_not_duplicate_receipt(client):
     assert client.calls["enqueued"] == ["rct_F_AAA", "rct_F_AAA"]
 
 
-def test_unregistered_user_is_lazily_registered(client):
-    """org 스코핑과 로그인 — 초대 절차 없이 최초 메시지 시점에 자동 등록한다.
-    더 이상 "unregistered_user"로 조용히 버려지지 않는다."""
+def test_unregistered_user_is_acked_without_receipt(client):
     payload = _file_message(["F_AAA"])
     payload["event"]["user"] = "U_NOBODY"
     payload["event"]["text"] = "영수증입니다"  # 이메일이 아니므로 등록되지 않는다
     response = _post(client, payload)
     assert response.status_code == 200
-    assert client.calls["created"] == [
-        {"org_id": "org_1", "recipient_id": "rcp_1", "slack_file_id": "F_AAA"}
-    ]
+    assert client.calls["created"] == []
+    assert client.calls["registered"] == []
 
 
 def test_unknown_workspace_is_rejected(client):
@@ -198,7 +202,12 @@ def test_unregistered_user_with_email_gets_registered(client):
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "reason": "recipient_registered"}
     assert client.calls["registered"] == [
-        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
+        {
+            "org_id": "org_1",
+            "slack_user_id": "U_NEW",
+            "paypal_email": "new-user@example.com",
+            "display_name": None,
+        }
     ]
     # 등록 안내만 나가고, 이번 메시지에 파일이 없었으니 receipt는 안 만든다 —
     # 사용자가 등록 후 영수증을 다시 보내야 한다.
@@ -219,7 +228,12 @@ def test_registration_uses_slack_display_name_when_available(client, monkeypatch
     _post(client, payload)
 
     assert client.calls["registered"] == [
-        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": "박수현"}
+        {
+            "org_id": "org_1",
+            "slack_user_id": "U_NEW",
+            "paypal_email": "new-user@example.com",
+            "display_name": "박수현",
+        }
     ]
 
 
@@ -239,7 +253,12 @@ def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch)
 
     assert response.status_code == 200
     assert client.calls["registered"] == [
-        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
+        {
+            "org_id": "org_1",
+            "slack_user_id": "U_NEW",
+            "paypal_email": "new-user@example.com",
+            "display_name": None,
+        }
     ]
 
 

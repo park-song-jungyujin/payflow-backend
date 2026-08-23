@@ -37,6 +37,7 @@ def fake(monkeypatch):
 def _seed(fake, claim_request_id="crq_1", **overrides):
     doc = {
         "claim_request_id": claim_request_id,
+        "org_id": "org_1",
         "recipient_id": "rcp_1",
         "receipt_id": "rct_1",
         "reason": "AMOUNT_MISMATCH",
