@@ -546,6 +546,57 @@
         }
       }
     },
+    "/tasks/retry-executor-analysis": {
+      "post": {
+        "summary": "Task Retry Executor Analysis",
+        "description": "집행자 분석 확인 태스크의 한 번의 깨어남. Cloud Tasks가 부른다.\n\ningest/routes.py의 /tasks/remind와 같은 철학 — \"자기 재예약이 유일한\n생명선\"이다. agent_drafts.EXECUTOR가 이미 있으면(정상적으로 끝났으면)\n아무것도 안 하고 끝낸다. 없으면 재-enqueue하고 스스로를 다시 깨운다.\n시도 상한(_EXECUTOR_RETRY_MAX_ATTEMPTS)에 도달하면 재예약을 멈추고\nEXECUTOR_ANALYSIS_STALLED를 남긴다 — 이게 사람이 볼 수 있는 유일한 종착점이다.\n\n항상 200이다. 이 태스크 자체의 실패를 Cloud Tasks 재시도에 맡기지 않는다\n— 재시도 손잡이는 이미 이 루프(재예약)가 쥐고 있고, Cloud Tasks 자체\n재시도까지 겹치면 같은 run에 대해 재시도 태스크가 두 갈래로 늘어난다.",
+        "operationId": "task_retry_executor_analysis_tasks_retry_executor_analysis_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/slack/events": {
       "post": {
         "summary": "Slack Events",

@@ -20,7 +20,12 @@ import os
 
 from ..guards.tasks import QueueNotConfigured, enqueue_task
 
-__all__ = ["QueueNotConfigured", "enqueue_executor_analyze", "executor_draft_task_id"]
+__all__ = [
+    "QueueNotConfigured",
+    "enqueue_executor_analyze",
+    "enqueue_executor_retry_check",
+    "executor_draft_task_id",
+]
 
 
 def executor_draft_task_id(settlement_run_id: str) -> str:
@@ -54,4 +59,31 @@ def enqueue_executor_analyze(
             "exact_duplicate_groups": exact_duplicate_groups,
         },
         audience=agent_service_url,
+    )
+
+
+def enqueue_executor_retry_check(
+    settlement_run_id: str,
+    candidate_claims: list[dict],
+    duplicate_groups: list[dict],
+    exact_duplicate_groups: list[dict],
+    attempt: int,
+    delay_seconds: int,
+) -> None:
+    """`/tasks/retry-executor-analysis`(api 자신)를 delay_seconds 뒤에 깨운다.
+
+    agent 쪽으로 가는 enqueue_executor_analyze와 달리 이건 api 안의 라우트를
+    태우는 태스크라 audience를 안 넘긴다 — enqueue_task 기본값이 api 자신의
+    OIDC_AUDIENCE를 쓴다.
+    """
+    enqueue_task(
+        "/tasks/retry-executor-analysis",
+        {
+            "settlement_run_id": settlement_run_id,
+            "candidate_claims": candidate_claims,
+            "duplicate_groups": duplicate_groups,
+            "exact_duplicate_groups": exact_duplicate_groups,
+            "attempt": attempt,
+        },
+        delay_seconds=delay_seconds,
     )

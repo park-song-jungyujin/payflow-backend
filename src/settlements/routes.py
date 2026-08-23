@@ -17,11 +17,12 @@ import os
 from datetime import UTC, datetime
 from io import BytesIO
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from ulid import ULID
 
 from ..guards.audit import record_audit_log
+from ..guards.oidc import verify_oidc
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
@@ -33,7 +34,7 @@ from ..payouts.store import (
     list_settlement_runs,
 )
 from ..schemas.models import SettlementFilter
-from .enqueue import enqueue_executor_analyze, executor_draft_task_id
+from .enqueue import enqueue_executor_analyze, enqueue_executor_retry_check, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
 from .store import get_agent_draft, get_receipts
 from .verification import verify_candidates
@@ -41,6 +42,14 @@ from .verification import verify_candidates
 router = APIRouter()
 
 _ACTOR = "api/src/settlements"
+
+# EXECUTOR_ENQUEUE_FAILED 감사 로그만 있고 재시도가 없으면, 정산 실행 생성
+# 도중(예: 이 서비스 재배포로 리비전이 바뀌는 순간) enqueue 호출 자체가 죽은
+# 경우 executor_analysis가 영원히 null로 남는다 — 사람이 로그를 뒤져 수동으로
+# 재개하기 전까지. ingest/routes.py의 재촉 루프("자기 재예약이 유일한
+# 생명선")와 같은 패턴으로, 생성 직후 스스로를 깨우는 확인 태스크를 건다.
+_EXECUTOR_RETRY_DELAY_SECONDS = int(os.environ.get("EXECUTOR_RETRY_DELAY_SECONDS", "120"))
+_EXECUTOR_RETRY_MAX_ATTEMPTS = int(os.environ.get("EXECUTOR_RETRY_MAX_ATTEMPTS", "3"))
 
 
 def _isoformat_or_none(value):
@@ -165,18 +174,60 @@ def create_settlement_run_route(body: dict | None = None):
     except Exception as e:
         # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
         # 감싸 감사 로그 실패가 이미 커밋된 배치 생성 응답을 가리지 않게 한다.
-        try:
-            record_audit_log(
-                actor=_ACTOR,
-                action="EXECUTOR_ENQUEUE_FAILED",
-                run_id=run_id,
-                reason=str(e),
-                after={"settlement_run_id": run_id},
-            )
-        except Exception:
-            pass
+        _audit_best_effort(
+            action="EXECUTOR_ENQUEUE_FAILED",
+            run_id=run_id,
+            reason=str(e),
+            after={"settlement_run_id": run_id},
+        )
+
+    # enqueue 호출 자체가 성공해도(Cloud Tasks에 태스크가 만들어져도) agent 쪽
+    # 디스패치가 조용히 실패할 수 있다 — 이 시도 하나에만 기대지 않는다. 생성
+    # 직후 스스로를 깨우는 확인 태스크를 건다(성공/실패 무관하게 항상).
+    _try_enqueue_executor_retry_check(
+        run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, attempt=1
+    )
 
     return _public_run(doc)
+
+
+def _audit_best_effort(**kwargs) -> None:
+    """감사 로그 자체가 죽어도(Firestore 장애 등) 호출부 흐름을 막지 않는다."""
+    try:
+        record_audit_log(actor=_ACTOR, **kwargs)
+    except Exception:
+        pass
+
+
+def _try_enqueue_executor_retry_check(
+    run_id: str,
+    claim_summaries: list[dict],
+    duplicate_groups: list[dict],
+    exact_duplicate_groups: list[dict],
+    *,
+    attempt: int,
+) -> None:
+    """enqueue 실패는 삼킨다 — ingest/routes.py._try_enqueue_remind와 같은 이유다.
+    여기서 예외를 올리면 이미 끝난 배치 생성 응답(또는 이전 재시도 호출)이
+    가려진다. 여기서 삼킨 실패는 그 자체로 재시도 루프가 끊긴다는 뜻이다 —
+    다음 깨어남이 없으므로 EXECUTOR_ANALYSIS_STALLED로 종결되지 않고 그냥
+    조용히 멈춘다. 감사 로그의 EXECUTOR_RETRY_ENQUEUE_FAILED가 유일한 단서다."""
+    try:
+        enqueue_executor_retry_check(
+            run_id,
+            claim_summaries,
+            duplicate_groups,
+            exact_duplicate_groups,
+            attempt=attempt,
+            delay_seconds=_EXECUTOR_RETRY_DELAY_SECONDS,
+        )
+    except Exception as e:
+        _audit_best_effort(
+            action="EXECUTOR_RETRY_ENQUEUE_FAILED",
+            run_id=run_id,
+            reason=str(e),
+            after={"settlement_run_id": run_id, "attempt": attempt},
+        )
 
 
 def _run_claims(run_id: str) -> list[dict]:
@@ -218,3 +269,55 @@ def export_settlement_run(run_id: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{run_id}.xlsx"'},
     )
+
+
+@router.post("/tasks/retry-executor-analysis")
+def task_retry_executor_analysis(body: dict, authorization: str = Header(default="")):
+    """집행자 분석 확인 태스크의 한 번의 깨어남. Cloud Tasks가 부른다.
+
+    ingest/routes.py의 /tasks/remind와 같은 철학 — "자기 재예약이 유일한
+    생명선"이다. agent_drafts.EXECUTOR가 이미 있으면(정상적으로 끝났으면)
+    아무것도 안 하고 끝낸다. 없으면 재-enqueue하고 스스로를 다시 깨운다.
+    시도 상한(_EXECUTOR_RETRY_MAX_ATTEMPTS)에 도달하면 재예약을 멈추고
+    EXECUTOR_ANALYSIS_STALLED를 남긴다 — 이게 사람이 볼 수 있는 유일한 종착점이다.
+
+    항상 200이다. 이 태스크 자체의 실패를 Cloud Tasks 재시도에 맡기지 않는다
+    — 재시도 손잡이는 이미 이 루프(재예약)가 쥐고 있고, Cloud Tasks 자체
+    재시도까지 겹치면 같은 run에 대해 재시도 태스크가 두 갈래로 늘어난다.
+    """
+    verify_oidc(authorization)
+
+    run_id = body.get("settlement_run_id")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="settlement_run_id required")
+    attempt = body.get("attempt", 1)
+    claim_summaries = body.get("candidate_claims", [])
+    duplicate_groups = body.get("duplicate_groups", [])
+    exact_duplicate_groups = body.get("exact_duplicate_groups", [])
+
+    if get_agent_draft(executor_draft_task_id(run_id)) is not None:
+        return {"status": "ok", "reason": "already_analyzed"}
+
+    if attempt >= _EXECUTOR_RETRY_MAX_ATTEMPTS:
+        _audit_best_effort(
+            action="EXECUTOR_ANALYSIS_STALLED",
+            run_id=run_id,
+            reason=f"gave up after {attempt} attempts — executor_analysis still missing",
+            after={"settlement_run_id": run_id},
+        )
+        return {"status": "ok", "reason": "gave_up"}
+
+    try:
+        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups)
+    except Exception as e:
+        _audit_best_effort(
+            action="EXECUTOR_ENQUEUE_FAILED",
+            run_id=run_id,
+            reason=str(e),
+            after={"settlement_run_id": run_id, "attempt": attempt},
+        )
+
+    _try_enqueue_executor_retry_check(
+        run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, attempt=attempt + 1
+    )
+    return {"status": "ok", "reason": "retried"}

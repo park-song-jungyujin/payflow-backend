@@ -61,6 +61,10 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
             raise enqueue_error
 
     monkeypatch.setattr(routes, "enqueue_executor_analyze", fake_enqueue)
+    # 기본은 성공(no-op)이다 — 재시도 확인 태스크 스케줄링은 이 스위트의
+    # 관심사가 아니다(test_executor_retry.py가 따로 본다). 여기서 실패하게
+    # 두면 모든 기존 테스트에 EXECUTOR_RETRY_ENQUEUE_FAILED 감사 로그가 섞인다.
+    monkeypatch.setattr(routes, "enqueue_executor_retry_check", lambda *a, **kw: None)
 
     audit_calls = []
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
