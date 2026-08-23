@@ -55,7 +55,7 @@ router = APIRouter()
 # RFC 5322 전체를 흉내내지 않는다 — Slack 메시지 텍스트에서 사람이 실제로 칠 법한
 # 이메일 하나를 건지는 용도다. 오탐(진짜 이메일이 아닌데 매칭)보다 누락이 안전하다
 # — create_recipient_from_slack이 verified=False로 시작해 관리자 확인을 거친다.
-_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
+_EMAIL_PATTERN = re.compile(r"[\w.+-]+@(?:[\w-]+\.)+[a-zA-Z]{2,}")
 
 
 def _extract_email(text: str) -> str | None:

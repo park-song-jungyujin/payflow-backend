@@ -210,6 +210,9 @@ def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch)
     [
         ("new-user@example.com", "new-user@example.com"),
         ("제 이메일은 new-user@example.com 입니다", "new-user@example.com"),
+        # 회귀 — 도메인에 점이 2개 이상이면(서브도메인) 마지막 TLD 앞에서 잘렸었다.
+        ("pf_test4@personal.example.com", "pf_test4@personal.example.com"),
+        ("user@mail.corp.example.co.kr", "user@mail.corp.example.co.kr"),
         ("안녕하세요", None),
         ("", None),
         ("이메일 없이 @만 있음", None),
