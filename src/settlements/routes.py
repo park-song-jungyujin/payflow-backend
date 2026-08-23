@@ -91,6 +91,11 @@ def _executor_analysis(run_id: str) -> dict | None:
     return {
         "anomalies": payload.get("anomalies", []),
         "summary_text": payload.get("summary_text"),
+        # anomalies_en/summary_text_en은 executor-agent가 새로 채우는 필드다 —
+        # 그 전에 쓰인 draft에는 없을 수 있어 기본값을 둔다(schema-contract.md
+        # 필드 추가는 항상 nullable/기본값으로, 문서 백필 없이).
+        "anomalies_en": payload.get("anomalies_en", []),
+        "summary_text_en": payload.get("summary_text_en"),
         "created_at": draft.get("created_at"),
     }
 
