@@ -52,7 +52,7 @@ def _file_message(file_ids: list[str]) -> dict:
 
 @pytest.fixture
 def client(monkeypatch):
-    calls = {"created": [], "enqueued": []}
+    calls = {"created": [], "enqueued": [], "registered": [], "posted": []}
 
     def fake_create(*, recipient_id, slack_file_id, slack_channel_id, slack_message_ts):
         seen = [c["slack_file_id"] for c in calls["created"]]
@@ -63,16 +63,27 @@ def client(monkeypatch):
         )
         return f"rct_{slack_file_id}", True
 
+    def fake_register(*, slack_user_id, paypal_email):
+        calls["registered"].append({"slack_user_id": slack_user_id, "paypal_email": paypal_email})
+        return {"recipient_id": "rcp_new", "slack_user_id": slack_user_id, "paypal_email": paypal_email}
+
     monkeypatch.setattr(
         routes,
         "find_recipient_by_slack_user",
         lambda uid: {"recipient_id": "rcp_1"} if uid == "U01ABCDEF" else None,
     )
     monkeypatch.setattr(routes, "create_receipt_if_absent", fake_create)
+    monkeypatch.setattr(routes, "create_recipient_from_slack", fake_register)
     monkeypatch.setattr(
         routes, "enqueue_parse_receipt", lambda rid: calls["enqueued"].append(rid)
     )
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+    # 실제 Slack API를 부르면 안 된다 — main.py의 load_dotenv()가 개발자 .env의
+    # 진짜 SLACK_BOT_TOKEN을 읽어올 수 있어, 모킹 없이 두면 테스트가 실제로
+    # Slack에 메시지를 보내려 시도한다.
+    monkeypatch.setattr(
+        routes, "post_message", lambda **kw: calls["posted"].append(kw) or "1234.5678"
+    )
 
     test_client = TestClient(app)
     test_client.calls = calls
@@ -136,9 +147,76 @@ def test_slack_retry_does_not_duplicate_receipt(client):
 def test_unregistered_user_is_acked_without_receipt(client):
     payload = _file_message(["F_AAA"])
     payload["event"]["user"] = "U_NOBODY"
+    payload["event"]["text"] = "영수증입니다"  # 이메일이 아니므로 등록되지 않는다
     response = _post(client, payload)
     assert response.status_code == 200
     assert client.calls["created"] == []
+    assert client.calls["registered"] == []
+
+
+def test_unregistered_user_without_email_gets_registration_prompt(client):
+    """등록 안내는 조용히 버리지 않는다는 계약의 일부다."""
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NOBODY"
+    payload["event"]["text"] = "안녕하세요"
+    response = _post(client, payload)
+    assert response.status_code == 200
+    assert client.calls["registered"] == []
+    assert len(client.calls["posted"]) == 1
+    assert "PayPal" in client.calls["posted"][0]["text"]
+
+
+def test_unregistered_user_with_email_gets_registered(client):
+    """이메일만으로 연결한다 — 비밀번호는 절대 묻지 않는다."""
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "제 페이팔 이메일은 new-user@example.com 입니다"
+    response = _post(client, payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "reason": "recipient_registered"}
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com"}
+    ]
+    # 등록 안내만 나가고, 이번 메시지에 파일이 없었으니 receipt는 안 만든다 —
+    # 사용자가 등록 후 영수증을 다시 보내야 한다.
+    assert client.calls["created"] == []
+    assert len(client.calls["posted"]) == 1
+    assert "new-user@example.com" in client.calls["posted"][0]["text"]
+
+
+def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch):
+    """Firestore 쓰기(등록)가 이미 끝났으면, 안내 DM 실패로 되돌리지 않는다."""
+    from src.ingest.slack_client import SlackSendTransient
+
+    def boom(**kwargs):
+        raise SlackSendTransient("slack down")
+
+    monkeypatch.setattr(routes, "post_message", boom)
+
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "new-user@example.com"
+    response = _post(client, payload)
+
+    assert response.status_code == 200
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("new-user@example.com", "new-user@example.com"),
+        ("제 이메일은 new-user@example.com 입니다", "new-user@example.com"),
+        ("안녕하세요", None),
+        ("", None),
+        ("이메일 없이 @만 있음", None),
+    ],
+)
+def test_extract_email(text, expected):
+    assert routes._extract_email(text) == expected
 
 
 def test_message_without_files_is_ignored(client):
