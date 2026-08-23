@@ -23,13 +23,13 @@ from ..guards.audit import record_audit_log
 from ..guards.errors import GuardRejection
 from ..guards.oidc import verify_oidc
 from ..guards.tokens import verify_and_burn_token
+from .amounts import per_recipient_amounts
 from .currency import UnsupportedPayoutCurrency, assert_supported_payout_currency, minor_to_paypal_value
 from .idempotency import build_payout_ids
 from .store import (
     find_run_id_by_payout_batch_id,
     get_recipient,
     get_settlement_run,
-    get_sole_recipient_id,
     increment_recipient_monthly,
     set_sender_items,
     update_settlement_run,
@@ -51,13 +51,6 @@ def request_payout(
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
 
-    recipient_id = get_sole_recipient_id(run_id)
-    if recipient_id is None:
-        raise HTTPException(
-            status_code=501,
-            detail="multi-recipient FX aggregation not implemented — depends on matching (Track B)",
-        )
-
     try:
         verify_and_burn_token(run_id, run, x_approval_token)
     except GuardRejection as rejection:
@@ -70,10 +63,11 @@ def request_payout(
         raise HTTPException(status_code=rejection.status_code, detail=rejection.detail)
 
     # schema-contract.md §7 — monthly_paid_minor 예약 가산. reconcile에서 SUCCESS가
-    # 아닌 종결 상태로 확정되면 그만큼 뺀다.
-    recipient = get_recipient(recipient_id)
-    if recipient is not None:
-        increment_recipient_monthly(recipient_id, run["total_amount_minor"])
+    # 아닌 종결 상태로 확정되면 그만큼 뺀다. recipient별로 각자 몫만 예약한다.
+    for recipient_id, amount_minor in per_recipient_amounts(run).items():
+        recipient = get_recipient(recipient_id)
+        if recipient is not None:
+            increment_recipient_monthly(recipient_id, amount_minor)
 
     try:
         enqueue_execute_payout(run_id)
@@ -121,19 +115,10 @@ def retry_payout(
     새 토큰을 받아야 한다(재발송도 돈이 나가는 행위라 approve의 CAS·캡 검사를 다시 탄다).
     이 라우트는 그 토큰으로 APPROVED→EXECUTING만 담당한다 — verify_and_burn_token은
     상태가 APPROVED이기만 하면 최초 송금과 재발송을 구분하지 않는다.
-
-    현재는 execute-payout과 같은 이유로 단일 recipient run만 처리한다.
     """
     run = get_settlement_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
-
-    recipient_id = get_sole_recipient_id(run_id)
-    if recipient_id is None:
-        raise HTTPException(
-            status_code=501,
-            detail="multi-recipient FX aggregation not implemented — depends on matching (Track B)",
-        )
 
     try:
         verify_and_burn_token(run_id, run, x_approval_token)
@@ -151,9 +136,10 @@ def retry_payout(
     retry_seq = run.get("retry_seq", 0) + 1
     update_settlement_run(run_id, {"retry_seq": retry_seq})
 
-    recipient = get_recipient(recipient_id)
-    if recipient is not None:
-        increment_recipient_monthly(recipient_id, run["total_amount_minor"])
+    for recipient_id, amount_minor in per_recipient_amounts(run).items():
+        recipient = get_recipient(recipient_id)
+        if recipient is not None:
+            increment_recipient_monthly(recipient_id, amount_minor)
 
     try:
         enqueue_execute_payout(run_id)
@@ -207,9 +193,9 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     멱등성 — sender_batch_id/sender_item_id는 (run_id, recipient_id, retry_seq)에서
     결정론적으로 만든다.
 
-    현재는 run당 recipient가 하나인 경우만 처리한다. 여러 recipient를 통화가 섞인 채로
-    base_currency로 환산·합산하는 건 matching(Track B)의 결과물이 필요한데 아직 없다 —
-    잘못된 금액을 조용히 보내느니 501로 막는다.
+    recipient가 여럿이면 단일 PayPal 배치에 recipient당 item 하나씩 담아 한 번에 보낸다
+    (sender_batch_id는 recipient와 무관하게 하나 — build_payout_ids 참조). 각 item의
+    금액은 run 승인 시점에 고정된 fx_rates로 그 recipient 몫만 환산·합산한 값이다.
     """
     verify_oidc(authorization)
     run_id = body.get("settlement_run_id")
@@ -222,19 +208,17 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
             detail=f"settlement_run status is {run['status']}, expected EXECUTING",
         )
 
-    recipient_id = get_sole_recipient_id(run_id)
-    if recipient_id is None:
-        raise HTTPException(
-            status_code=501,
-            detail="multi-recipient FX aggregation not implemented — depends on matching (Track B)",
-        )
-    recipient = get_recipient(recipient_id)
-    if recipient is None:
-        raise HTTPException(status_code=404, detail=f"unknown recipient_id: {recipient_id}")
+    amounts = per_recipient_amounts(run)
+    if not amounts:
+        raise HTTPException(status_code=404, detail=f"settlement_run {run_id} has no linked claims")
 
-    retry_seq = run.get("retry_seq", 0)
-    sender_batch_id, sender_item_id = build_payout_ids(run_id, recipient_id, retry_seq)
-    amount_minor = run["total_amount_minor"]
+    recipients = {}
+    for recipient_id in amounts:
+        recipient = get_recipient(recipient_id)
+        if recipient is None:
+            raise HTTPException(status_code=404, detail=f"unknown recipient_id: {recipient_id}")
+        recipients[recipient_id] = recipient
+
     currency = os.environ["PAYOUT_CURRENCY"]
     try:
         assert_supported_payout_currency(currency)
@@ -248,7 +232,16 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
         raise HTTPException(
             status_code=422, detail=f"currency not supported by PayPal Payouts: {currency}"
         )
-    paypal_value = minor_to_paypal_value(amount_minor, currency)
+
+    retry_seq = run.get("retry_seq", 0)
+    sender_batch_id = build_payout_ids(run_id, next(iter(amounts)), retry_seq)[0]
+    sender_item_ids = {
+        recipient_id: build_payout_ids(run_id, recipient_id, retry_seq)[1] for recipient_id in amounts
+    }
+    paypal_values = {
+        recipient_id: minor_to_paypal_value(amount_minor, currency)
+        for recipient_id, amount_minor in amounts.items()
+    }
 
     try:
         batch = create_payout(
@@ -256,10 +249,11 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
             [
                 {
                     "recipient_type": "EMAIL",
-                    "amount": {"value": paypal_value, "currency": currency},
-                    "receiver": recipient["paypal_email"],
-                    "sender_item_id": sender_item_id,
+                    "amount": {"value": paypal_values[recipient_id], "currency": currency},
+                    "receiver": recipients[recipient_id]["paypal_email"],
+                    "sender_item_id": sender_item_ids[recipient_id],
                 }
+                for recipient_id in amounts
             ],
         )
     except http_requests.HTTPError as e:
@@ -270,31 +264,39 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
 
     payout_batch_id = batch.get("batch_header", {}).get("payout_batch_id")
     detail = get_payout_batch(payout_batch_id) if payout_batch_id else {}
-    item = next(iter(detail.get("items", [])), {})
-    transaction_status = item.get("transaction_status", "PENDING")
-    internal_status = (
-        transaction_status
-        if transaction_status in {"SUCCESS", "FAILED", "UNCLAIMED", "PENDING"}
-        else "OTHER"
-    )
+    detail_by_sender_item_id = {
+        i.get("payout_item", {}).get("sender_item_id"): i for i in detail.get("items", [])
+    }
 
     now = datetime.now(UTC)
-    sender_item = {
-        "sender_item_id": sender_item_id,
-        "settlement_run_id": run_id,
-        "recipient_id": recipient_id,
-        "receiver_email": recipient["paypal_email"],
-        "amount_minor": amount_minor,
-        "currency": currency,
-        "paypal_value": paypal_value,
-        "payout_item_id": item.get("payout_item_id"),
-        "paypal_transaction_status": transaction_status,
-        "status": internal_status,
-        "retry_of": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-    set_sender_items(run_id, [sender_item])
+    sender_items = []
+    for recipient_id, amount_minor in amounts.items():
+        sender_item_id = sender_item_ids[recipient_id]
+        item = detail_by_sender_item_id.get(sender_item_id, {})
+        transaction_status = item.get("transaction_status", "PENDING")
+        internal_status = (
+            transaction_status
+            if transaction_status in {"SUCCESS", "FAILED", "UNCLAIMED", "PENDING"}
+            else "OTHER"
+        )
+        sender_items.append(
+            {
+                "sender_item_id": sender_item_id,
+                "settlement_run_id": run_id,
+                "recipient_id": recipient_id,
+                "receiver_email": recipients[recipient_id]["paypal_email"],
+                "amount_minor": amount_minor,
+                "currency": currency,
+                "paypal_value": paypal_values[recipient_id],
+                "payout_item_id": item.get("payout_item_id"),
+                "paypal_transaction_status": transaction_status,
+                "status": internal_status,
+                "retry_of": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    set_sender_items(run_id, sender_items)
     update_settlement_run(run_id, {"payout_batch_id": payout_batch_id, "updated_at": now})
 
     record_audit_log(
@@ -307,7 +309,7 @@ def task_execute_payout(body: dict, authorization: str = Header(default="")):
     return {
         "settlement_run_id": run_id,
         "payout_batch_id": payout_batch_id,
-        "sender_items": [sender_item],
+        "sender_items": sender_items,
     }
 
 

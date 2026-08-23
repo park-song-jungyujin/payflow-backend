@@ -7,11 +7,9 @@
 - FAILED/UNCLAIMED/OTHER가 있음 → run FAILED, 성공분만 SETTLED, 나머지는 CONFIRMED로
   되돌리되 settlement_run_id는 이 run에 그대로 묶어둔다(§8 재발송이 같은 run으로
   다시 보내야 하므로 — 비우면 list_confirmed_claims()가 다른 run에 중복으로 골라갈
-  수 있다). 예약했던 monthly_paid_minor도 뺀다.
-
-현재는 실행 단계(execute-payout)에서 이미 단일 recipient run만 통과시키므로, 여기서도
-그 전제를 그대로 따른다 — monthly_paid_minor 역산이 run.total_amount_minor 하나로
-끝난다.
+  수 있다). 예약했던 monthly_paid_minor도 뺀다 — recipient마다 그 recipient의
+  sender_item.amount_minor만큼만 뺀다(run.total_amount_minor는 전체 합계라 여러
+  recipient가 섞이면 틀린 값이 된다).
 """
 
 import os
@@ -143,13 +141,15 @@ def reconcile(run_id: str) -> dict:
                 )
         new_status = "FAILED"
 
-        for recipient_id in {i["recipient_id"] for i in items if i["status"] != "SUCCESS"}:
-            recipient = get_recipient(recipient_id)
+        for i in items:
+            if i["status"] == "SUCCESS":
+                continue
+            recipient = get_recipient(i["recipient_id"])
             if recipient is None:
                 continue
             already_paid = recipient.get("monthly_paid_minor", 0)
             increment_recipient_monthly(
-                recipient_id, -min(already_paid, run["total_amount_minor"])
+                i["recipient_id"], -min(already_paid, i["amount_minor"])
             )
 
     update_settlement_run(run_id, {"status": new_status, "updated_at": _now()})

@@ -104,15 +104,6 @@ def increment_recipient_monthly(recipient_id: str, delta_minor: int) -> None:
     )
 
 
-def get_sole_recipient_id(run_id: str) -> str | None:
-    """claims가 전부 같은 recipient면 그 id, 하나도 없거나 둘 이상이면 None.
-    여러 recipient의 통화 혼합 청구를 base_currency로 합산하는 로직은
-    matching(Track B)의 결과물이 필요한데 아직 없다 — 지금은 단일 recipient run만
-    다룰 수 있다."""
-    recipient_ids = {c["recipient_id"] for c in get_claims_for_run(run_id)}
-    return next(iter(recipient_ids)) if len(recipient_ids) == 1 else None
-
-
 def find_run_id_by_payout_batch_id(payout_batch_id: str) -> str | None:
     docs = (
         get_client()
