@@ -136,6 +136,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = tostring(var.reconcile_delay_seconds)
       }
       env {
+        name  = "CLAIM_REQUEST_TTL_SECONDS"
+        value = tostring(var.claim_request_ttl_seconds)
+      }
+      env {
+        name  = "REMINDER_DELAY_SECONDS"
+        value = tostring(var.reminder_delay_seconds)
+      }
+      env {
         name  = "GEMINI_MODEL_ID"
         value = var.gemini_model_id
       }
@@ -220,6 +228,35 @@ resource "google_cloud_run_v2_service" "agent" {
       env {
         name  = "AGENT_MODEL"
         value = var.agent_model
+      }
+      env {
+        # shared/memory.py의 firestore.Client(project=..., database=...).
+        # **FIRESTORE_DATABASE가 없으면 코드 기본값 "development"로 붙는다** —
+        # api는 var.app_firestore_database로 가는데 agent만 다른 DB에 agent_sessions를
+        # 쓰게 되고, 그 어긋남은 조용하다(둘 다 정상 동작으로 보인다).
+        name  = "GCP_PROJECT"
+        value = var.project_id
+      }
+      env {
+        name  = "FIRESTORE_DATABASE"
+        value = var.app_firestore_database
+      }
+      env {
+        # ADK(google-genai)를 Vertex 경로로 보낸다. 없으면 Gemini Developer API로
+        # 가서 API 키를 찾다가 실패한다 — agent는 시크릿이 없는 게 설계다
+        # (절대 규칙 1, Vertex는 ADC).
+        name  = "GOOGLE_GENAI_USE_VERTEXAI"
+        value = "true"
+      }
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+      env {
+        # api의 VERTEX_LOCATION과 같은 값이어야 한다 — 해커톤 필수 조건인
+        # Gemini 3.5+가 잡히는 리전이 "global"이다(2026-08-21 실측).
+        name  = "GOOGLE_CLOUD_LOCATION"
+        value = var.vertex_location
       }
     }
   }

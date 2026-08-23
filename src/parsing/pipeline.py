@@ -224,8 +224,25 @@ def _parse(receipt_id: str, receipt: dict) -> str:
             pass
 
     # PARSED일 때만 청구자 에이전트를 부른다. FAILED는 재촉 루프 몫이다.
+    #
+    # 여기서 이미 갖고 있는 updates를 그대로 넘긴다 — Firestore 재조회는 낭비다.
+    # 원문은 parsed.raw_text가 아니라 raw_text_gcs_uri로 나간다(§9 입력 계약) —
+    # 태스크 본문은 큐에 영속화되고 로그에 남으므로 원문을 실으면 §2가 막아둔
+    # 유출 경로가 다시 열린다. 에이전트가 이 URI로 GCS에서 직접 읽는다.
+    # llm_confidence는 태스크 본문에서는 parse_confidence로 나간다.
     try:
-        enqueue_claimant_review(receipt_id)
+        enqueue_claimant_review(
+            receipt_id,
+            receipt={
+                "merchant_name": updates["merchant_name"],
+                "transaction_date": updates["transaction_date"],
+                "parsed_amount_minor": updates["parsed_amount_minor"],
+                "currency": updates["currency"],
+                "account_category_code": updates["account_category_code"],
+                "parse_confidence": updates["llm_confidence"],
+                "raw_text_gcs_uri": updates["raw_text_gcs_uri"],
+            },
+        )
     except Exception as e:
         try:
             record_audit_log(

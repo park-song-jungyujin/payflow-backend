@@ -16,6 +16,7 @@ from fastapi import APIRouter, Header, HTTPException
 from ..payouts.store import get_client
 from .audit import record_audit_log
 from .oidc import verify_oidc
+from .tasks import enqueue_task
 
 router = APIRouter()
 
@@ -62,6 +63,21 @@ def write_agent_draft(body: dict, authorization: str = Header(default="")):
         after={"draft_id": draft["draft_id"]},
         reason=payload.get("risk_report") if agent == "SAFETY" else None,
     )
+
+    # 청구자 draft는 api가 읽어 상태 전이로 반영한다(§9). 실패해도 draft 쓰기를
+    # 되돌리지 않는다 — 에이전트에게 500을 주면 Cloud Tasks가 LLM 호출을 다시 태운다.
+    # 감사 로그에 task_id를 남기는 게 중요하다: 이 라우트는 task_id로만 draft를
+    # 찾으므로, 실패 건을 audit_logs에서 뽑아 그대로 재큐잉할 수 있어야 한다.
+    if agent == "CLAIMANT":
+        try:
+            enqueue_task("/tasks/apply-claimant-draft", {"task_id": task_id})
+        except Exception as e:
+            record_audit_log(
+                actor="api/src/guards",
+                action="CLAIMANT_DRAFT_APPLY_ENQUEUE_FAILED",
+                reason=str(e),
+                after={"draft_id": draft["draft_id"], "task_id": task_id},
+            )
 
     return {"draft_id": draft["draft_id"], "status": "ok"}
 
