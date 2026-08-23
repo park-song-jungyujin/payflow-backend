@@ -82,6 +82,41 @@ def find_recipient_by_slack_user(slack_user_id: str) -> dict | None:
     return doc.to_dict() if doc else None
 
 
+def create_recipient_from_slack(*, slack_user_id: str, paypal_email: str) -> dict:
+    """셀프 등록 — Slack DM으로 받은 PayPal 이메일로 recipients 문서를 새로 만든다.
+
+    verified=False로 시작한다: 사칭·오타 위험이 있어 관리자 확인 전이라는 뜻이다.
+    TODO: guards가 verified=False인 recipient로의 송금을 막게 만든다 — 오늘은 이
+    필드를 payout 게이트 어디서도 보지 않는다.
+
+    TEMP: slack_user_id 유일성을 트랜잭션이 아니라 호출부의 find-then-create
+    순서로만 지킨다 — 같은 사람이 이메일을 동시에 두 번 보내면 문서가 두 개
+    생길 수 있다. 3인 팀 트래픽에서 동시성이 사실상 없어 지금은 감수한다
+    (link_claims_to_run의 TEMP 배치 write와 같은 종류의 트레이드오프).
+    """
+    now = datetime.now(UTC)
+    recipient_id = f"rcp_{ULID()}"
+    doc = {
+        "recipient_id": recipient_id,
+        "slack_user_id": slack_user_id,
+        "paypal_email": paypal_email,
+        "display_name": slack_user_id,
+        "monthly_paid_minor": 0,
+        "monthly_period": now.strftime("%Y-%m"),
+        "verified": False,
+        "status": "ACTIVE",
+        "created_at": now,
+        "updated_at": now,
+    }
+    get_client().collection("recipients").document(recipient_id).set(doc)
+    record_audit_log(
+        actor=_ACTOR,
+        action="RECIPIENT_SELF_REGISTERED",
+        after={"recipient_id": recipient_id, "slack_user_id": slack_user_id},
+    )
+    return doc
+
+
 def create_receipt_if_absent(
     *,
     recipient_id: str,

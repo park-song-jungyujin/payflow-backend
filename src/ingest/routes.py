@@ -13,6 +13,7 @@ import json
 import logging
 import math
 import os
+import re
 from datetime import UTC, datetime
 from urllib.parse import parse_qs
 
@@ -29,6 +30,7 @@ from .reminders import ReminderAction, decide, parse_expires_at
 from .signature import SignatureError, verify_slack_signature
 from .slack_client import (
     CLAIM_REQUEST_ACTION_ID,
+    SlackSendError,
     SlackSendPermanent,
     SlackSendTransient,
     post_message,
@@ -40,6 +42,7 @@ from .store import (
     apply_claimant_verdict,
     claim_send_slot,
     create_receipt_if_absent,
+    create_recipient_from_slack,
     find_recipient_by_slack_user,
     get_claim_request,
     mark_expired,
@@ -48,6 +51,16 @@ from .store import (
 )
 
 router = APIRouter()
+
+# RFC 5322 전체를 흉내내지 않는다 — Slack 메시지 텍스트에서 사람이 실제로 칠 법한
+# 이메일 하나를 건지는 용도다. 오탐(진짜 이메일이 아닌데 매칭)보다 누락이 안전하다
+# — create_recipient_from_slack이 verified=False로 시작해 관리자 확인을 거친다.
+_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}")
+
+
+def _extract_email(text: str) -> str | None:
+    match = _EMAIL_PATTERN.search(text)
+    return match.group(0) if match else None
 
 _IMAGE_MIMETYPES = {"image/jpeg", "image/png", "image/heic", "image/webp"}
 
@@ -85,19 +98,46 @@ async def slack_events(request: Request):
     if event.get("type") != "message" or event.get("bot_id"):
         return {"status": "ignored"}
 
-    files = [f for f in event.get("files", []) if f.get("mimetype") in _IMAGE_MIMETYPES]
-    if not files:
-        return {"status": "ignored"}
-
-    recipient = find_recipient_by_slack_user(event.get("user", ""))
+    slack_user_id = event.get("user", "")
+    # 미등록 사용자 셀프 등록 — 파일 유무와 무관하게 먼저 확인한다. 텍스트만
+    # 있는 이메일 답장도 여기서 잡아야 한다(files 필터 뒤에 두면 텍스트만 온
+    # 메시지가 그 전에 이미 "ignored"로 버려진다).
+    recipient = find_recipient_by_slack_user(slack_user_id)
     if recipient is None:
-        # 조용히 버리지 않는다. 안내 DM은 재촉 루프(범위 밖)가 붙을 때 함께 단다.
+        email = _extract_email(event.get("text", ""))
+        if email:
+            create_recipient_from_slack(slack_user_id=slack_user_id, paypal_email=email)
+            try:
+                post_message(
+                    channel=event["channel"],
+                    text=(
+                        f"연결됐습니다! 앞으로 이 채널로 보내는 영수증이 자동으로 처리됩니다."
+                        f" (등록된 PayPal 이메일: {email})"
+                    ),
+                )
+            except SlackSendError:
+                # 등록(Firestore 쓰기)은 이미 끝났다 — 안내 DM 실패로 되돌리지 않는다.
+                pass
+            return {"status": "ok", "reason": "recipient_registered"}
+
+        # 조용히 버리지 않는다. 이메일이 아니면 등록 방법을 안내한다.
         record_audit_log(
             actor="api/src/ingest",
             action="RECEIPT_INGEST_SKIPPED",
-            reason=f"unregistered slack_user_id: {event.get('user')}",
+            reason=f"unregistered slack_user_id: {slack_user_id}",
         )
+        try:
+            post_message(
+                channel=event["channel"],
+                text="아직 연결되지 않은 계정이에요. PayPal 수취 이메일 주소를 이 채널에 답장해주시면 연결해드릴게요.",
+            )
+        except SlackSendError:
+            pass
         return {"status": "ignored", "reason": "unregistered_user"}
+
+    files = [f for f in event.get("files", []) if f.get("mimetype") in _IMAGE_MIMETYPES]
+    if not files:
+        return {"status": "ignored"}
 
     deferred = [f["id"] for f in files[MAX_FILES_PER_EVENT:]]
     if deferred:

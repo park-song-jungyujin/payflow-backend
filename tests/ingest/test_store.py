@@ -149,6 +149,38 @@ def test_unknown_slack_user_returns_none(fake):
     assert store.find_recipient_by_slack_user("U_NOBODY") is None
 
 
+def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypatch):
+    """셀프 등록은 verified=False로 시작한다 — 관리자 확인 전까지는 사칭·오타
+    위험을 감수한다는 뜻이다. 비밀번호 필드는 어디에도 없다."""
+    monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
+
+    doc = store.create_recipient_from_slack(
+        slack_user_id="U_NEW", paypal_email="new-user@example.com"
+    )
+
+    assert doc["slack_user_id"] == "U_NEW"
+    assert doc["paypal_email"] == "new-user@example.com"
+    assert doc["verified"] is False
+    assert doc["status"] == "ACTIVE"
+    assert "password" not in doc
+    assert store.find_recipient_by_slack_user("U_NEW")["paypal_email"] == "new-user@example.com"
+
+
+def test_create_recipient_from_slack_writes_audit_log(fake, monkeypatch):
+    audit_calls = []
+    monkeypatch.setattr(store, "record_audit_log", lambda **kw: audit_calls.append(kw))
+
+    store.create_recipient_from_slack(slack_user_id="U_NEW", paypal_email="new-user@example.com")
+
+    assert audit_calls == [
+        {
+            "actor": "api/src/ingest",
+            "action": "RECIPIENT_SELF_REGISTERED",
+            "after": {"recipient_id": audit_calls[0]["after"]["recipient_id"], "slack_user_id": "U_NEW"},
+        }
+    ]
+
+
 def test_creates_receipt_in_received_status(fake):
     receipt_id, created = _create()
     assert created is True
