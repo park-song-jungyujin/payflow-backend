@@ -158,14 +158,18 @@ def test_audit_log_failure_does_not_mask_response(monkeypatch):
     assert result["status"] == "DRAFT"
 
 
-def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
-    _, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
+def test_empty_candidate_batch_rejected_without_creating_run(monkeypatch):
+    """청구 항목이 없으면 run 자체를 만들지 않는다 — 승인 불가능한 빈 run이
+    목록에 쌓이는 걸 막는다."""
+    stub, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
 
-    routes.create_settlement_run_route(body={})
+    with pytest.raises(HTTPException) as exc_info:
+        routes.create_settlement_run_route(body={})
 
-    _, claim_summaries, duplicate_groups = enqueue_calls[0]
-    assert claim_summaries == []
-    assert duplicate_groups == []
+    assert exc_info.value.status_code == 400
+    assert stub.created == []
+    assert stub.linked == []
+    assert enqueue_calls == []
 
 
 # --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) +

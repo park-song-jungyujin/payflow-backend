@@ -122,6 +122,16 @@ def create_settlement_run_route(body: dict | None = None):
     claims = outcome["passed_claims"]
     receipts = outcome["receipts"]
 
+    if not claims:
+        # 청구 항목 없는 빈 run을 만들지 않는다 — 승인 화면에서 "연결된 청구
+        # 항목이 없어 승인할 수 없습니다"로만 끝나는 죽은 run이 계속 쌓이는 것을
+        # 막는다. select_claims_for_run이 후보를 걸렀거나 verify_candidates가
+        # 전부 탈락시킨 두 경우 모두 여기서 걸린다.
+        raise HTTPException(
+            status_code=400,
+            detail="필터에 해당하는 청구 항목이 없어 정산 실행을 생성할 수 없습니다.",
+        )
+
     now = datetime.now(UTC)
     run_id = f"run_{now:%y%m%d}_{str(ULID())[:12]}"
     doc = {
