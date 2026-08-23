@@ -4,7 +4,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from src.matching.duplicates import find_duplicate_groups
+from src.matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -21,6 +21,10 @@ def _claim(claim_id, recipient_id="rcp_1", receipt_id=None, amount_minor=10000, 
 
 def _receipt(merchant_name="스타벅스", transaction_date="2026-08-10"):
     return {"merchant_name": merchant_name, "transaction_date": transaction_date}
+
+
+def _serial_receipt(serial="A1234567"):
+    return {"receipt_serial_number": serial}
 
 
 def test_exact_match_groups_two_claims():
@@ -195,3 +199,69 @@ def test_transaction_date_accepts_date_object():
     }
 
     assert len(find_duplicate_groups(claims, receipts)) == 1
+
+
+# --- find_exact_duplicate_receipts — 영수증 고유번호 완전일치 (find_duplicate_groups보다
+# 훨씬 강한 신호) ---
+
+
+def test_matching_serial_and_amount_grouped():
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {"rct_1": _serial_receipt("A1234"), "rct_2": _serial_receipt("A1234")}
+
+    groups = find_exact_duplicate_receipts(claims, receipts)
+
+    assert len(groups) == 1
+    assert set(groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
+    assert groups[0]["receipt_serial_number"] == "A1234"
+    assert groups[0]["amount_minor"] == 10000
+
+
+def test_different_serial_not_grouped():
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {"rct_1": _serial_receipt("A1234"), "rct_2": _serial_receipt("B5678")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_same_serial_different_amount_not_grouped():
+    """OCR 오독으로 서로 다른 영수증이 같은 문자열을 낸 극단적 경우를 막는 이중 확인."""
+    claims = [
+        _claim("clm_1", receipt_id="rct_1", amount_minor=10000),
+        _claim("clm_2", receipt_id="rct_2", amount_minor=20000),
+    ]
+    receipts = {"rct_1": _serial_receipt("A1234"), "rct_2": _serial_receipt("A1234")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_same_serial_different_recipient_not_grouped():
+    claims = [
+        _claim("clm_1", recipient_id="rcp_1", receipt_id="rct_1"),
+        _claim("clm_2", recipient_id="rcp_2", receipt_id="rct_2"),
+    ]
+    receipts = {"rct_1": _serial_receipt("A1234"), "rct_2": _serial_receipt("A1234")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_missing_serial_excluded():
+    """근거 없는 필드는 비교하지 않는다 — find_duplicate_groups와 같은 원칙."""
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {"rct_1": _serial_receipt(serial=None), "rct_2": _serial_receipt("A1234")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_empty_string_serial_excluded():
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {"rct_1": _serial_receipt(serial=""), "rct_2": _serial_receipt(serial="")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_serial_group_of_one_not_returned():
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": _serial_receipt("A1234")}
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []

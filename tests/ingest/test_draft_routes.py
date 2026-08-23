@@ -71,7 +71,7 @@ def test_invalid_payload_returns_200_with_audit_log_and_does_not_apply(monkeypat
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
     applied = []
     monkeypatch.setattr(
-        routes, "apply_claimant_verdict", lambda *a, **kw: applied.append((a, kw)) or "APPLIED"
+        routes, "apply_claimant_verdict", lambda *a, **kw: applied.append((a, kw)) or ("APPLIED", None)
     )
 
     result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
@@ -93,7 +93,7 @@ def test_valid_payload_applies_verdict_and_returns_result(monkeypatch):
     def fake_apply(receipt_id, verdict, *, now):
         captured["receipt_id"] = receipt_id
         captured["verdict"] = verdict
-        return "REQUERY"
+        return "REQUERY", "crq_1"
 
     monkeypatch.setattr(routes, "apply_claimant_verdict", fake_apply)
 
@@ -113,7 +113,7 @@ def test_get_agent_draft_called_with_task_id(monkeypatch):
         return _draft()
 
     monkeypatch.setattr(routes, "get_agent_draft", fake_get)
-    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: "APPLIED")
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: ("APPLIED", None))
 
     routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
 
@@ -130,7 +130,7 @@ def test_non_dict_payload_returns_200_with_audit_log_not_500(monkeypatch, bad_pa
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
     applied = []
     monkeypatch.setattr(
-        routes, "apply_claimant_verdict", lambda *a, **kw: applied.append((a, kw)) or "APPLIED"
+        routes, "apply_claimant_verdict", lambda *a, **kw: applied.append((a, kw)) or ("APPLIED", None)
     )
 
     result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
@@ -166,7 +166,7 @@ def test_success_audit_log_failure_falls_back_and_still_returns_ok(monkeypatch):
     끝난 뒤라 500으로 뒤집으면 안 된다. store.py의 CLAIM_DEMOTION_BLOCKED와
     같은 이중 폴백 — 실패하면 *_AUDIT_FAILED로 재기록해야 한다."""
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
-    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: "APPLIED")
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: ("APPLIED", None))
 
     audit_calls = []
 
@@ -190,7 +190,7 @@ def test_success_audit_log_double_failure_logs_and_still_returns_ok(monkeypatch,
     """감사 로그 재기록마저 실패하면 logging으로 흔적만 남기고 여전히 500이
     되면 안 된다."""
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
-    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: "APPLIED")
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: ("APPLIED", None))
     monkeypatch.setattr(
         routes,
         "record_audit_log",
@@ -202,6 +202,60 @@ def test_success_audit_log_double_failure_logs_and_still_returns_ok(monkeypatch,
 
     assert result == {"status": "ok", "receipt_id": "rct_1", "result": "APPLIED"}
     assert "CLAIMANT_DRAFT_APPLIED audit log failed twice" in caplog.text
+
+
+def test_requery_wakes_the_remind_loop_immediately(monkeypatch):
+    """REQUERY면 claim_request가 막 생긴 참이다 — 최초 DM은 재촉 루프의 첫
+    깨어남이 보내므로 지연 없이(0초) 예약해야 한다."""
+    monkeypatch.setattr(
+        routes, "get_agent_draft", lambda task_id: _draft(payload={"needs_requery": True})
+    )
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: ("REQUERY", "crq_1"))
+    enqueued = []
+    monkeypatch.setattr(
+        routes,
+        "enqueue_remind",
+        lambda cid, *, delay_seconds: enqueued.append((cid, delay_seconds)),
+    )
+
+    routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert enqueued == [("crq_1", 0)]
+
+
+@pytest.mark.parametrize("outcome", [("APPLIED", None), ("SKIPPED", None)])
+def test_non_requery_does_not_wake_the_remind_loop(monkeypatch, outcome):
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft())
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: outcome)
+    enqueued = []
+    monkeypatch.setattr(
+        routes, "enqueue_remind", lambda cid, **kw: enqueued.append(cid)
+    )
+
+    routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert enqueued == []
+
+
+def test_remind_enqueue_failure_is_swallowed(monkeypatch):
+    """전이는 이미 커밋됐다. 여기서 500을 내면 재시도가 CAS 가드에 걸려
+    SKIPPED로 빠지고 재촉이 영영 안 붙는다."""
+    monkeypatch.setattr(
+        routes, "get_agent_draft", lambda task_id: _draft(payload={"needs_requery": True})
+    )
+    monkeypatch.setattr(routes, "apply_claimant_verdict", lambda *a, **kw: ("REQUERY", "crq_1"))
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+
+    def boom(cid, *, delay_seconds):
+        raise RuntimeError("CLOUD_TASKS_QUEUE not configured")
+
+    monkeypatch.setattr(routes, "enqueue_remind", boom)
+
+    result = routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
+
+    assert result == {"status": "ok", "receipt_id": "rct_1", "result": "REQUERY"}
+    assert "REMIND_ENQUEUE_FAILED" in [c["action"] for c in audit_calls]
 
 
 def test_oidc_verified_first(monkeypatch):

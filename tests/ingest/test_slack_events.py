@@ -53,7 +53,7 @@ def _file_message(file_ids: list[str], team_id: str = "T01ABCDEF") -> dict:
 
 @pytest.fixture
 def client(monkeypatch):
-    calls = {"created": [], "enqueued": []}
+    calls = {"created": [], "enqueued": [], "registered": [], "posted": []}
 
     def fake_create(*, org_id, recipient_id, slack_file_id, slack_channel_id, slack_message_ts):
         seen = [c["slack_file_id"] for c in calls["created"]]
@@ -63,6 +63,12 @@ def client(monkeypatch):
             {"org_id": org_id, "recipient_id": recipient_id, "slack_file_id": slack_file_id}
         )
         return f"rct_{slack_file_id}", True
+
+    def fake_register(*, slack_user_id, paypal_email, display_name=None):
+        calls["registered"].append(
+            {"slack_user_id": slack_user_id, "paypal_email": paypal_email, "display_name": display_name}
+        )
+        return {"recipient_id": "rcp_new", "slack_user_id": slack_user_id, "paypal_email": paypal_email}
 
     monkeypatch.setattr(
         routes,
@@ -75,10 +81,18 @@ def client(monkeypatch):
         lambda org_id, slack_user_id: {"recipient_id": "rcp_1"},
     )
     monkeypatch.setattr(routes, "create_receipt_if_absent", fake_create)
+    monkeypatch.setattr(routes, "create_recipient_from_slack", fake_register)
     monkeypatch.setattr(
         routes, "enqueue_parse_receipt", lambda rid: calls["enqueued"].append(rid)
     )
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+    # 실제 Slack API를 부르면 안 된다 — main.py의 load_dotenv()가 개발자 .env의
+    # 진짜 SLACK_BOT_TOKEN을 읽어올 수 있어, 모킹 없이 두면 테스트가 실제로
+    # Slack에 메시지를 보내려 시도한다.
+    monkeypatch.setattr(
+        routes, "post_message", lambda **kw: calls["posted"].append(kw) or "1234.5678"
+    )
+    monkeypatch.setattr(routes, "get_display_name", lambda uid: None)
 
     test_client = TestClient(app)
     test_client.calls = calls
@@ -144,6 +158,7 @@ def test_unregistered_user_is_lazily_registered(client):
     더 이상 "unregistered_user"로 조용히 버려지지 않는다."""
     payload = _file_message(["F_AAA"])
     payload["event"]["user"] = "U_NOBODY"
+    payload["event"]["text"] = "영수증입니다"  # 이메일이 아니므로 등록되지 않는다
     response = _post(client, payload)
     assert response.status_code == 200
     assert client.calls["created"] == [
@@ -158,6 +173,91 @@ def test_unknown_workspace_is_rejected(client):
     response = _post(client, payload)
     assert response.status_code == 401
     assert client.calls["created"] == []
+    assert client.calls["registered"] == []
+
+
+def test_unregistered_user_without_email_gets_registration_prompt(client):
+    """등록 안내는 조용히 버리지 않는다는 계약의 일부다."""
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NOBODY"
+    payload["event"]["text"] = "안녕하세요"
+    response = _post(client, payload)
+    assert response.status_code == 200
+    assert client.calls["registered"] == []
+    assert len(client.calls["posted"]) == 1
+    assert "PayPal" in client.calls["posted"][0]["text"]
+
+
+def test_unregistered_user_with_email_gets_registered(client):
+    """이메일만으로 연결한다 — 비밀번호는 절대 묻지 않는다."""
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "제 페이팔 이메일은 new-user@example.com 입니다"
+    response = _post(client, payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "reason": "recipient_registered"}
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
+    ]
+    # 등록 안내만 나가고, 이번 메시지에 파일이 없었으니 receipt는 안 만든다 —
+    # 사용자가 등록 후 영수증을 다시 보내야 한다.
+    assert client.calls["created"] == []
+    assert len(client.calls["posted"]) == 1
+    assert "new-user@example.com" in client.calls["posted"][0]["text"]
+
+
+def test_registration_uses_slack_display_name_when_available(client, monkeypatch):
+    """이름을 못 가져오면(None) fake_register가 slack_user_id로 대체하는 건
+    store.py 쪽 책임이라 여기서는 get_display_name의 반환값이 그대로 넘어가는지만
+    본다."""
+    monkeypatch.setattr(routes, "get_display_name", lambda uid: "박수현")
+
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "new-user@example.com"
+    _post(client, payload)
+
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": "박수현"}
+    ]
+
+
+def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch):
+    """Firestore 쓰기(등록)가 이미 끝났으면, 안내 DM 실패로 되돌리지 않는다."""
+    from src.ingest.slack_client import SlackSendTransient
+
+    def boom(**kwargs):
+        raise SlackSendTransient("slack down")
+
+    monkeypatch.setattr(routes, "post_message", boom)
+
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "new-user@example.com"
+    response = _post(client, payload)
+
+    assert response.status_code == 200
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
+    ]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("new-user@example.com", "new-user@example.com"),
+        ("제 이메일은 new-user@example.com 입니다", "new-user@example.com"),
+        # 회귀 — 도메인에 점이 2개 이상이면(서브도메인) 마지막 TLD 앞에서 잘렸었다.
+        ("pf_test4@personal.example.com", "pf_test4@personal.example.com"),
+        ("user@mail.corp.example.co.kr", "user@mail.corp.example.co.kr"),
+        ("안녕하세요", None),
+        ("", None),
+        ("이메일 없이 @만 있음", None),
+    ],
+)
+def test_extract_email(text, expected):
+    assert routes._extract_email(text) == expected
 
 
 def test_message_without_files_is_ignored(client):

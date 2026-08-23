@@ -24,9 +24,11 @@ from ulid import ULID
 from ..auth.session import verify_session
 from ..guards.audit import record_audit_log
 from ..matching.candidates import select_claims_for_run
-from ..matching.duplicates import find_duplicate_groups
+from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
     create_settlement_run,
+    get_claims_for_run,
+    get_recipient,
     get_settlement_run,
     link_claims_to_run,
     list_settlement_runs,
@@ -34,7 +36,7 @@ from ..payouts.store import (
 from ..schemas.models import SettlementFilter
 from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
-from .store import get_agent_draft
+from .store import get_agent_draft, get_receipts
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -71,6 +73,15 @@ def _public_run(run: dict) -> dict:
     return {k: v for k, v in run.items() if k != "approval_token_hash"}
 
 
+def _recipient_display_name(recipient_id: str, cache: dict[str, str]) -> str:
+    """export.py와 같은 패턴 — recipient_id당 한 번만 조회한다. web 전용 필드라
+    _claim_summary(에이전트 enqueue와 공유)에는 넣지 않는다."""
+    if recipient_id not in cache:
+        recipient = get_recipient(recipient_id)
+        cache[recipient_id] = recipient["display_name"] if recipient else recipient_id
+    return cache[recipient_id]
+
+
 def _executor_analysis(run_id: str) -> dict | None:
     """agent_drafts.EXECUTOR를 읽는 유일한 지점. None이면 "아직 분석 안 됨"이지
     "이상 없음"이 아니다 — web이 두 상태를 구분해 렌더링해야 한다(§9,
@@ -86,6 +97,11 @@ def _executor_analysis(run_id: str) -> dict | None:
     return {
         "anomalies": payload.get("anomalies", []),
         "summary_text": payload.get("summary_text"),
+        # anomalies_en/summary_text_en은 executor-agent가 새로 채우는 필드다 —
+        # 그 전에 쓰인 draft에는 없을 수 있어 기본값을 둔다(schema-contract.md
+        # 필드 추가는 항상 nullable/기본값으로, 문서 백필 없이).
+        "anomalies_en": payload.get("anomalies_en", []),
+        "summary_text_en": payload.get("summary_text_en"),
         "created_at": draft.get("created_at"),
     }
 
@@ -93,7 +109,16 @@ def _executor_analysis(run_id: str) -> dict | None:
 @router.get("/settlements")
 def list_settlements(authorization: str = Header(default="")):
     session = _session_from_header(authorization)
-    return {"settlement_runs": [_public_run(r) for r in list_settlement_runs(session["org_id"])]}
+    name_cache: dict[str, str] = {}
+    runs = []
+    for r in list_settlement_runs(session["org_id"]):
+        public = _public_run(r)
+        recipient_ids = {c["recipient_id"] for c in get_claims_for_run(r["settlement_run_id"])}
+        public["recipient_names"] = sorted(
+            _recipient_display_name(rid, name_cache) for rid in recipient_ids
+        )
+        runs.append(public)
+    return {"settlement_runs": runs}
 
 
 @router.post("/settlements/runs")
@@ -104,6 +129,16 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
     outcome = verify_candidates(candidates)
     claims = outcome["passed_claims"]
     receipts = outcome["receipts"]
+
+    if not claims:
+        # 청구 항목 없는 빈 run을 만들지 않는다 — 승인 화면에서 "연결된 청구
+        # 항목이 없어 승인할 수 없습니다"로만 끝나는 죽은 run이 계속 쌓이는 것을
+        # 막는다. select_claims_for_run이 후보를 걸렀거나 verify_candidates가
+        # 전부 탈락시킨 두 경우 모두 여기서 걸린다.
+        raise HTTPException(
+            status_code=400,
+            detail="필터에 해당하는 청구 항목이 없어 정산 실행을 생성할 수 없습니다.",
+        )
 
     now = datetime.now(UTC)
     run_id = f"run_{now:%y%m%d}_{str(ULID())[:12]}"
@@ -133,8 +168,9 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
 
     claim_summaries = [_claim_summary(c, receipts) for c in claims]
     duplicate_groups = find_duplicate_groups(claims, receipts)
+    exact_duplicate_groups = find_exact_duplicate_receipts(claims, receipts)
     try:
-        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups)
+        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups)
     except Exception as e:
         # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
         # 감싸 감사 로그 실패가 이미 커밋된 배치 생성 응답을 가리지 않게 한다.
@@ -152,6 +188,22 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
     return _public_run(doc)
 
 
+def _run_claims(run_id: str) -> list[dict]:
+    """web의 "정산 명세"(plan.md 요약 카드 요건) — 이 run에 링크된 claim별 상세.
+    _claim_summary는 이미 집행자 에이전트 enqueue용으로 있던 함수를 그대로
+    재사용한다(payflow-frontend/plans/2026-08-21-web-dashboard.md "필요한
+    백엔드 변경 (a)")."""
+    claims = get_claims_for_run(run_id)
+    receipts = get_receipts({c["receipt_id"] for c in claims})
+    name_cache: dict[str, str] = {}
+    summaries = []
+    for c in claims:
+        summary = _claim_summary(c, receipts)
+        summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
+        summaries.append(summary)
+    return summaries
+
+
 @router.get("/settlements/runs/{run_id}")
 def get_settlement_run_route(run_id: str, authorization: str = Header(default="")):
     session = _session_from_header(authorization)
@@ -160,6 +212,7 @@ def get_settlement_run_route(run_id: str, authorization: str = Header(default=""
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
     public = _public_run(run)
     public["executor_analysis"] = _executor_analysis(run_id)
+    public["claims"] = _run_claims(run_id)
     return public
 
 

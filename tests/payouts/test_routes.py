@@ -43,17 +43,8 @@ def test_request_payout_missing_run_id_returns_404(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_request_payout_multi_recipient_returns_501(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: None)
-    with pytest.raises(HTTPException) as exc:
-        routes.request_payout({"settlement_run_id": "run_1"}, x_approval_token="tok")
-    assert exc.value.status_code == 501
-
-
 def test_request_payout_token_rejection_propagates_status_and_audits(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
 
     def reject(*a):
         raise GuardRejection(403, "invalid approval token")
@@ -71,7 +62,7 @@ def test_request_payout_token_rejection_propagates_status_and_audits(monkeypatch
 
 def test_request_payout_success_reserves_monthly_amount_before_enqueue(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {"status": "EXECUTING"})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"recipient_id": rid, "monthly_paid_minor": 0})
     reserved = []
@@ -84,9 +75,23 @@ def test_request_payout_success_reserves_monthly_amount_before_enqueue(monkeypat
     assert reserved == [("rcp_1", 1000)]
 
 
+def test_request_payout_multi_recipient_reserves_each_recipients_own_amount(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000, "rcp_2": 2500})
+    monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {"status": "EXECUTING"})
+    monkeypatch.setattr(routes, "get_recipient", lambda rid: {"recipient_id": rid, "monthly_paid_minor": 0})
+    reserved = []
+    monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: reserved.append((rid, delta)))
+    monkeypatch.setattr(routes, "enqueue_execute_payout", lambda rid: None)
+
+    routes.request_payout({"settlement_run_id": "run_1"}, x_approval_token="good")
+
+    assert set(reserved) == {("rcp_1", 1000), ("rcp_2", 2500)}
+
+
 def test_request_payout_missing_recipient_skips_reservation_without_crash(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_ghost")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_ghost": 1000})
     monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: None)
     reserved = []
@@ -102,7 +107,7 @@ def test_request_payout_queue_not_configured_still_returns_200_with_note(monkeyp
     """Cloud Tasks 큐가 아직 없는 로컬/데모 환경에서도 승인 게이트는 이미 통과했으니
     500으로 죽이지 않고 note를 붙여 알린다."""
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: None)
     monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: None)
@@ -128,17 +133,8 @@ def test_retry_payout_unknown_run_returns_404(monkeypatch):
     assert exc.value.status_code == 404
 
 
-def test_retry_payout_multi_recipient_returns_501(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: None)
-    with pytest.raises(HTTPException) as exc:
-        routes.retry_payout("run_1", x_approval_token="tok")
-    assert exc.value.status_code == 501
-
-
 def test_retry_payout_token_rejection_propagates_status_and_audits(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="FAILED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
 
     def reject(*a):
         raise GuardRejection(409, "settlement_run status is FAILED, expected APPROVED")
@@ -156,7 +152,7 @@ def test_retry_payout_token_rejection_propagates_status_and_audits(monkeypatch):
 
 def test_retry_payout_success_bumps_retry_seq_and_enqueues(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED", retry_seq=1))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {"status": "EXECUTING"})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"recipient_id": "rcp_1", "monthly_paid_minor": 0})
     monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: None)
@@ -172,7 +168,7 @@ def test_retry_payout_success_bumps_retry_seq_and_enqueues(monkeypatch):
 
 def test_retry_payout_queue_not_configured_still_returns_200_with_note(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(status="APPROVED"))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: None)
     monkeypatch.setattr(routes, "increment_recipient_monthly", lambda rid, delta: None)
@@ -192,16 +188,6 @@ def test_retry_payout_queue_not_configured_still_returns_200_with_note(monkeypat
 # ---- POST /tasks/execute-payout ----
 
 
-def _wire_execute(monkeypatch, run, recipient, batch_response, detail_response=None):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: run)
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1" if recipient else None)
-    monkeypatch.setattr(routes, "get_recipient", lambda rid: recipient)
-    monkeypatch.setattr(routes, "create_payout", lambda *a, **kw: batch_response)
-    monkeypatch.setattr(routes, "get_payout_batch", lambda bid: detail_response or {"items": []})
-    monkeypatch.setattr(routes, "set_sender_items", lambda rid, items: None)
-    monkeypatch.setattr(routes, "update_settlement_run", lambda rid, updates: None)
-
-
 def test_execute_payout_run_not_found_returns_404(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: None)
     with pytest.raises(HTTPException) as exc:
@@ -216,17 +202,17 @@ def test_execute_payout_wrong_status_returns_409(monkeypatch):
     assert exc.value.status_code == 409
 
 
-def test_execute_payout_multi_recipient_returns_501(monkeypatch):
+def test_execute_payout_no_claims_returns_404(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: None)
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {})
     with pytest.raises(HTTPException) as exc:
         routes.task_execute_payout({"settlement_run_id": "run_1"}, authorization="Bearer x")
-    assert exc.value.status_code == 501
+    assert exc.value.status_code == 404
 
 
 def test_execute_payout_unknown_recipient_returns_404(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: None)
     with pytest.raises(HTTPException) as exc:
         routes.task_execute_payout({"settlement_run_id": "run_1"}, authorization="Bearer x")
@@ -236,7 +222,7 @@ def test_execute_payout_unknown_recipient_returns_404(monkeypatch):
 def test_execute_payout_unsupported_currency_returns_422_and_never_calls_paypal(monkeypatch):
     monkeypatch.setenv("PAYOUT_CURRENCY", "KRW")  # exponent 있어도 Payouts 미지원
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"paypal_email": "a@b.com"})
     called = []
     monkeypatch.setattr(routes, "create_payout", lambda *a, **kw: called.append(1))
@@ -250,7 +236,7 @@ def test_execute_payout_unsupported_currency_returns_422_and_never_calls_paypal(
 
 def test_execute_payout_paypal_http_error_returns_502(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"paypal_email": "a@b.com"})
 
     def boom(*a, **kw):
@@ -265,7 +251,7 @@ def test_execute_payout_paypal_http_error_returns_502(monkeypatch):
 
 def test_execute_payout_success_builds_deterministic_ids_and_records_sender_item(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(retry_seq=0))
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"paypal_email": "a@b.com"})
 
     captured_call = {}
@@ -279,7 +265,15 @@ def test_execute_payout_success_builds_deterministic_ids_and_records_sender_item
     monkeypatch.setattr(
         routes,
         "get_payout_batch",
-        lambda bid: {"items": [{"payout_item_id": "item_1", "transaction_status": "SUCCESS"}]},
+        lambda bid: {
+            "items": [
+                {
+                    "payout_item_id": "item_1",
+                    "transaction_status": "SUCCESS",
+                    "payout_item": {"sender_item_id": "run_1:rcp_1"},
+                }
+            ]
+        },
     )
     saved_items = []
     monkeypatch.setattr(routes, "set_sender_items", lambda rid, items: saved_items.extend(items))
@@ -291,13 +285,73 @@ def test_execute_payout_success_builds_deterministic_ids_and_records_sender_item
     assert captured_call["sender_batch_id"] == "run_1"  # retry_seq=0 -> build_payout_ids
     assert captured_call["items"][0]["sender_item_id"] == "run_1:rcp_1"
     assert saved_items[0]["status"] == "SUCCESS"
+    assert saved_items[0]["amount_minor"] == 1000
     assert updated_run["payout_batch_id"] == "batch_1"
     assert result["payout_batch_id"] == "batch_1"
 
 
+def test_execute_payout_multi_recipient_sends_one_batch_with_matched_items(monkeypatch):
+    """recipient가 여럿이면 create_payout()은 한 번만 호출되고, 응답 item은
+    payout_item.sender_item_id로 각자의 recipient에 정확히 매칭돼야 한다 — 순서에
+    기대면 안 된다(PayPal이 순서를 보장하지 않으므로 응답을 일부러 뒤집어 검증)."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run(retry_seq=0))
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000, "rcp_2": 2500})
+    recipients = {
+        "rcp_1": {"paypal_email": "a@b.com"},
+        "rcp_2": {"paypal_email": "c@d.com"},
+    }
+    monkeypatch.setattr(routes, "get_recipient", lambda rid: recipients[rid])
+
+    calls = []
+    monkeypatch.setattr(
+        routes,
+        "create_payout",
+        lambda sender_batch_id, items: calls.append((sender_batch_id, items))
+        or {"batch_header": {"payout_batch_id": "batch_1"}},
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_payout_batch",
+        lambda bid: {
+            "items": [
+                # 응답 순서를 요청 순서와 일부러 뒤집는다.
+                {
+                    "payout_item_id": "item_2",
+                    "transaction_status": "SUCCESS",
+                    "payout_item": {"sender_item_id": "run_1:rcp_2"},
+                },
+                {
+                    "payout_item_id": "item_1",
+                    "transaction_status": "FAILED",
+                    "payout_item": {"sender_item_id": "run_1:rcp_1"},
+                },
+            ]
+        },
+    )
+    saved_items = []
+    monkeypatch.setattr(routes, "set_sender_items", lambda rid, items: saved_items.extend(items))
+    monkeypatch.setattr(routes, "update_settlement_run", lambda rid, updates: None)
+
+    result = routes.task_execute_payout({"settlement_run_id": "run_1"}, authorization="Bearer x")
+
+    assert len(calls) == 1  # 단일 배치, 아이템 2개
+    sender_batch_id, items = calls[0]
+    assert sender_batch_id == "run_1"
+    assert {i["sender_item_id"] for i in items} == {"run_1:rcp_1", "run_1:rcp_2"}
+
+    by_recipient = {i["recipient_id"]: i for i in saved_items}
+    assert by_recipient["rcp_1"]["amount_minor"] == 1000
+    assert by_recipient["rcp_1"]["status"] == "FAILED"
+    assert by_recipient["rcp_1"]["payout_item_id"] == "item_1"
+    assert by_recipient["rcp_2"]["amount_minor"] == 2500
+    assert by_recipient["rcp_2"]["status"] == "SUCCESS"
+    assert by_recipient["rcp_2"]["payout_item_id"] == "item_2"
+    assert len(result["sender_items"]) == 2
+
+
 def test_execute_payout_unknown_transaction_status_maps_to_other(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"paypal_email": "a@b.com"})
     monkeypatch.setattr(
         routes, "create_payout", lambda *a, **kw: {"batch_header": {"payout_batch_id": "batch_1"}}
@@ -305,7 +359,15 @@ def test_execute_payout_unknown_transaction_status_maps_to_other(monkeypatch):
     monkeypatch.setattr(
         routes,
         "get_payout_batch",
-        lambda bid: {"items": [{"payout_item_id": None, "transaction_status": "WEIRD"}]},
+        lambda bid: {
+            "items": [
+                {
+                    "payout_item_id": None,
+                    "transaction_status": "WEIRD",
+                    "payout_item": {"sender_item_id": "run_1:rcp_1"},
+                }
+            ]
+        },
     )
     saved_items = []
     monkeypatch.setattr(routes, "set_sender_items", lambda rid, items: saved_items.extend(items))
@@ -320,7 +382,7 @@ def test_execute_payout_no_payout_item_detail_defaults_to_pending(monkeypatch):
     """생성 응답에서 payout_batch_id를 못 받으면(드묾) 상세 조회도 못 하니 PENDING으로
     남겨 다음 reconcile 폴링이 잡게 한다."""
     monkeypatch.setattr(routes, "get_settlement_run", lambda rid: _run())
-    monkeypatch.setattr(routes, "get_sole_recipient_id", lambda rid: "rcp_1")
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: {"rcp_1": 1000})
     monkeypatch.setattr(routes, "get_recipient", lambda rid: {"paypal_email": "a@b.com"})
     monkeypatch.setattr(routes, "create_payout", lambda *a, **kw: {"batch_header": {}})
     called = []

@@ -30,7 +30,10 @@ def executor_draft_task_id(settlement_run_id: str) -> str:
 
 
 def enqueue_executor_analyze(
-    settlement_run_id: str, candidate_claims: list[dict], duplicate_groups: list[dict]
+    settlement_run_id: str,
+    candidate_claims: list[dict],
+    duplicate_groups: list[dict],
+    exact_duplicate_groups: list[dict],
 ) -> None:
     # 대괄호로 읽지 않는다: AGENT_SERVICE_URL 부재는 배포 설정 누락으로 실제
     # 일어날 수 있는 상황이고(parsing/enqueue.py와 같은 이유), 여기서
@@ -48,6 +51,7 @@ def enqueue_executor_analyze(
             "task_id": executor_draft_task_id(settlement_run_id),
             "candidate_claims": candidate_claims,
             "duplicate_groups": duplicate_groups,
+            "exact_duplicate_groups": exact_duplicate_groups,
         },
         audience=agent_service_url,
     )

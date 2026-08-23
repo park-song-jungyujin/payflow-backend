@@ -60,8 +60,8 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
 
     enqueue_calls = []
 
-    def fake_enqueue(run_id, claim_summaries, duplicate_groups):
-        enqueue_calls.append((run_id, claim_summaries, duplicate_groups))
+    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups):
+        enqueue_calls.append((run_id, claim_summaries, duplicate_groups, exact_duplicate_groups))
         if enqueue_error:
             raise enqueue_error
 
@@ -81,7 +81,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
-    run_id, claim_summaries, duplicate_groups = enqueue_calls[0]
+    run_id, claim_summaries, duplicate_groups, exact_duplicate_groups = enqueue_calls[0]
     assert run_id == result["settlement_run_id"]
     assert claim_summaries == [
         {
@@ -95,6 +95,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
         }
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
+    assert exact_duplicate_groups == []  # receipt_serial_number가 없으니 판정 대상도 없다
 
 
 def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
@@ -107,7 +108,7 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, _, duplicate_groups = enqueue_calls[0]
+    _, _, duplicate_groups, _ = enqueue_calls[0]
     assert len(duplicate_groups) == 1
     assert set(duplicate_groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
 
@@ -119,7 +120,7 @@ def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, claim_summaries, _ = enqueue_calls[0]
+    _, claim_summaries, _, _ = enqueue_calls[0]
     assert claim_summaries[0]["merchant_name"] is None
     assert claim_summaries[0]["transaction_date"] is None
 
@@ -163,17 +164,22 @@ def test_audit_log_failure_does_not_mask_response(monkeypatch):
     assert result["status"] == "DRAFT"
 
 
-def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
-    _, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
+def test_empty_candidate_batch_rejected_without_creating_run(monkeypatch):
+    """청구 항목이 없으면 run 자체를 만들지 않는다 — 승인 불가능한 빈 run이
+    목록에 쌓이는 걸 막는다."""
+    stub, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
 
-    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+    with pytest.raises(HTTPException) as exc_info:
+        routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, claim_summaries, duplicate_groups = enqueue_calls[0]
-    assert claim_summaries == []
-    assert duplicate_groups == []
+    assert exc_info.value.status_code == 400
+    assert stub.created == []
+    assert stub.linked == []
+    assert enqueue_calls == []
 
 
-# --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) ---
+# --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) +
+# claim 상세(plans/2026-08-21-web-dashboard.md "필요한 백엔드 변경 (a)") ---
 
 
 def _run_doc(**overrides):
@@ -196,11 +202,20 @@ def _session(monkeypatch):
     )
 
 
+def _wire_get(monkeypatch, *, run=None, draft=None, claims=None, receipts=None, recipients=None):
+    """GET 테스트 공통 배선. claims/receipts를 안 넘기면 빈 값 — Part 5 테스트들이
+    claim 조회를 신경 안 써도 되게 기본값을 둔다."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: draft)
+    monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims or [])
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts or {})
+    monkeypatch.setattr(routes, "get_recipient", lambda recipient_id: (recipients or {}).get(recipient_id))
+
+
 def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
     """None은 "아직 분석 안 됨"이다 — anomalies가 빈 리스트인 "이상 없음"과
     구분해야 한다. web이 "분석 대기 중" vs "이상 없음"을 다르게 렌더링할 수 있게."""
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+    _wire_get(monkeypatch)
 
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
@@ -208,21 +223,22 @@ def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
 
 
 def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-
+    draft = {
+        "payload": {
+            "anomalies": ["같은 가맹점·같은 금액 2건"],
+            "summary_text": "중복 의심 1건",
+            "anomalies_en": ["Same merchant, same amount, 2 claims"],
+            "summary_text_en": "1 suspected duplicate",
+        },
+        "created_at": "2026-08-21T00:00:00Z",
+    }
     captured_task_id = []
-
-    def fake_get_draft(task_id):
-        captured_task_id.append(task_id)
-        return {
-            "payload": {
-                "anomalies": ["같은 가맹점·같은 금액 2건"],
-                "summary_text": "중복 의심 1건",
-            },
-            "created_at": "2026-08-21T00:00:00Z",
-        }
-
-    monkeypatch.setattr(routes, "get_agent_draft", fake_get_draft)
+    _wire_get(monkeypatch, draft=draft)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_draft",
+        lambda task_id: captured_task_id.append(task_id) or draft,
+    )
 
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
@@ -232,14 +248,37 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
     assert result["executor_analysis"] == {
         "anomalies": ["같은 가맹점·같은 금액 2건"],
         "summary_text": "중복 의심 1건",
+        "anomalies_en": ["Same merchant, same amount, 2 claims"],
+        "summary_text_en": "1 suspected duplicate",
         "created_at": "2026-08-21T00:00:00Z",
     }
 
 
-def test_get_run_404_does_not_read_agent_draft(monkeypatch):
+def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):
+    """anomalies_en/summary_text_en 추가 전에 쓰인 draft에는 이 필드가 없다 —
+    없어도 죽지 않고 빈 값으로 채워져야 한다."""
+    draft = {
+        "payload": {
+            "anomalies": ["같은 가맹점·같은 금액 2건"],
+            "summary_text": "중복 의심 1건",
+        },
+        "created_at": "2026-08-21T00:00:00Z",
+    }
+    _wire_get(monkeypatch, draft=draft)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["executor_analysis"]["anomalies_en"] == []
+    assert result["executor_analysis"]["summary_text_en"] is None
+
+
+def test_get_run_404_does_not_read_agent_draft_or_claims(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: None)
     monkeypatch.setattr(
         routes, "get_agent_draft", lambda task_id: (_ for _ in ()).throw(AssertionError())
+    )
+    monkeypatch.setattr(
+        routes, "get_claims_for_run", lambda run_id: (_ for _ in ()).throw(AssertionError())
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -248,9 +287,49 @@ def test_get_run_404_does_not_read_agent_draft(monkeypatch):
 
 
 def test_get_run_still_strips_approval_token_hash(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+    _wire_get(monkeypatch)
 
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert "approval_token_hash" not in result
+
+
+def test_get_run_includes_claim_details(monkeypatch):
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    recipients = {"rcp_1": {"display_name": "유진"}}
+    _wire_get(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["claims"] == [
+        {
+            "claim_id": "clm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 10000,
+            "currency": "KRW",
+            "account_category_code": "TRAVEL",
+            "merchant_name": "스타벅스",
+            "transaction_date": "2026-08-10",
+            "recipient_name": "유진",
+        }
+    ]
+
+
+def test_get_run_claim_recipient_name_falls_back_to_id_when_recipient_missing(monkeypatch):
+    """money-safety.md 정신과 같다 — 조용한 누락보다 눈에 보이는 대체값(export.py와
+    동일 패턴)."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    _wire_get(monkeypatch, claims=claims, receipts={"rct_1": {}}, recipients={})
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["claims"][0]["recipient_name"] == "rcp_1"
+
+
+def test_get_run_claims_empty_when_none_linked(monkeypatch):
+    _wire_get(monkeypatch)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["claims"] == []

@@ -108,3 +108,79 @@ def find_duplicate_groups(claims: list[dict], receipts: dict[str, dict]) -> list
         for members in groups.values()
         if len(members) >= 2
     ]
+
+
+def find_exact_duplicate_receipts(claims: list[dict], receipts: dict[str, dict]) -> list[dict]:
+    """같은 recipient_id의 후보 claim들 중 receipt_serial_number(카드 승인번호 ·
+    영수증 고유번호)가 완전히 일치하는 클러스터를 찾는다.
+
+    find_duplicate_groups(금액·날짜윈도우·가맹점명 퍼지 매칭)보다 훨씬 강한 신호다
+    — 승인번호는 카드사/POS가 거래 건마다 고유하게 발급하므로, OCR이 정확히
+    읽었다면 서로 다른 실제 거래가 우연히 같은 값을 낼 확률이 사실상 없다. 같은
+    물리적 영수증을 서로 다른 사진으로 두 번 올린 경우(예: slack_file_id가 달라
+    receipt_dedup_keys가 못 잡는 경우)를 잡기 위한 것이다.
+
+    receipt_serial_number가 None이거나 빈 문자열인 receipt는 판정에서 제외한다
+    (근거 없는 필드는 비교하지 않는다 — find_duplicate_groups와 같은 원칙).
+    amount_minor도 함께 일치해야 클러스터로 묶는다 — OCR 오독으로 서로 다른
+    영수증이 우연히 같은 문자열을 내는 극단적인 경우를 막는 이중 확인이다.
+
+    claims, receipts: find_duplicate_groups와 같은 형태.
+    반환: [{"claim_ids": [...], "receipt_serial_number": str, "amount_minor": int,
+            "currency": str}, ...]. claim_id가 2개 미만인 그룹은 만들지 않는다.
+    """
+    comparable = []
+    for c in claims:
+        receipt = receipts.get(c["receipt_id"])
+        if receipt is None:
+            continue
+        serial = receipt.get("receipt_serial_number")
+        if not serial:
+            continue
+        comparable.append(
+            {
+                "claim_id": c["claim_id"],
+                "recipient_id": c["recipient_id"],
+                "amount_minor": c["amount_minor"],
+                "currency": c["currency"],
+                "receipt_serial_number": serial,
+            }
+        )
+
+    parent = {c["claim_id"]: c["claim_id"] for c in comparable}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, a in enumerate(comparable):
+        for b in comparable[i + 1 :]:
+            if a["recipient_id"] != b["recipient_id"]:
+                continue
+            if a["amount_minor"] != b["amount_minor"] or a["currency"] != b["currency"]:
+                continue
+            if a["receipt_serial_number"] != b["receipt_serial_number"]:
+                continue
+            union(a["claim_id"], b["claim_id"])
+
+    groups: dict[str, list[dict]] = {}
+    for c in comparable:
+        groups.setdefault(find(c["claim_id"]), []).append(c)
+
+    return [
+        {
+            "claim_ids": [m["claim_id"] for m in members],
+            "receipt_serial_number": members[0]["receipt_serial_number"],
+            "amount_minor": members[0]["amount_minor"],
+            "currency": members[0]["currency"],
+        }
+        for members in groups.values()
+        if len(members) >= 2
+    ]

@@ -153,13 +153,17 @@ def test_needs_requery_transitions_receipt_and_claim_and_creates_request(fake):
     _seed_receipt(fake)
     _seed_claim(fake, status="CONFIRMED")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, claim_request_id = store.apply_claimant_verdict(
+        "rct_1", _verdict(needs_requery=True), now=NOW
+    )
 
     assert result == "REQUERY"
     assert fake.data["receipts"]["rct_1"]["status"] == "NEEDS_REQUERY"
     assert fake.data["claims"]["clm_1"]["status"] == "DRAFT"
     assert len(fake.data["claim_requests"]) == 1
     request = next(iter(fake.data["claim_requests"].values()))
+    # 호출부가 이 id로 재촉 루프를 깨운다 — 방금 만든 문서를 가리켜야 한다.
+    assert claim_request_id == request["claim_request_id"]
     assert request["status"] == "PENDING"
     assert request["reason"] == "AMOUNT_MISMATCH"
     assert request["receipt_id"] == "rct_1"
@@ -170,7 +174,7 @@ def test_needs_requery_leaves_in_run_claim_untouched_but_logs_audit(fake):
     _seed_receipt(fake)
     _seed_claim(fake, status="IN_RUN")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "REQUERY"
     assert fake.data["claims"]["clm_1"]["status"] == "IN_RUN"
@@ -183,7 +187,7 @@ def test_needs_requery_leaves_settled_claim_untouched_but_logs_audit(fake):
     _seed_receipt(fake)
     _seed_claim(fake, status="SETTLED")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "REQUERY"
     assert fake.data["claims"]["clm_1"]["status"] == "SETTLED"
@@ -195,7 +199,7 @@ def test_no_requery_with_is_business_updates_claim_only(fake):
     _seed_receipt(fake)
     _seed_claim(fake, status="CONFIRMED")
 
-    result = store.apply_claimant_verdict(
+    result, _ = store.apply_claimant_verdict(
         "rct_1", _verdict(needs_requery=False, is_business=True), now=NOW
     )
 
@@ -209,9 +213,14 @@ def test_no_requery_without_is_business_writes_nothing(fake):
     _seed_receipt(fake)
     _seed_claim(fake, status="CONFIRMED")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=False), now=NOW)
+    result, claim_request_id = store.apply_claimant_verdict(
+        "rct_1", _verdict(needs_requery=False), now=NOW
+    )
 
     assert result == "APPLIED"
+    # claim_request를 안 만들었으면 돌려줄 id도 없다 — 호출부가 엉뚱한 문서를
+    # 재촉하지 않게 한다.
+    assert claim_request_id is None
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
     assert writes == []
 
@@ -220,7 +229,7 @@ def test_receipt_already_needs_requery_is_skipped(fake):
     _seed_receipt(fake, status="NEEDS_REQUERY")
     _seed_claim(fake, status="DRAFT")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "SKIPPED"
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
@@ -229,7 +238,7 @@ def test_receipt_already_needs_requery_is_skipped(fake):
 
 
 def test_missing_receipt_is_skipped(fake):
-    result = store.apply_claimant_verdict("rct_missing", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_missing", _verdict(needs_requery=True), now=NOW)
 
     assert result == "SKIPPED"
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
@@ -250,7 +259,7 @@ def test_receipt_missing_status_field_is_skipped_not_500(fake):
     }
     _seed_claim(fake, status="CONFIRMED")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "SKIPPED"
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
@@ -273,7 +282,7 @@ def test_receipt_missing_recipient_id_field_is_skipped_not_500(fake):
     }
     _seed_claim(fake, status="CONFIRMED")
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "SKIPPED"
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
@@ -301,7 +310,7 @@ def test_claim_missing_status_field_is_skipped_not_500(fake):
         # status 필드 없음
     }
 
-    result = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
+    result, _ = store.apply_claimant_verdict("rct_1", _verdict(needs_requery=True), now=NOW)
 
     assert result == "SKIPPED"
     writes = [entry for entry in fake.log if entry[0] in ("set", "update")]
@@ -316,8 +325,8 @@ def test_idempotency_same_draft_applied_twice(fake):
     _seed_claim(fake, status="CONFIRMED")
     verdict = _verdict(needs_requery=True)
 
-    first = store.apply_claimant_verdict("rct_1", verdict, now=NOW)
-    second = store.apply_claimant_verdict("rct_1", verdict, now=NOW)
+    first, _ = store.apply_claimant_verdict("rct_1", verdict, now=NOW)
+    second, _ = store.apply_claimant_verdict("rct_1", verdict, now=NOW)
 
     assert first == "REQUERY"
     assert second == "SKIPPED"
@@ -331,8 +340,8 @@ def test_idempotency_two_different_drafts_both_needs_requery(fake):
     verdict_a = DraftVerdict(needs_requery=True, requery_message="첫 번째 에이전트 호출")
     verdict_b = DraftVerdict(needs_requery=True, requery_message="재시도된 두 번째 호출")
 
-    first = store.apply_claimant_verdict("rct_1", verdict_a, now=NOW)
-    second = store.apply_claimant_verdict("rct_1", verdict_b, now=NOW)
+    first, _ = store.apply_claimant_verdict("rct_1", verdict_a, now=NOW)
+    second, _ = store.apply_claimant_verdict("rct_1", verdict_b, now=NOW)
 
     assert first == "REQUERY"
     assert second == "SKIPPED"

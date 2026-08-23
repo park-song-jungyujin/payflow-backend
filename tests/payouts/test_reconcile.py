@@ -134,6 +134,7 @@ def test_pending_at_max_attempts_forces_other_and_finalizes_as_failed(store, mon
         {
             "payout_item_id": "itm_1",
             "recipient_id": "rcp_1",
+            "amount_minor": 1000,
             "paypal_transaction_status": "PENDING",
             "status": "PENDING",
         }
@@ -155,7 +156,13 @@ def test_pending_at_max_attempts_forces_other_and_finalizes_as_failed(store, mon
 def test_all_success_settles_run_and_all_claims(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1")
     store.sender_items["run_1"] = [
-        {"payout_item_id": "itm_1", "recipient_id": "rcp_1", "paypal_transaction_status": "SUCCESS", "status": "PENDING"}
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        }
     ]
     store.claims["clm_1"] = _claim("clm_1", "run_1")
     _wire_payout_batch(monkeypatch, [{"payout_item_id": "itm_1", "transaction_status": "SUCCESS"}])
@@ -170,7 +177,13 @@ def test_all_success_settles_run_and_all_claims(store, monkeypatch):
 def test_failed_item_reverts_claim_to_confirmed_but_keeps_run_id(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1")
     store.sender_items["run_1"] = [
-        {"payout_item_id": "itm_1", "recipient_id": "rcp_1", "paypal_transaction_status": "FAILED", "status": "PENDING"}
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        }
     ]
     store.claims["clm_1"] = _claim("clm_1", "run_1")
     store.recipients["rcp_1"] = {"monthly_paid_minor": 1000}
@@ -185,10 +198,16 @@ def test_failed_item_reverts_claim_to_confirmed_but_keeps_run_id(store, monkeypa
     assert store.claims["clm_1"]["settlement_run_id"] == "run_1"
 
 
-def test_failed_run_decrements_monthly_paid_by_run_total(store, monkeypatch):
+def test_failed_run_decrements_monthly_paid_by_item_amount(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1", total_amount_minor=1000)
     store.sender_items["run_1"] = [
-        {"payout_item_id": "itm_1", "recipient_id": "rcp_1", "paypal_transaction_status": "FAILED", "status": "PENDING"}
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        }
     ]
     store.claims["clm_1"] = _claim("clm_1", "run_1")
     store.recipients["rcp_1"] = {"monthly_paid_minor": 4000}
@@ -199,12 +218,56 @@ def test_failed_run_decrements_monthly_paid_by_run_total(store, monkeypatch):
     assert store.recipients["rcp_1"]["monthly_paid_minor"] == 3000
 
 
+def test_multi_recipient_partial_failure_only_rolls_back_failed_recipients_own_amount(store, monkeypatch):
+    """run.total_amount_minor(전체 합계)가 아니라 각 recipient의 sender_item.amount_minor만
+    깎아야 한다 — 성공한 rcp_1은 그대로 두고, 실패한 rcp_2는 자기 몫(1500)만 되돌린다."""
+    store.runs["run_1"] = _run(payout_batch_id="batch_1", total_amount_minor=3500)
+    store.sender_items["run_1"] = [
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 2000,
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        },
+        {
+            "payout_item_id": "itm_2",
+            "recipient_id": "rcp_2",
+            "amount_minor": 1500,
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        },
+    ]
+    store.claims["clm_1"] = _claim("clm_1", "run_1", recipient_id="rcp_1")
+    store.claims["clm_2"] = _claim("clm_2", "run_1", recipient_id="rcp_2")
+    store.recipients["rcp_1"] = {"monthly_paid_minor": 2000}
+    store.recipients["rcp_2"] = {"monthly_paid_minor": 1500}
+    _wire_payout_batch(
+        monkeypatch,
+        [
+            {"payout_item_id": "itm_1", "transaction_status": "SUCCESS"},
+            {"payout_item_id": "itm_2", "transaction_status": "FAILED"},
+        ],
+    )
+
+    reconcile.reconcile("run_1")
+
+    assert store.recipients["rcp_1"]["monthly_paid_minor"] == 2000  # 성공 — 그대로
+    assert store.recipients["rcp_2"]["monthly_paid_minor"] == 0  # 실패 — 자기 몫만 롤백
+
+
 def test_monthly_paid_rollback_never_goes_negative(store, monkeypatch):
-    """already_paid(300)가 run.total_amount_minor(1000)보다 작으면 min()으로 clamp —
+    """already_paid(300)가 item.amount_minor(1000)보다 작으면 min()으로 clamp —
     다른 run이 이미 예약해둔 금액까지 깎아먹으면 안 된다."""
     store.runs["run_1"] = _run(payout_batch_id="batch_1", total_amount_minor=1000)
     store.sender_items["run_1"] = [
-        {"payout_item_id": "itm_1", "recipient_id": "rcp_1", "paypal_transaction_status": "FAILED", "status": "PENDING"}
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        }
     ]
     store.claims["clm_1"] = _claim("clm_1", "run_1")
     store.recipients["rcp_1"] = {"monthly_paid_minor": 300}
@@ -218,7 +281,13 @@ def test_monthly_paid_rollback_never_goes_negative(store, monkeypatch):
 def test_deleted_recipient_does_not_crash_rollback(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1")
     store.sender_items["run_1"] = [
-        {"payout_item_id": "itm_1", "recipient_id": "rcp_ghost", "paypal_transaction_status": "FAILED", "status": "PENDING"}
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_ghost",
+            "amount_minor": 1000,
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        }
     ]
     store.claims["clm_1"] = _claim("clm_1", "run_1", recipient_id="rcp_ghost")
     _wire_payout_batch(monkeypatch, [{"payout_item_id": "itm_1", "transaction_status": "FAILED"}])
