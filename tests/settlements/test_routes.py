@@ -178,13 +178,14 @@ def _run_doc(**overrides):
     return run
 
 
-def _wire_get(monkeypatch, *, run=None, draft=None, claims=None, receipts=None):
+def _wire_get(monkeypatch, *, run=None, draft=None, claims=None, receipts=None, recipients=None):
     """GET 테스트 공통 배선. claims/receipts를 안 넘기면 빈 값 — Part 5 테스트들이
     claim 조회를 신경 안 써도 되게 기본값을 둔다."""
     monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: draft)
     monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims or [])
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts or {})
+    monkeypatch.setattr(routes, "get_recipient", lambda recipient_id: (recipients or {}).get(recipient_id))
 
 
 def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
@@ -250,7 +251,8 @@ def test_get_run_still_strips_approval_token_hash(monkeypatch):
 def test_get_run_includes_claim_details(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_1")]
     receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
-    _wire_get(monkeypatch, claims=claims, receipts=receipts)
+    recipients = {"rcp_1": {"display_name": "유진"}}
+    _wire_get(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
 
     result = routes.get_settlement_run_route("run_1")
 
@@ -263,8 +265,20 @@ def test_get_run_includes_claim_details(monkeypatch):
             "account_category_code": "TRAVEL",
             "merchant_name": "스타벅스",
             "transaction_date": "2026-08-10",
+            "recipient_name": "유진",
         }
     ]
+
+
+def test_get_run_claim_recipient_name_falls_back_to_id_when_recipient_missing(monkeypatch):
+    """money-safety.md 정신과 같다 — 조용한 누락보다 눈에 보이는 대체값(export.py와
+    동일 패턴)."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    _wire_get(monkeypatch, claims=claims, receipts={"rct_1": {}}, recipients={})
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["claims"][0]["recipient_name"] == "rcp_1"
 
 
 def test_get_run_claims_empty_when_none_linked(monkeypatch):
