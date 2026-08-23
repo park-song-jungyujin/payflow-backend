@@ -168,7 +168,8 @@ def test_empty_candidate_batch_enqueues_with_empty_lists(monkeypatch):
     assert duplicate_groups == []
 
 
-# --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) ---
+# --- GET /settlements/runs/{run_id} — agent_drafts.EXECUTOR 읽기 (Part 5) +
+# claim 상세(plans/2026-08-21-web-dashboard.md "필요한 백엔드 변경 (a)") ---
 
 
 def _run_doc(**overrides):
@@ -177,11 +178,19 @@ def _run_doc(**overrides):
     return run
 
 
+def _wire_get(monkeypatch, *, run=None, draft=None, claims=None, receipts=None):
+    """GET 테스트 공통 배선. claims/receipts를 안 넘기면 빈 값 — Part 5 테스트들이
+    claim 조회를 신경 안 써도 되게 기본값을 둔다."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: draft)
+    monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims or [])
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts or {})
+
+
 def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
     """None은 "아직 분석 안 됨"이다 — anomalies가 빈 리스트인 "이상 없음"과
     구분해야 한다. web이 "분석 대기 중" vs "이상 없음"을 다르게 렌더링할 수 있게."""
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+    _wire_get(monkeypatch)
 
     result = routes.get_settlement_run_route("run_1")
 
@@ -189,21 +198,20 @@ def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
 
 
 def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-
+    draft = {
+        "payload": {
+            "anomalies": ["같은 가맹점·같은 금액 2건"],
+            "summary_text": "중복 의심 1건",
+        },
+        "created_at": "2026-08-21T00:00:00Z",
+    }
     captured_task_id = []
-
-    def fake_get_draft(task_id):
-        captured_task_id.append(task_id)
-        return {
-            "payload": {
-                "anomalies": ["같은 가맹점·같은 금액 2건"],
-                "summary_text": "중복 의심 1건",
-            },
-            "created_at": "2026-08-21T00:00:00Z",
-        }
-
-    monkeypatch.setattr(routes, "get_agent_draft", fake_get_draft)
+    _wire_get(monkeypatch, draft=draft)
+    monkeypatch.setattr(
+        routes,
+        "get_agent_draft",
+        lambda task_id: captured_task_id.append(task_id) or draft,
+    )
 
     result = routes.get_settlement_run_route("run_1")
 
@@ -217,10 +225,13 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
     }
 
 
-def test_get_run_404_does_not_read_agent_draft(monkeypatch):
+def test_get_run_404_does_not_read_agent_draft_or_claims(monkeypatch):
     monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: None)
     monkeypatch.setattr(
         routes, "get_agent_draft", lambda task_id: (_ for _ in ()).throw(AssertionError())
+    )
+    monkeypatch.setattr(
+        routes, "get_claims_for_run", lambda run_id: (_ for _ in ()).throw(AssertionError())
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -229,9 +240,36 @@ def test_get_run_404_does_not_read_agent_draft(monkeypatch):
 
 
 def test_get_run_still_strips_approval_token_hash(monkeypatch):
-    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
-    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+    _wire_get(monkeypatch)
 
     result = routes.get_settlement_run_route("run_1")
 
     assert "approval_token_hash" not in result
+
+
+def test_get_run_includes_claim_details(monkeypatch):
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    _wire_get(monkeypatch, claims=claims, receipts=receipts)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["claims"] == [
+        {
+            "claim_id": "clm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 10000,
+            "currency": "KRW",
+            "account_category_code": "TRAVEL",
+            "merchant_name": "스타벅스",
+            "transaction_date": "2026-08-10",
+        }
+    ]
+
+
+def test_get_run_claims_empty_when_none_linked(monkeypatch):
+    _wire_get(monkeypatch)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["claims"] == []

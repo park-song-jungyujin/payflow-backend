@@ -20,8 +20,11 @@ from ..schemas.enums import AccountCategory, ClaimStatus
 # 조용히 빠지고 아무도 모른다.
 #
 # ⚠️ 에이전트가 붙으면 이 값을 draft로 덮어써야 한다. 덮어쓰기는 claim이
-# DRAFT일 때만 허용한다 — CONFIRMED 이상은 이미 정산 후보이거나 점유된
-# 상태라, 금액·분류가 바뀌면 approval_amount_hash(§7)와 어긋난다.
+# DRAFT·CONFIRMED일 때까지 허용한다 — is_business는 approval_amount_hash
+# (§7, recipient_id·amount_minor·currency만 포함)에 안 들어가고 송금 금액에
+# 영향이 없어서, "금액·분류가 바뀌면 해시와 어긋난다"는 우려가 적용되지
+# 않는다. 다만 IN_RUN·SETTLED는 여전히 제외한다 — 이미 배치에 점유됐거나
+# 송금이 끝난 claim을 건드릴 이유가 없다(store.py apply_claimant_verdict 참고).
 DEFAULT_IS_BUSINESS = True
 
 # 지금은 청구자 에이전트가 없어 검토 단계 없이 바로 정산 후보가 된다.

@@ -1,7 +1,6 @@
 
-# 상태 파일은 로컬(Track C 담당자 머신)에만 있고 GCS 백엔드로 옮기지 않았다.
-# 다른 사람이 이 레포를 새로 clone해서 apply하면 빈 state로 시작해 payflow-api/
-# payflow-queue를 새로 만들려다 "already exists"로 충돌한다. terraform은 C만 돌린다.
+# 상태 파일은 GCS backend(backend.tf)에 있다. 누구든 terraform init만 하면
+# 같은 state를 보고, GCS 상태 락으로 동시 apply 충돌도 막는다.
 terraform {
   required_version = ">= 1.5"
 

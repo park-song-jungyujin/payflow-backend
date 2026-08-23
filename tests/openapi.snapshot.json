@@ -562,6 +562,125 @@
         }
       }
     },
+    "/slack/interactions": {
+      "post": {
+        "summary": "Slack Interactions",
+        "description": "schema-contract.md §10 — 버튼 응답. Slack 앱 설정의 Interactivity Request URL.\n\n이게 없으면 `RESPONDED`가 영영 안 생겨 모든 claim_request가 만료된다.\n\n**본문이 form-encoded다**(`payload=<json>`). 서명은 여기서도 raw body 기준이라\n/slack/events와 같은 함수를 쓴다 — 파싱한 값을 다시 직렬화하면 서명이 깨진다.\n\n**Slack은 3초 안에 200을 원한다.** 하는 일이 Firestore 트랜잭션 하나뿐이라\n큐로 넘기지 않는다. 다만 실패해도 500을 내지 않는다 — Slack이 재전송하면\n같은 버튼 클릭이 여러 번 오고, 그때마다 사용자에게는 오류 배너가 뜬다.",
+        "operationId": "slack_interactions_slack_interactions_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/apply-claimant-draft": {
+      "post": {
+        "summary": "Task Apply Claimant Draft",
+        "description": "schema-contract.md §9 — 청구자 에이전트 draft를 상태 전이로 반영하는\nCloud Tasks 타겟. draft 읽기는 settlements/store.py의 get_agent_draft\n(agent_drafts의 유일한 읽기)를 그대로 쓴다 — 여기서 새로 읽지 않는다.\n\npayload가 §9 계약과 형식적으로 안 맞으면(InvalidDraftPayload) 200 +\n감사 로그로 끝낸다 — 재시도해도 같은 payload라 큐를 계속 돌릴 이유가 없다.",
+        "operationId": "task_apply_claimant_draft_tasks_apply_claimant_draft_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/tasks/remind": {
+      "post": {
+        "summary": "Task Remind",
+        "description": "schema-contract.md §10 — 재촉 루프의 한 번의 깨어남. Cloud Tasks가 부른다.\n\n**HTTP 코드가 큐의 재시도 손잡이다.** 다시 부르면 될 실패(Slack 5xx·429,\nFirestore 트랜잭션 소진)만 503으로 올리고, 다시 불러도 같을 실패(문안 부재,\nSlack의 논리 오류)는 200 + 감사 로그로 끝낸다 — 재시도해도 결과가 같은데\n큐를 계속 돌리면 백오프만 쌓인다.\n\n순서는 \"CAS → 발송 → 기록 → 재예약\"이다. 미리 표시해두면 발송 실패가 조용한\n유실이 되고(store.claim_send_slot 주석), 재예약을 먼저 하면 발송 실패 시\n같은 태스크가 두 갈래로 늘어난다.",
+        "operationId": "task_remind_tasks_remind_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tasks/parse-receipt": {
       "post": {
         "summary": "Task Parse Receipt",

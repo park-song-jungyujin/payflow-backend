@@ -135,6 +135,18 @@ variable "reconcile_delay_seconds" {
   description = "payouts/tasks_queue.py enqueue_reconcile()이 /tasks/reconcile을 예약하는 지연 시간. 샌드박스에서 PayPal이 배치를 처리할 시간을 준다."
 }
 
+variable "claim_request_ttl_seconds" {
+  type        = number
+  default     = 86400
+  description = "src/ingest/store.py, src/settlements/store.py가 claim_request 만료 시각을 계산할 때 쓰는 TTL."
+}
+
+variable "reminder_delay_seconds" {
+  type        = number
+  default     = 20
+  description = "청구 재요청(ReminderReason) 알림을 예약하는 지연 시간."
+}
+
 # --- Cloud Tasks 재시도 (plan.md: "재시도를 만드는 건 Cloud Run이 아니라 큐다") ---
 variable "task_max_attempts" {
   type    = number
