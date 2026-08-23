@@ -63,8 +63,10 @@ def client(monkeypatch):
         )
         return f"rct_{slack_file_id}", True
 
-    def fake_register(*, slack_user_id, paypal_email):
-        calls["registered"].append({"slack_user_id": slack_user_id, "paypal_email": paypal_email})
+    def fake_register(*, slack_user_id, paypal_email, display_name=None):
+        calls["registered"].append(
+            {"slack_user_id": slack_user_id, "paypal_email": paypal_email, "display_name": display_name}
+        )
         return {"recipient_id": "rcp_new", "slack_user_id": slack_user_id, "paypal_email": paypal_email}
 
     monkeypatch.setattr(
@@ -84,6 +86,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         routes, "post_message", lambda **kw: calls["posted"].append(kw) or "1234.5678"
     )
+    monkeypatch.setattr(routes, "get_display_name", lambda uid: None)
 
     test_client = TestClient(app)
     test_client.calls = calls
@@ -176,13 +179,29 @@ def test_unregistered_user_with_email_gets_registered(client):
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "reason": "recipient_registered"}
     assert client.calls["registered"] == [
-        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com"}
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
     ]
     # 등록 안내만 나가고, 이번 메시지에 파일이 없었으니 receipt는 안 만든다 —
     # 사용자가 등록 후 영수증을 다시 보내야 한다.
     assert client.calls["created"] == []
     assert len(client.calls["posted"]) == 1
     assert "new-user@example.com" in client.calls["posted"][0]["text"]
+
+
+def test_registration_uses_slack_display_name_when_available(client, monkeypatch):
+    """이름을 못 가져오면(None) fake_register가 slack_user_id로 대체하는 건
+    store.py 쪽 책임이라 여기서는 get_display_name의 반환값이 그대로 넘어가는지만
+    본다."""
+    monkeypatch.setattr(routes, "get_display_name", lambda uid: "박수현")
+
+    payload = _file_message([])
+    payload["event"]["user"] = "U_NEW"
+    payload["event"]["text"] = "new-user@example.com"
+    _post(client, payload)
+
+    assert client.calls["registered"] == [
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": "박수현"}
+    ]
 
 
 def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch):
@@ -201,7 +220,7 @@ def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch)
 
     assert response.status_code == 200
     assert client.calls["registered"] == [
-        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com"}
+        {"slack_user_id": "U_NEW", "paypal_email": "new-user@example.com", "display_name": None}
     ]
 
 

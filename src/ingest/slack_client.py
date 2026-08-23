@@ -11,6 +11,7 @@ import os
 import requests as http_requests
 
 _SLACK_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
+_SLACK_USERS_INFO = "https://slack.com/api/users.info"
 _TIMEOUT_SECONDS = 20
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
@@ -60,6 +61,32 @@ def requery_blocks(text: str, claim_request_id: str) -> list[dict]:
             ],
         },
     ]
+
+
+def get_display_name(slack_user_id: str) -> str | None:
+    """셀프 등록(recipients.display_name) 전용 — 실패해도 예외를 던지지 않는다.
+
+    이름이 화면에 안 예쁘게 나오는 것보다 등록 자체가 막히는 게 훨씬 나쁘다
+    (users:read 스코프가 없거나 Slack이 잠깐 느려도 등록은 계속돼야 한다).
+    호출부가 None이면 slack_user_id로 대체한다.
+    """
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        return None
+    try:
+        response = http_requests.get(
+            _SLACK_USERS_INFO,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"user": slack_user_id},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        body = response.json()
+    except (http_requests.RequestException, ValueError):
+        return None
+    if not body.get("ok"):
+        return None
+    profile = body.get("user", {}).get("profile", {})
+    return profile.get("display_name") or profile.get("real_name") or None
 
 
 def post_message(

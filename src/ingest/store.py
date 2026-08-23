@@ -82,12 +82,19 @@ def find_recipient_by_slack_user(slack_user_id: str) -> dict | None:
     return doc.to_dict() if doc else None
 
 
-def create_recipient_from_slack(*, slack_user_id: str, paypal_email: str) -> dict:
+def create_recipient_from_slack(
+    *, slack_user_id: str, paypal_email: str, display_name: str | None = None
+) -> dict:
     """셀프 등록 — Slack DM으로 받은 PayPal 이메일로 recipients 문서를 새로 만든다.
 
     verified=False로 시작한다: 사칭·오타 위험이 있어 관리자 확인 전이라는 뜻이다.
     TODO: guards가 verified=False인 recipient로의 송금을 막게 만든다 — 오늘은 이
     필드를 payout 게이트 어디서도 보지 않는다.
+
+    display_name: 호출부(routes.py)가 slack_client.get_display_name으로 미리
+    조회해 넘긴다. Slack 이름을 못 가져왔으면(스코프 없음·API 실패) None이
+    오고, 그때만 slack_user_id로 대체한다 — 화면에 "U0BSXRN1T96" 같은 원시
+    ID가 뜨는 것보다 낫지만, 등록 자체를 이름 조회 실패로 막지는 않는다.
 
     TEMP: slack_user_id 유일성을 트랜잭션이 아니라 호출부의 find-then-create
     순서로만 지킨다 — 같은 사람이 이메일을 동시에 두 번 보내면 문서가 두 개
@@ -100,7 +107,7 @@ def create_recipient_from_slack(*, slack_user_id: str, paypal_email: str) -> dic
         "recipient_id": recipient_id,
         "slack_user_id": slack_user_id,
         "paypal_email": paypal_email,
-        "display_name": slack_user_id,
+        "display_name": display_name or slack_user_id,
         "monthly_paid_minor": 0,
         "monthly_period": now.strftime("%Y-%m"),
         "verified": False,

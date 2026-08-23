@@ -33,6 +33,7 @@ from .slack_client import (
     SlackSendError,
     SlackSendPermanent,
     SlackSendTransient,
+    get_display_name,
     post_message,
     requery_blocks,
 )
@@ -106,7 +107,11 @@ async def slack_events(request: Request):
     if recipient is None:
         email = _extract_email(event.get("text", ""))
         if email:
-            create_recipient_from_slack(slack_user_id=slack_user_id, paypal_email=email)
+            create_recipient_from_slack(
+                slack_user_id=slack_user_id,
+                paypal_email=email,
+                display_name=get_display_name(slack_user_id),
+            )
             try:
                 post_message(
                     channel=event["channel"],
