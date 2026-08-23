@@ -92,3 +92,58 @@ def test_missing_bot_token_is_transient(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     with pytest.raises(SlackSendTransient):
         slack_client.post_message(channel="C123", text="hi")
+
+
+# --- get_display_name — 셀프 등록 recipients.display_name 조회 (읽기 전용, best-effort) ---
+
+
+def _wire_get(monkeypatch, response=None, *, raises=None):
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "params": params, "timeout": timeout})
+        if raises:
+            raise raises
+        return response
+
+    monkeypatch.setattr(slack_client.http_requests, "get", fake_get)
+    return calls
+
+
+def test_get_display_name_prefers_display_name_over_real_name(monkeypatch):
+    _wire_get(
+        monkeypatch,
+        FakeResponse(
+            json_body={"ok": True, "user": {"profile": {"display_name": "수현", "real_name": "박수현"}}}
+        ),
+    )
+    assert slack_client.get_display_name("U_NEW") == "수현"
+
+
+def test_get_display_name_falls_back_to_real_name(monkeypatch):
+    """display_name을 프로필에 안 채운 사용자가 많다 — real_name으로 대체한다."""
+    _wire_get(
+        monkeypatch,
+        FakeResponse(json_body={"ok": True, "user": {"profile": {"display_name": "", "real_name": "박수현"}}}),
+    )
+    assert slack_client.get_display_name("U_NEW") == "박수현"
+
+
+def test_get_display_name_returns_none_when_ok_is_false(monkeypatch):
+    """users:read 스코프가 없는 등 논리적 실패 — 예외를 던지지 않고 None만
+    돌려준다. 등록 자체를 막으면 안 된다."""
+    _wire_get(monkeypatch, FakeResponse(json_body={"ok": False, "error": "missing_scope"}))
+    assert slack_client.get_display_name("U_NEW") is None
+
+
+def test_get_display_name_returns_none_on_network_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise slack_client.http_requests.RequestException("connection reset")
+
+    monkeypatch.setattr(slack_client.http_requests, "get", boom)
+    assert slack_client.get_display_name("U_NEW") is None
+
+
+def test_get_display_name_returns_none_without_bot_token(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    assert slack_client.get_display_name("U_NEW") is None
