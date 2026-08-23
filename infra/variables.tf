@@ -35,6 +35,18 @@ variable "agent_oidc_audience" {
   description = "api_oidc_audience와 같은 이유 — agent/main.py의 /agents/*가 검증하는 audience."
 }
 
+variable "google_oauth_redirect_uri" {
+  type        = string
+  default     = "https://payflow-web-1095757595735.asia-northeast3.run.app/api/auth/google/callback"
+  description = "auth/routes.py의 GOOGLE_OAUTH_REDIRECT_URI. Google Cloud Console에 등록한 redirect URI와 정확히 일치해야 한다."
+}
+
+variable "slack_oauth_redirect_uri" {
+  type        = string
+  default     = "https://payflow-api-1095757595735.asia-northeast3.run.app/auth/slack/callback"
+  description = "auth/slack_oauth.py의 SLACK_OAUTH_REDIRECT_URI. Slack App의 Redirect URLs와 정확히 일치해야 한다."
+}
+
 variable "agent_model" {
   type        = string
   default     = "gemini-flash-latest"
