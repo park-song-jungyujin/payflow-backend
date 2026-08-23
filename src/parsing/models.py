@@ -30,6 +30,12 @@ class ParsedReceipt(BaseModel):
 
     merchant_name: str | None = None
     transaction_date: date | None = None
+    # "HH:MM" 24시간제 문자열. transaction_date와 같은 §1 시각 예외 — 영수증에
+    # 찍힌 결제 시각이지 타임존이 없다. 초 단위는 OCR 신뢰도가 낮아 받지 않는다.
+    transaction_time: str | None = None
+    # 카드 승인번호 · 영수증/거래 고유번호. 카드사·POS가 거래 건마다 고유하게
+    # 발급하므로, 있으면 거의 확실한 동일 거래 판정 근거가 된다(중복 청구 탐지).
+    receipt_serial_number: str | None = None
     amount_text: str | None = None
     currency: str | None = None
     account_category_code: AccountCategory | None = None

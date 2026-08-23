@@ -23,7 +23,7 @@ from ulid import ULID
 
 from ..guards.audit import record_audit_log
 from ..matching.candidates import select_claims_for_run
-from ..matching.duplicates import find_duplicate_groups
+from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
     create_settlement_run,
     get_claims_for_run,
@@ -159,8 +159,9 @@ def create_settlement_run_route(body: dict | None = None):
 
     claim_summaries = [_claim_summary(c, receipts) for c in claims]
     duplicate_groups = find_duplicate_groups(claims, receipts)
+    exact_duplicate_groups = find_exact_duplicate_receipts(claims, receipts)
     try:
-        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups)
+        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups)
     except Exception as e:
         # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
         # 감싸 감사 로그 실패가 이미 커밋된 배치 생성 응답을 가리지 않게 한다.
