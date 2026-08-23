@@ -107,6 +107,10 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         # §1 시각 예외 — transaction_date는 YYYY-MM-DD 문자열이다.
         # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
         "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
+        "transaction_time": parsed.transaction_time,
+        # ★ merchant_name과 같은 이유로 마스킹한다 — OCR이 읽은 자유 텍스트라
+        # 카드번호 등 마스킹 대상 패턴을 우연히 포함할 수 있다.
+        "receipt_serial_number": mask_pii(parsed.receipt_serial_number),
         "parsed_amount_minor": amount_minor,
         "currency": parsed.currency,
         "account_category_code": category.value,

@@ -23,7 +23,7 @@ from ulid import ULID
 
 from ..guards.audit import record_audit_log
 from ..matching.candidates import select_claims_for_run
-from ..matching.duplicates import find_duplicate_groups
+from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
     create_settlement_run,
     get_claims_for_run,
@@ -122,6 +122,16 @@ def create_settlement_run_route(body: dict | None = None):
     claims = outcome["passed_claims"]
     receipts = outcome["receipts"]
 
+    if not claims:
+        # 청구 항목 없는 빈 run을 만들지 않는다 — 승인 화면에서 "연결된 청구
+        # 항목이 없어 승인할 수 없습니다"로만 끝나는 죽은 run이 계속 쌓이는 것을
+        # 막는다. select_claims_for_run이 후보를 걸렀거나 verify_candidates가
+        # 전부 탈락시킨 두 경우 모두 여기서 걸린다.
+        raise HTTPException(
+            status_code=400,
+            detail="필터에 해당하는 청구 항목이 없어 정산 실행을 생성할 수 없습니다.",
+        )
+
     now = datetime.now(UTC)
     run_id = f"run_{now:%y%m%d}_{str(ULID())[:12]}"
     doc = {
@@ -149,8 +159,9 @@ def create_settlement_run_route(body: dict | None = None):
 
     claim_summaries = [_claim_summary(c, receipts) for c in claims]
     duplicate_groups = find_duplicate_groups(claims, receipts)
+    exact_duplicate_groups = find_exact_duplicate_receipts(claims, receipts)
     try:
-        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups)
+        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups)
     except Exception as e:
         # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
         # 감싸 감사 로그 실패가 이미 커밋된 배치 생성 응답을 가리지 않게 한다.
