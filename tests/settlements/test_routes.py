@@ -203,6 +203,8 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
         "payload": {
             "anomalies": ["같은 가맹점·같은 금액 2건"],
             "summary_text": "중복 의심 1건",
+            "anomalies_en": ["Same merchant, same amount, 2 claims"],
+            "summary_text_en": "1 suspected duplicate",
         },
         "created_at": "2026-08-21T00:00:00Z",
     }
@@ -222,8 +224,28 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
     assert result["executor_analysis"] == {
         "anomalies": ["같은 가맹점·같은 금액 2건"],
         "summary_text": "중복 의심 1건",
+        "anomalies_en": ["Same merchant, same amount, 2 claims"],
+        "summary_text_en": "1 suspected duplicate",
         "created_at": "2026-08-21T00:00:00Z",
     }
+
+
+def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):
+    """anomalies_en/summary_text_en 추가 전에 쓰인 draft에는 이 필드가 없다 —
+    없어도 죽지 않고 빈 값으로 채워져야 한다."""
+    draft = {
+        "payload": {
+            "anomalies": ["같은 가맹점·같은 금액 2건"],
+            "summary_text": "중복 의심 1건",
+        },
+        "created_at": "2026-08-21T00:00:00Z",
+    }
+    _wire_get(monkeypatch, draft=draft)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["executor_analysis"]["anomalies_en"] == []
+    assert result["executor_analysis"]["summary_text_en"] is None
 
 
 def test_get_run_404_does_not_read_agent_draft_or_claims(monkeypatch):
