@@ -14,10 +14,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import requests
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, HTTPException
 from google.cloud import firestore
 
-from ..auth.session import verify_session
 from ..payouts.currency import convert_minor
 from ..payouts.fx import FxRateUnavailable, fetch_fx_rate
 from ..payouts.store import get_client, get_claims_for_run, get_settlement_run
@@ -57,16 +56,9 @@ def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int]:
 
 
 @router.post("/settlements/runs/{run_id}/approve")
-def approve_settlement_run(run_id: str, authorization: str = Header(default="")):
-    session_token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
-    session = verify_session(session_token)
-
+def approve_settlement_run(run_id: str, body: dict | None = None):
     run = get_settlement_run(run_id)
     if run is None:
-        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
-
-    if run.get("org_id") != session["org_id"]:
-        # 다른 기관의 run을 승인하지 못하게 막는다 — 404로 존재 자체를 숨긴다.
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
 
     if run["status"] not in ("DRAFT", "FAILED"):
@@ -87,7 +79,7 @@ def approve_settlement_run(run_id: str, authorization: str = Header(default=""))
     violation = check_caps(run)
     if violation:
         record_audit_log(
-            org_id=session["org_id"],
+            org_id=run.get("org_id"),
             actor="api/src/guards",
             action="PAYOUT_REJECTED",
             run_id=run_id,
@@ -95,8 +87,8 @@ def approve_settlement_run(run_id: str, authorization: str = Header(default=""))
         )
         raise HTTPException(status_code=403, detail=violation)
 
-    # 세션에서 검증된 신원으로 채운다 — 클라이언트가 보낸 값을 신뢰하지 않는다.
-    approved_by = session["email"]
+    # 로그인 게이트 제거 후 다시 pre-auth 패턴 — 클라이언트가 보낸 값을 그대로 쓴다.
+    approved_by = (body or {}).get("approved_by", "demo_approver")
     token = secrets.token_urlsafe(32)
     ttl = int(os.environ.get("APPROVAL_TOKEN_TTL_SECONDS", "600"))
     now = datetime.now(UTC)
@@ -135,7 +127,7 @@ def approve_settlement_run(run_id: str, authorization: str = Header(default=""))
         raise HTTPException(status_code=rejection.status_code, detail=rejection.detail)
 
     record_audit_log(
-        org_id=session["org_id"],
+        org_id=run.get("org_id"),
         actor=approved_by,
         actor_type="HUMAN",
         action="RUN_APPROVED",
