@@ -30,8 +30,13 @@ variable "api_oidc_audience" {
 }
 
 variable "agent_oidc_audience" {
-  type        = string
-  default     = "https://payflow-agent-1095757595735.asia-northeast3.run.app"
+  type = string
+  # c9cf6d9가 "안정적인" 번호 기반 URL로 바꿨지만 apply가 안 돼서, 실제 배포된
+  # agent 서비스는 지금도 이 해시 기반 URL을 자기 audience로 쓰고 있다(api의
+  # AGENT_SERVICE_URL도 마찬가지). 둘 다 Cloud Run이 보장하는 안정적인 URL이라
+  # 어느 쪽이든 동작하지만, 코드와 실배포를 맞추는 쪽(지금 쓰는 값)으로 되돌린다 —
+  # 번호 기반 URL로 바꾸려면 api·agent 두 서비스를 동시에 재배포해야 한다.
+  default     = "https://payflow-agent-6j6g3xdpma-du.a.run.app"
   description = "api_oidc_audience와 같은 이유 — agent/main.py의 /agents/*가 검증하는 audience."
 }
 

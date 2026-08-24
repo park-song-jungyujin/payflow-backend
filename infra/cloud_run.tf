@@ -26,6 +26,7 @@ resource "google_cloud_run_v2_service" "web" {
     service_account = google_service_account.web.email
     scaling {
       min_instance_count = var.web_min_instances
+      max_instance_count = 20
     }
     containers {
       image = var.placeholder_image
@@ -34,6 +35,14 @@ resource "google_cloud_run_v2_service" "web" {
         # 참조하면 순환 참조가 난다. web의 승인 프록시(route.ts)가 이 값으로 api를 부른다.
         name  = "API_BASE_URL"
         value = var.api_oidc_audience
+      }
+      env {
+        # deploy.yml이 --update-env-vars로 imperatively 심어오던 값 — terraform
+        # 선언에 없어서 apply할 때마다 지워질 뻔했다(google/callback, logout
+        # route.ts가 컨테이너 내부 바인딩 주소로 리다이렉트하던 버그의 원인).
+        # 자기 자신의 .uri를 참조하면 순환 참조가 나서 상수로 고정한다.
+        name  = "PUBLIC_APP_URL"
+        value = "https://payflow-web-1095757595735.asia-northeast3.run.app"
       }
     }
   }
@@ -214,6 +223,7 @@ resource "google_cloud_run_v2_service" "agent" {
     max_instance_request_concurrency = var.agent_concurrency
     scaling {
       min_instance_count = var.agent_min_instances
+      max_instance_count = 20
     }
     containers {
       image = var.placeholder_image
