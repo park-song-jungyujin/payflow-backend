@@ -17,10 +17,11 @@ import os
 from datetime import UTC, datetime
 from io import BytesIO
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from ulid import ULID
 
+from ..auth.session import verify_session
 from ..guards.audit import record_audit_log
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
@@ -41,6 +42,11 @@ from .verification import verify_candidates
 router = APIRouter()
 
 _ACTOR = "api/src/settlements"
+
+
+def _session_from_header(authorization: str) -> dict:
+    token = authorization.removeprefix("Bearer ") if authorization.startswith("Bearer ") else None
+    return verify_session(token)
 
 
 def _isoformat_or_none(value):
@@ -101,10 +107,11 @@ def _executor_analysis(run_id: str) -> dict | None:
 
 
 @router.get("/settlements")
-def list_settlements():
+def list_settlements(authorization: str = Header(default="")):
+    session = _session_from_header(authorization)
     name_cache: dict[str, str] = {}
     runs = []
-    for r in list_settlement_runs():
+    for r in list_settlement_runs(session["org_id"]):
         public = _public_run(r)
         recipient_ids = {c["recipient_id"] for c in get_claims_for_run(r["settlement_run_id"])}
         public["recipient_names"] = sorted(
@@ -136,9 +143,10 @@ def list_unsettled_claims():
 
 
 @router.post("/settlements/runs")
-def create_settlement_run_route(body: dict | None = None):
+def create_settlement_run_route(body: dict | None = None, authorization: str = Header(default="")):
+    session = _session_from_header(authorization)
     filter = SettlementFilter(**(body or {}).get("filter", {}))
-    candidates = select_claims_for_run(filter)
+    candidates = select_claims_for_run(session["org_id"], filter)
     outcome = verify_candidates(candidates)
     claims = outcome["passed_claims"]
     receipts = outcome["receipts"]
@@ -157,6 +165,7 @@ def create_settlement_run_route(body: dict | None = None):
     run_id = f"run_{now:%y%m%d}_{str(ULID())[:12]}"
     doc = {
         "settlement_run_id": run_id,
+        "org_id": session["org_id"],
         "filter": filter.model_dump(mode="json"),
         "base_currency": os.environ.get("PAYOUT_CURRENCY", "KRW"),
         # TEMP(B): 여기선 0으로 둔다 — guards/routes.py._lock_fx_and_total이
@@ -217,9 +226,10 @@ def _run_claims(run_id: str) -> list[dict]:
 
 
 @router.get("/settlements/runs/{run_id}")
-def get_settlement_run_route(run_id: str):
+def get_settlement_run_route(run_id: str, authorization: str = Header(default="")):
+    session = _session_from_header(authorization)
     run = get_settlement_run(run_id)
-    if run is None:
+    if run is None or run.get("org_id") != session["org_id"]:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
     public = _public_run(run)
     public["executor_analysis"] = _executor_analysis(run_id)
@@ -228,7 +238,11 @@ def get_settlement_run_route(run_id: str):
 
 
 @router.get("/settlements/runs/{run_id}/export")
-def export_settlement_run(run_id: str):
+def export_settlement_run(run_id: str, authorization: str = Header(default="")):
+    session = _session_from_header(authorization)
+    run = get_settlement_run(run_id)
+    if run is None or run.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
     try:
         content = build_settlement_export(run_id)
     except RunNotFound:

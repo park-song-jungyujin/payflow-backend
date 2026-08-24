@@ -1,4 +1,6 @@
-"""schema-contract.md §2 Firestore 컬렉션 8종 + §6 SettlementFilter.
+"""schema-contract.md §2 Firestore 컬렉션 12종 + §6 SettlementFilter.
+
+(`receipt_dedup_keys`·`agent_sessions`은 모델링하지 않는다 — 기존 관례.)
 
 필드명·타입·상태 enum은 이 문서가 단일 소스다. 여기 있는 것과 다르게 구현하면
 통합 시점에 조용히 실패한다. 변경이 필요하면 schema-contract.md를 먼저 고친다.
@@ -17,6 +19,7 @@ from .enums import (
     CategorySource,
     ClaimRequestStatus,
     ClaimStatus,
+    ExecutorStatus,
     ReceiptStatus,
     RecipientStatus,
     ReminderReason,
@@ -27,6 +30,7 @@ from .enums import (
 
 class Recipient(BaseModel):
     recipient_id: str
+    org_id: str
     slack_user_id: str
     paypal_email: str
     display_name: str
@@ -60,6 +64,7 @@ class VerificationSignals(BaseModel):
 
 class Receipt(BaseModel):
     receipt_id: str
+    org_id: str
     recipient_id: str
     # image_gcs_uri · raw_text_gcs_uri · currency · category_source · parse_signals는
     # 전부 파싱 파이프라인이 채운다. RECEIVED(Slack 인입 완료, 파싱 전) 상태에서는
@@ -88,6 +93,7 @@ class Receipt(BaseModel):
 
 class ClaimRequest(BaseModel):
     claim_request_id: str
+    org_id: str
     recipient_id: str
     # MISSING_CLAIM · UNPAID_NOTICE는 특정 영수증에서 출발하지 않는다.
     receipt_id: str | None = None
@@ -104,6 +110,7 @@ class ClaimRequest(BaseModel):
 
 class Claim(BaseModel):
     claim_id: str
+    org_id: str
     recipient_id: str
     receipt_id: str
     amount_minor: int
@@ -131,6 +138,7 @@ class SettlementFilter(BaseModel):
 
 class SettlementRun(BaseModel):
     settlement_run_id: str
+    org_id: str
     filter: SettlementFilter
     base_currency: str
     total_amount_minor: int
@@ -150,6 +158,7 @@ class SettlementRun(BaseModel):
 
 class SenderItem(BaseModel):
     sender_item_id: str
+    org_id: str
     settlement_run_id: str
     recipient_id: str
     receiver_email: str
@@ -166,6 +175,7 @@ class SenderItem(BaseModel):
 
 class AgentDraft(BaseModel):
     draft_id: str
+    org_id: str
     agent: AgentName
     target_type: AgentDraftTargetType
     target_id: str
@@ -176,6 +186,7 @@ class AgentDraft(BaseModel):
 
 class AuditLog(BaseModel):
     ts: datetime
+    org_id: str | None = None
     actor: str
     actor_type: ActorType
     action: str
@@ -183,6 +194,45 @@ class AuditLog(BaseModel):
     before: dict | None = None
     after: dict | None = None
     reason: str | None = None
+
+
+class Org(BaseModel):
+    org_id: str
+    name: str
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class Executor(BaseModel):
+    executor_id: str
+    org_id: str
+    email: str
+    google_sub: str
+    name: str
+    status: ExecutorStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class SlackWorkspace(BaseModel):
+    team_id: str
+    org_id: str
+    bot_token: str
+    bot_user_id: str
+    scope: str
+    installed_at: datetime
+    installed_by: str
+    updated_at: datetime
+
+
+class Session(BaseModel):
+    session_token_hash: str
+    executor_id: str
+    org_id: str
+    email: str
+    expires_at: datetime
+    created_at: datetime
 
 
 __all__ = [
@@ -198,4 +248,8 @@ __all__ = [
     "SenderItem",
     "AgentDraft",
     "AuditLog",
+    "Org",
+    "Executor",
+    "SlackWorkspace",
+    "Session",
 ]

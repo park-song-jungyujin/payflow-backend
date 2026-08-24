@@ -15,8 +15,8 @@ from ..payouts.store import get_client, list_confirmed_claims
 from ..schemas.models import SettlementFilter
 
 
-def select_claims_for_run(filter: SettlementFilter) -> list[dict]:
-    candidates = list_confirmed_claims()
+def select_claims_for_run(org_id: str, filter: SettlementFilter) -> list[dict]:
+    candidates = list_confirmed_claims(org_id)
 
     if filter.recipient_ids is not None:
         candidates = [c for c in candidates if c["recipient_id"] in filter.recipient_ids]

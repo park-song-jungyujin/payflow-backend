@@ -107,7 +107,12 @@ class _FakeStub:
 
 
 def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
-    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: claims)
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda org_id, filter: claims)
     monkeypatch.setattr(
         routes,
         "verify_candidates",
@@ -138,7 +143,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
     stub, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
     run_id, claim_summaries, duplicate_groups, exact_duplicate_groups = enqueue_calls[0]
@@ -166,7 +171,7 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
     }
     _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
 
-    routes.create_settlement_run_route(body={})
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, _, duplicate_groups, _ = enqueue_calls[0]
     assert len(duplicate_groups) == 1
@@ -178,7 +183,7 @@ def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_missing")]
     _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts={})
 
-    routes.create_settlement_run_route(body={})
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, claim_summaries, _, _ = enqueue_calls[0]
     assert claim_summaries[0]["merchant_name"] is None
@@ -193,7 +198,7 @@ def test_enqueue_failure_does_not_break_run_creation(monkeypatch):
         monkeypatch, claims=claims, receipts=receipts, enqueue_error=RuntimeError("boom")
     )
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert result["status"] == "DRAFT"
     assert len(stub.created) == 1  # 배치는 정상적으로 만들어졌다
@@ -219,7 +224,7 @@ def test_audit_log_failure_does_not_mask_response(monkeypatch):
         lambda **kw: (_ for _ in ()).throw(RuntimeError("firestore down")),
     )
 
-    result = routes.create_settlement_run_route(body={})
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert result["status"] == "DRAFT"
 
@@ -230,7 +235,7 @@ def test_empty_candidate_batch_rejected_without_creating_run(monkeypatch):
     stub, enqueue_calls, _ = _wire(monkeypatch, claims=[], receipts={})
 
     with pytest.raises(HTTPException) as exc_info:
-        routes.create_settlement_run_route(body={})
+        routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert exc_info.value.status_code == 400
     assert stub.created == []
@@ -243,9 +248,23 @@ def test_empty_candidate_batch_rejected_without_creating_run(monkeypatch):
 
 
 def _run_doc(**overrides):
-    run = {"settlement_run_id": "run_1", "status": "DRAFT", "approval_token_hash": "secret"}
+    run = {
+        "settlement_run_id": "run_1",
+        "org_id": "org_1",
+        "status": "DRAFT",
+        "approval_token_hash": "secret",
+    }
     run.update(overrides)
     return run
+
+
+@pytest.fixture(autouse=True)
+def _session(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
 
 
 def _wire_get(monkeypatch, *, run=None, draft=None, claims=None, receipts=None, recipients=None):
@@ -263,7 +282,7 @@ def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
     구분해야 한다. web이 "분석 대기 중" vs "이상 없음"을 다르게 렌더링할 수 있게."""
     _wire_get(monkeypatch)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["executor_analysis"] is None
 
@@ -286,7 +305,7 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
         lambda task_id: captured_task_id.append(task_id) or draft,
     )
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     # enqueue.py의 task_id 네임스페이스와 정확히 같은 값으로 조회해야 한다 —
     # 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
@@ -312,7 +331,7 @@ def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):
     }
     _wire_get(monkeypatch, draft=draft)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["executor_analysis"]["anomalies_en"] == []
     assert result["executor_analysis"]["summary_text_en"] is None
@@ -328,14 +347,14 @@ def test_get_run_404_does_not_read_agent_draft_or_claims(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        routes.get_settlement_run_route("run_missing")
+        routes.get_settlement_run_route("run_missing", authorization="Bearer t")
     assert exc_info.value.status_code == 404
 
 
 def test_get_run_still_strips_approval_token_hash(monkeypatch):
     _wire_get(monkeypatch)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert "approval_token_hash" not in result
 
@@ -346,7 +365,7 @@ def test_get_run_includes_claim_details(monkeypatch):
     recipients = {"rcp_1": {"display_name": "유진"}}
     _wire_get(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["claims"] == [
         {
@@ -368,7 +387,7 @@ def test_get_run_claim_recipient_name_falls_back_to_id_when_recipient_missing(mo
     claims = [_claim("clm_1", receipt_id="rct_1")]
     _wire_get(monkeypatch, claims=claims, receipts={"rct_1": {}}, recipients={})
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["claims"][0]["recipient_name"] == "rcp_1"
 
@@ -376,6 +395,6 @@ def test_get_run_claim_recipient_name_falls_back_to_id_when_recipient_missing(mo
 def test_get_run_claims_empty_when_none_linked(monkeypatch):
     _wire_get(monkeypatch)
 
-    result = routes.get_settlement_run_route("run_1")
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["claims"] == []

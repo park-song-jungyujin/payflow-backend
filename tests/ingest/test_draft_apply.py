@@ -115,9 +115,10 @@ def fake(monkeypatch):
 NOW = datetime(2026, 8, 21, 12, 0, 0, tzinfo=UTC)
 
 
-def _seed_receipt(fake, receipt_id="rct_1", status="PARSED", recipient_id="rcp_1"):
+def _seed_receipt(fake, receipt_id="rct_1", status="PARSED", recipient_id="rcp_1", org_id="org_1"):
     fake.data["receipts"][receipt_id] = {
         "receipt_id": receipt_id,
+        "org_id": org_id,
         "recipient_id": recipient_id,
         "status": status,
         "created_at": NOW,

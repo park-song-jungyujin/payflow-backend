@@ -46,8 +46,12 @@ def _ts(value: str) -> datetime:
 
 
 def _doc(raw: dict) -> dict:
-    """fixture 문서의 시각 필드를 datetime으로 바꾼다 — Firestore 읽기와 같은 모양."""
+    """fixture 문서의 시각 필드를 datetime으로 바꾼다 — Firestore 읽기와 같은 모양.
+
+    `org_id`는 fixture 작성 당시(멀티테넌시 이전) 없던 필드라 주입한다 —
+    `reason` 주입과 같은 이유·같은 방식이다."""
     doc = dict(raw)
+    doc.setdefault("org_id", "org_1")
     for field in ("slack_dm_ts",):
         doc.setdefault(field, None)
     for field in ("reminded_at", "expires_at", "created_at", "updated_at"):
@@ -413,6 +417,7 @@ def _seed_receipt_and_create_request(client, now):
     receipt_id = RECEIPT_05["receipt_id"]
     client.data["receipts"][receipt_id] = {
         "receipt_id": receipt_id,
+        "org_id": "org_1",
         "recipient_id": RECIPIENT_05["recipient_id"],
         "status": "PARSED",
         "created_at": now,

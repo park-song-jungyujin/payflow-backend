@@ -46,19 +46,19 @@ class FakeDocRef:
 
 
 class FakeQuery:
-    """where().limit().stream() 체인. recipients 조회에만 쓰인다."""
+    """where().where().limit().stream() 체인(AND). recipients 조회에만 쓰인다."""
 
-    def __init__(self, docs, field=None, value=None, limit=None):
-        self._docs, self._field, self._value, self._limit = docs, field, value, limit
+    def __init__(self, docs, filters=None, limit=None):
+        self._docs, self._filters, self._limit = docs, filters or [], limit
 
     def where(self, filter=None):
-        return FakeQuery(self._docs, filter.field_path, filter.value, self._limit)
+        return FakeQuery(self._docs, [*self._filters, (filter.field_path, filter.value)], self._limit)
 
     def limit(self, n):
-        return FakeQuery(self._docs, self._field, self._value, n)
+        return FakeQuery(self._docs, self._filters, n)
 
     def stream(self, transaction=None):
-        hits = [d for d in self._docs if d.get(self._field) == self._value]
+        hits = [d for d in self._docs if all(d.get(f) == v for f, v in self._filters)]
         return iter([FakeSnapshot(d) for d in (hits[: self._limit] if self._limit else hits)])
 
 
@@ -128,6 +128,7 @@ def fake(monkeypatch):
 
 def _create(**overrides):
     kwargs = {
+        "org_id": "org_1",
         "recipient_id": "rcp_1",
         "slack_file_id": "F01ABCDEF",
         "slack_channel_id": "C01ABCDEF",
@@ -140,13 +141,14 @@ def _create(**overrides):
 def test_finds_recipient_by_slack_user(fake):
     fake.data["recipients"]["rcp_1"] = {
         "recipient_id": "rcp_1",
+        "org_id": "org_1",
         "slack_user_id": "U01ABCDEF",
     }
-    assert store.find_recipient_by_slack_user("U01ABCDEF")["recipient_id"] == "rcp_1"
+    assert store.find_recipient_by_slack_user("org_1", "U01ABCDEF")["recipient_id"] == "rcp_1"
 
 
 def test_unknown_slack_user_returns_none(fake):
-    assert store.find_recipient_by_slack_user("U_NOBODY") is None
+    assert store.find_recipient_by_slack_user("org_1", "U_NOBODY") is None
 
 
 def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypatch):
@@ -155,7 +157,7 @@ def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypat
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
     doc = store.create_recipient_from_slack(
-        slack_user_id="U_NEW", paypal_email="new-user@example.com"
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
     )
 
     assert doc["slack_user_id"] == "U_NEW"
@@ -163,7 +165,7 @@ def test_create_recipient_from_slack_writes_unverified_recipient(fake, monkeypat
     assert doc["verified"] is False
     assert doc["status"] == "ACTIVE"
     assert "password" not in doc
-    assert store.find_recipient_by_slack_user("U_NEW")["paypal_email"] == "new-user@example.com"
+    assert store.find_recipient_by_slack_user("org_1", "U_NEW")["paypal_email"] == "new-user@example.com"
 
 
 def test_create_recipient_from_slack_defaults_display_name_to_slack_id(fake, monkeypatch):
@@ -171,7 +173,9 @@ def test_create_recipient_from_slack_defaults_display_name_to_slack_id(fake, mon
     화면에 빈 칸보다는 원시 ID가 낫다."""
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
-    doc = store.create_recipient_from_slack(slack_user_id="U_NEW", paypal_email="new-user@example.com")
+    doc = store.create_recipient_from_slack(
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
+    )
 
     assert doc["display_name"] == "U_NEW"
 
@@ -180,7 +184,7 @@ def test_create_recipient_from_slack_uses_given_display_name(fake, monkeypatch):
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: None)
 
     doc = store.create_recipient_from_slack(
-        slack_user_id="U_NEW", paypal_email="new-user@example.com", display_name="박수현"
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com", display_name="박수현"
     )
 
     assert doc["display_name"] == "박수현"
@@ -190,13 +194,19 @@ def test_create_recipient_from_slack_writes_audit_log(fake, monkeypatch):
     audit_calls = []
     monkeypatch.setattr(store, "record_audit_log", lambda **kw: audit_calls.append(kw))
 
-    store.create_recipient_from_slack(slack_user_id="U_NEW", paypal_email="new-user@example.com")
+    store.create_recipient_from_slack(
+        org_id="org_1", slack_user_id="U_NEW", paypal_email="new-user@example.com"
+    )
 
     assert audit_calls == [
         {
             "actor": "api/src/ingest",
             "action": "RECIPIENT_SELF_REGISTERED",
-            "after": {"recipient_id": audit_calls[0]["after"]["recipient_id"], "slack_user_id": "U_NEW"},
+            "after": {
+                "recipient_id": audit_calls[0]["after"]["recipient_id"],
+                "org_id": "org_1",
+                "slack_user_id": "U_NEW",
+            },
         }
     ]
 

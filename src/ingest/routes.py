@@ -19,6 +19,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from ..auth.store import get_slack_workspace_by_team
 from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
 from ..parsing.store import get_receipt
@@ -99,15 +100,30 @@ async def slack_events(request: Request):
     if event.get("type") != "message" or event.get("bot_id"):
         return {"status": "ignored"}
 
+    team_id = payload.get("team_id", "")
+    workspace = get_slack_workspace_by_team(team_id)
+    if workspace is None:
+        # 이 team_id로 앱을 설치한 기관이 없다 — 서명은 통과했지만(앱 전체
+        # 단위 시크릿) 어느 기관 데이터로 쓸지 알 수 없으므로 거부한다.
+        record_audit_log(
+            actor="api/src/ingest",
+            action="RECEIPT_INGEST_SKIPPED",
+            reason=f"unregistered slack team_id: {team_id}",
+        )
+        raise HTTPException(status_code=401, detail="workspace not installed")
+
+    org_id = workspace["org_id"]
+
     slack_user_id = event.get("user", "")
     # 미등록 사용자 셀프 등록 — 파일 유무와 무관하게 먼저 확인한다. 텍스트만
     # 있는 이메일 답장도 여기서 잡아야 한다(files 필터 뒤에 두면 텍스트만 온
     # 메시지가 그 전에 이미 "ignored"로 버려진다).
-    recipient = find_recipient_by_slack_user(slack_user_id)
+    recipient = find_recipient_by_slack_user(org_id, slack_user_id)
     if recipient is None:
         email = _extract_email(event.get("text", ""))
         if email:
             create_recipient_from_slack(
+                org_id=org_id,
                 slack_user_id=slack_user_id,
                 paypal_email=email,
                 display_name=get_display_name(slack_user_id),
@@ -158,6 +174,7 @@ async def slack_events(request: Request):
     for slack_file in files:
         try:
             receipt_id, created = create_receipt_if_absent(
+                org_id=org_id,
                 recipient_id=recipient["recipient_id"],
                 slack_file_id=slack_file["id"],
                 slack_channel_id=event["channel"],

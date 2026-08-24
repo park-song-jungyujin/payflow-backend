@@ -11,6 +11,7 @@ def record_audit_log(
     *,
     actor: str,
     action: str,
+    org_id: str | None = None,
     run_id: str | None = None,
     actor_type: str = "SYSTEM",
     before: dict | None = None,
@@ -20,6 +21,7 @@ def record_audit_log(
     get_client().collection("audit_logs").add(
         {
             "ts": datetime.now(UTC),
+            "org_id": org_id,
             "actor": actor,
             "actor_type": actor_type,
             "action": action,

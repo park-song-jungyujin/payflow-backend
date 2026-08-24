@@ -3,6 +3,7 @@ from fastapi import FastAPI, Header
 
 load_dotenv()
 
+from .auth.routes import router as auth_router  # noqa: E402
 from .guards.agent_drafts import router as agent_drafts_router  # noqa: E402  (load_dotenv 이후 import)
 from .guards.oidc import verify_oidc  # noqa: E402
 from .guards.routes import router as guards_router  # noqa: E402
@@ -12,6 +13,7 @@ from .payouts.routes import router as payouts_router  # noqa: E402
 from .settlements.routes import router as settlements_router  # noqa: E402
 
 app = FastAPI()
+app.include_router(auth_router)
 app.include_router(guards_router)
 app.include_router(payouts_router)
 app.include_router(agent_drafts_router)

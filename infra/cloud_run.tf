@@ -158,6 +158,14 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "AGENT_SERVICE_URL"
         value = var.agent_oidc_audience
       }
+      env {
+        name  = "GOOGLE_OAUTH_REDIRECT_URI"
+        value = var.google_oauth_redirect_uri
+      }
+      env {
+        name  = "SLACK_OAUTH_REDIRECT_URI"
+        value = var.slack_oauth_redirect_uri
+      }
       dynamic "env" {
         for_each = local.secret_names
         content {

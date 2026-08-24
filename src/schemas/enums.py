@@ -36,6 +36,11 @@ class RecipientStatus(StrEnum):
     DISABLED = "DISABLED"
 
 
+class ExecutorStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
 class ReceiptStatus(StrEnum):
     RECEIVED = "RECEIVED"
     PARSED = "PARSED"
