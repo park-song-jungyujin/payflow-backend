@@ -27,6 +27,64 @@ def _claim(claim_id, receipt_id="rct_1", **overrides):
     return claim
 
 
+# --- GET /settlements/unsettled-claims — web 왼쪽 파트, 정산 실행에 아직
+# 안 들어간 확정 청구 조회 전용(선택 UI 없음, 단순 조회) ---
+
+
+def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch):
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    captured_filter = []
+    monkeypatch.setattr(
+        routes,
+        "select_claims_for_run",
+        lambda filter: captured_filter.append(filter) or claims,
+    )
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts)
+    monkeypatch.setattr(routes, "get_recipient", lambda recipient_id: {"display_name": "박수현"})
+
+    result = routes.list_unsettled_claims()
+
+    # 필터 없이 전체 CONFIRMED claims를 본다 — 정산 실행 생성용 SettlementFilter와
+    # 같은 선정 로직을 재사용하지만 여기서는 조건을 하나도 안 건다.
+    assert captured_filter == [routes.SettlementFilter()]
+    assert result == {
+        "claims": [
+            {
+                "claim_id": "clm_1",
+                "recipient_id": "rcp_1",
+                "amount_minor": 10000,
+                "currency": "KRW",
+                "account_category_code": "TRAVEL",
+                "merchant_name": "스타벅스",
+                "transaction_date": "2026-08-10",
+                "recipient_name": "박수현",
+            }
+        ]
+    }
+
+
+def test_list_unsettled_claims_does_not_call_verification(monkeypatch):
+    """조회 화면이라 Gemini 검증 단발 호출(비용·지연)을 돌리지 않는다 —
+    verify_candidates를 아예 안 부르는지가 이 테스트의 계약이다."""
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: [])
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: {})
+
+    def boom(candidates):
+        raise AssertionError("verify_candidates는 조회 경로에서 불리면 안 된다")
+
+    monkeypatch.setattr(routes, "verify_candidates", boom)
+
+    assert routes.list_unsettled_claims() == {"claims": []}
+
+
+def test_list_unsettled_claims_empty_when_nothing_confirmed(monkeypatch):
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: [])
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: {})
+
+    assert routes.list_unsettled_claims() == {"claims": []}
+
+
 class _FakeStub:
     """create_settlement_run/link_claims_to_run 호출만 기록한다."""
 
