@@ -372,6 +372,7 @@ def test_get_run_includes_claim_details(monkeypatch):
             "merchant_name": "스타벅스",
             "transaction_date": "2026-08-10",
             "recipient_name": "유진",
+            "items": [],
         }
     ]
 

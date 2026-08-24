@@ -217,6 +217,10 @@ def _run_claims(run_id: str) -> list[dict]:
     for c in claims:
         summary = _claim_summary(c, receipts)
         summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
+        # list_unsettled_claims와 같은 이유로 web 전용 필드다 — _claim_summary
+        # (에이전트 enqueue와 공유)에는 안 넣는다. 이게 빠져서 web이
+        # claim.items.length를 undefined에서 읽어 500이 났다.
+        summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
         summaries.append(summary)
     return summaries
 
