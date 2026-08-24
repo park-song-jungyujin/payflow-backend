@@ -151,3 +151,34 @@ def test_slack_callback_stores_workspace_scoped_to_session_org(monkeypatch):
     assert stored[0][0] == "T01ABCDEF"
     assert stored[0][1]["org_id"] == "org_1"
     assert stored[0][1]["bot_token"] == "xoxb-abc"
+
+
+def test_me_returns_org_name(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
+    monkeypatch.setattr(routes, "get_org", lambda org_id: {"org_id": org_id, "name": "Acme Inc"})
+
+    result = routes.me(authorization="Bearer t")
+
+    assert result == {
+        "executor_id": "exe_1",
+        "email": "alice@example.com",
+        "org_id": "org_1",
+        "org_name": "Acme Inc",
+    }
+
+
+def test_me_org_name_none_when_org_missing(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": "org_1", "email": "alice@example.com"},
+    )
+    monkeypatch.setattr(routes, "get_org", lambda org_id: None)
+
+    result = routes.me(authorization="Bearer t")
+
+    assert result["org_name"] is None

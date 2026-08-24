@@ -22,6 +22,7 @@ from .store import (
     create_slack_workspace,
     delete_session,
     get_executor_by_google_sub,
+    get_org,
 )
 
 router = APIRouter()
@@ -103,6 +104,18 @@ def google_callback(body: dict):
         "org_id": executor["org_id"],
         "email": executor["email"],
         "name": executor["name"],
+    }
+
+
+@router.get("/auth/me")
+def me(authorization: str = Header(default="")):
+    session = _session_from_header(authorization)
+    org = get_org(session["org_id"])
+    return {
+        "executor_id": session["executor_id"],
+        "email": session["email"],
+        "org_id": session["org_id"],
+        "org_name": org["name"] if org else None,
     }
 
 

@@ -57,6 +57,11 @@ def create_org(org_id: str, doc: dict) -> None:
     get_client().collection("orgs").document(org_id).set(doc)
 
 
+def get_org(org_id: str) -> dict | None:
+    doc = get_client().collection("orgs").document(org_id).get()
+    return doc.to_dict() if doc.exists else None
+
+
 def create_session(session_token_hash: str, doc: dict) -> None:
     get_client().collection("sessions").document(session_token_hash).set(doc)
 
