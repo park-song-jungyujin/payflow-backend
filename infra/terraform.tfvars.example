@@ -1,1 +1,5 @@
 project_id = "payflow-hackathon-2026"
+
+# 데모 기본값. 실사용이면 최초 DM 20초 뒤 재촉이 나간다 — journal 2026-08-22 참조.
+reminder_delay_seconds    = 20
+claim_request_ttl_seconds = 86400
