@@ -31,7 +31,7 @@ variable "api_oidc_audience" {
 
 variable "agent_oidc_audience" {
   type        = string
-  default     = "https://payflow-agent-6j6g3xdpma-du.a.run.app"
+  default     = "https://payflow-agent-1095757595735.asia-northeast3.run.app"
   description = "api_oidc_audience와 같은 이유 — agent/main.py의 /agents/*가 검증하는 audience."
 }
 
