@@ -143,6 +143,7 @@ def test_slack_callback_stores_workspace_scoped_to_session_org(monkeypatch):
     monkeypatch.setattr(
         routes, "create_slack_workspace", lambda team_id, doc: stored.append((team_id, doc))
     )
+    monkeypatch.setattr(routes, "list_workspace_members", lambda bot_token: [])
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
 
     result = routes.slack_callback({"code": "abc"}, authorization="Bearer t")
@@ -151,6 +152,85 @@ def test_slack_callback_stores_workspace_scoped_to_session_org(monkeypatch):
     assert stored[0][0] == "T01ABCDEF"
     assert stored[0][1]["org_id"] == "org_1"
     assert stored[0][1]["bot_token"] == "xoxb-abc"
+
+
+def test_slack_callback_dms_each_non_bot_member_for_paypal_onboarding(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        routes, "verify_session", lambda token: {"executor_id": "exe_1", "org_id": "org_1"}
+    )
+    monkeypatch.setattr(
+        routes, "exchange_slack_code", lambda code, redirect_uri: {
+            "team_id": "T01ABCDEF", "bot_token": "xoxb-abc", "bot_user_id": "B01", "scope": "files:read"
+        }
+    )
+    monkeypatch.setattr(routes, "create_slack_workspace", lambda team_id, doc: None)
+    monkeypatch.setattr(
+        routes,
+        "list_workspace_members",
+        lambda bot_token: [{"id": "U1"}, {"id": "U2"}] if bot_token == "xoxb-abc" else [],
+    )
+    monkeypatch.setattr(
+        routes,
+        "post_message",
+        lambda **kw: sent.append(kw) or "ts",
+    )
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+
+    routes.slack_callback({"code": "abc"}, authorization="Bearer t")
+
+    assert {call["channel"] for call in sent} == {"U1", "U2"}
+    assert all(call["bot_token"] == "xoxb-abc" for call in sent)
+    assert all("PayPal" in call["text"] for call in sent)
+
+
+def test_slack_callback_member_list_failure_does_not_break_install(monkeypatch):
+    monkeypatch.setattr(
+        routes, "verify_session", lambda token: {"executor_id": "exe_1", "org_id": "org_1"}
+    )
+    monkeypatch.setattr(
+        routes, "exchange_slack_code", lambda code, redirect_uri: {
+            "team_id": "T01ABCDEF", "bot_token": "xoxb-abc", "bot_user_id": "B01", "scope": "files:read"
+        }
+    )
+    monkeypatch.setattr(routes, "create_slack_workspace", lambda team_id, doc: None)
+
+    def boom(bot_token):
+        raise routes.SlackFetchError("users.list error: missing_scope")
+
+    monkeypatch.setattr(routes, "list_workspace_members", boom)
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+
+    result = routes.slack_callback({"code": "abc"}, authorization="Bearer t")
+
+    assert result == {"team_id": "T01ABCDEF", "org_id": "org_1"}
+
+
+def test_slack_callback_dm_failure_for_one_member_does_not_block_others(monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        routes, "verify_session", lambda token: {"executor_id": "exe_1", "org_id": "org_1"}
+    )
+    monkeypatch.setattr(
+        routes, "exchange_slack_code", lambda code, redirect_uri: {
+            "team_id": "T01ABCDEF", "bot_token": "xoxb-abc", "bot_user_id": "B01", "scope": "files:read"
+        }
+    )
+    monkeypatch.setattr(routes, "create_slack_workspace", lambda team_id, doc: None)
+    monkeypatch.setattr(routes, "list_workspace_members", lambda bot_token: [{"id": "U1"}, {"id": "U2"}])
+
+    def flaky_post_message(*, channel, **kw):
+        if channel == "U1":
+            raise routes.SlackSendError("boom")
+        sent.append(channel)
+        return "ts"
+
+    monkeypatch.setattr(routes, "post_message", flaky_post_message)
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+
+    routes.slack_callback({"code": "abc"}, authorization="Bearer t")
+
+    assert sent == ["U2"]
 
 
 def test_me_returns_org_name(monkeypatch):

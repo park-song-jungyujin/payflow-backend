@@ -94,6 +94,19 @@ def test_missing_bot_token_is_transient(monkeypatch):
         slack_client.post_message(channel="C123", text="hi")
 
 
+def test_explicit_bot_token_overrides_env(monkeypatch):
+    calls = _wire(monkeypatch, FakeResponse(json_body={"ok": True, "ts": "1"}))
+    slack_client.post_message(channel="U1", text="hi", bot_token="xoxb-install-specific")
+    assert calls[0]["headers"]["Authorization"] == "Bearer xoxb-install-specific"
+
+
+def test_explicit_bot_token_works_without_env_var(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    calls = _wire(monkeypatch, FakeResponse(json_body={"ok": True, "ts": "1"}))
+    slack_client.post_message(channel="U1", text="hi", bot_token="xoxb-install-specific")
+    assert calls[0]["headers"]["Authorization"] == "Bearer xoxb-install-specific"
+
+
 # --- get_display_name — 셀프 등록 recipients.display_name 조회 (읽기 전용, best-effort) ---
 
 
@@ -147,3 +160,74 @@ def test_get_display_name_returns_none_on_network_error(monkeypatch):
 def test_get_display_name_returns_none_without_bot_token(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
     assert slack_client.get_display_name("U_NEW") is None
+
+
+# --- list_workspace_members — 설치 직후 온보딩 DM 대상 조회 ---
+
+
+def test_list_workspace_members_filters_bots_deleted_and_slackbot(monkeypatch):
+    _wire_get(
+        monkeypatch,
+        FakeResponse(
+            json_body={
+                "ok": True,
+                "members": [
+                    {"id": "U1", "deleted": False, "is_bot": False, "is_app_user": False},
+                    {"id": "U2", "deleted": True, "is_bot": False, "is_app_user": False},
+                    {"id": "U3", "deleted": False, "is_bot": True, "is_app_user": False},
+                    {"id": "U4", "deleted": False, "is_bot": False, "is_app_user": True},
+                    {"id": "USLACKBOT", "deleted": False, "is_bot": False, "is_app_user": False},
+                ],
+                "response_metadata": {"next_cursor": ""},
+            }
+        ),
+    )
+    members = slack_client.list_workspace_members("xoxb-abc")
+    assert [m["id"] for m in members] == ["U1"]
+
+
+def test_list_workspace_members_follows_pagination_cursor(monkeypatch):
+    responses = [
+        FakeResponse(
+            json_body={
+                "ok": True,
+                "members": [{"id": "U1", "deleted": False, "is_bot": False, "is_app_user": False}],
+                "response_metadata": {"next_cursor": "page2"},
+            }
+        ),
+        FakeResponse(
+            json_body={
+                "ok": True,
+                "members": [{"id": "U2", "deleted": False, "is_bot": False, "is_app_user": False}],
+                "response_metadata": {"next_cursor": ""},
+            }
+        ),
+    ]
+    calls = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        calls.append(params)
+        return responses[len(calls) - 1]
+
+    monkeypatch.setattr(slack_client.http_requests, "get", fake_get)
+
+    members = slack_client.list_workspace_members("xoxb-abc")
+
+    assert [m["id"] for m in members] == ["U1", "U2"]
+    assert "cursor" not in calls[0]
+    assert calls[1]["cursor"] == "page2"
+
+
+def test_list_workspace_members_ok_false_raises_fetch_error(monkeypatch):
+    _wire_get(monkeypatch, FakeResponse(json_body={"ok": False, "error": "missing_scope"}))
+    with pytest.raises(slack_client.SlackFetchError):
+        slack_client.list_workspace_members("xoxb-abc")
+
+
+def test_list_workspace_members_network_error_raises_fetch_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise slack_client.http_requests.RequestException("connection reset")
+
+    monkeypatch.setattr(slack_client.http_requests, "get", boom)
+    with pytest.raises(slack_client.SlackFetchError):
+        slack_client.list_workspace_members("xoxb-abc")

@@ -12,6 +12,7 @@ import requests as http_requests
 
 _SLACK_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 _SLACK_USERS_INFO = "https://slack.com/api/users.info"
+_SLACK_USERS_LIST = "https://slack.com/api/users.list"
 _TIMEOUT_SECONDS = 20
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 
@@ -26,6 +27,10 @@ class SlackSendTransient(SlackSendError):
 
 class SlackSendPermanent(SlackSendError):
     """다시 불러도 같은 실패."""
+
+
+class SlackFetchError(RuntimeError):
+    """users.list 조회 실패."""
 
 
 def _bot_token() -> str:
@@ -89,10 +94,56 @@ def get_display_name(slack_user_id: str) -> str | None:
     return profile.get("display_name") or profile.get("real_name") or None
 
 
+def list_workspace_members(bot_token: str) -> list[dict]:
+    """설치 직후 온보딩 DM 대상 조회(auth/routes.py 전용).
+
+    삭제된 계정·봇·app 계정·slackbot은 제외한다 — DM을 보내도 응답할 사람이
+    없거나 chat.postMessage가 애초에 실패한다. 페이지네이션은 users.list의
+    `response_metadata.next_cursor`를 따라간다."""
+    members: list[dict] = []
+    cursor = None
+    while True:
+        params = {"limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        try:
+            response = http_requests.get(
+                _SLACK_USERS_LIST,
+                headers={"Authorization": f"Bearer {bot_token}"},
+                params=params,
+                timeout=_TIMEOUT_SECONDS,
+            )
+            body = response.json()
+        except (http_requests.RequestException, ValueError) as e:
+            raise SlackFetchError(f"users.list failed: {e}") from e
+        if not body.get("ok"):
+            raise SlackFetchError(f"users.list error: {body.get('error')}")
+
+        for member in body.get("members", []):
+            if member.get("deleted") or member.get("is_bot") or member.get("is_app_user"):
+                continue
+            if member.get("id") == "USLACKBOT":
+                continue
+            members.append(member)
+
+        cursor = body.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+    return members
+
+
 def post_message(
-    *, channel: str, text: str, thread_ts: str | None = None, blocks: list[dict] | None = None
+    *,
+    channel: str,
+    text: str,
+    thread_ts: str | None = None,
+    blocks: list[dict] | None = None,
+    bot_token: str | None = None,
 ) -> str:
-    headers = {"Authorization": f"Bearer {_bot_token()}"}
+    """bot_token을 넘기면 그 토큰을 쓴다 — 설치 직후 온보딩 DM은 방금 발급받은
+    워크스페이스 전용 토큰으로 보내야 하고, 그 시점엔 전역 SLACK_BOT_TOKEN
+    env var가 이 워크스페이스 것으로 아직 안 갱신됐을 수 있다."""
+    headers = {"Authorization": f"Bearer {bot_token or _bot_token()}"}
     # blocks를 보내도 text는 함께 보낸다 — 알림 미리보기와 접근성 폴백이 text를 쓴다.
     payload = {"channel": channel, "text": text}
     if blocks is not None:

@@ -13,6 +13,7 @@ from fastapi import APIRouter, Header, HTTPException
 from ulid import ULID
 
 from ..guards.audit import record_audit_log
+from ..ingest.slack_client import SlackFetchError, SlackSendError, list_workspace_members, post_message
 from .google_oauth import GoogleOAuthError, exchange_google_code
 from .session import issue_session, verify_session
 from .slack_oauth import SlackOAuthError, build_authorize_url, exchange_slack_code
@@ -28,6 +29,11 @@ from .store import (
 router = APIRouter()
 
 _ACTOR = "api/src/auth"
+
+_ONBOARDING_DM_TEXT = (
+    "Payflow가 이 워크스페이스에 설치됐어요! 지출 정산을 받으려면 PayPal 수취"
+    " 이메일 주소를 이 DM에 답장해주세요."
+)
 
 
 def _session_from_header(authorization: str) -> dict:
@@ -167,4 +173,34 @@ def slack_callback(body: dict, authorization: str = Header(default="")):
         action="SLACK_WORKSPACE_INSTALLED",
         after={"team_id": install["team_id"]},
     )
+
+    # 온보딩 DM은 best-effort다 — 실패해도 설치 자체는 이미 끝났으니 500으로
+    # 되돌리지 않는다.
+    try:
+        members = list_workspace_members(install["bot_token"])
+    except SlackFetchError as e:
+        record_audit_log(
+            org_id=session["org_id"],
+            actor=_ACTOR,
+            action="SLACK_MEMBER_LIST_FAILED",
+            reason=str(e),
+            after={"team_id": install["team_id"]},
+        )
+        members = []
+
+    sent, failed = 0, 0
+    for member in members:
+        try:
+            post_message(channel=member["id"], text=_ONBOARDING_DM_TEXT, bot_token=install["bot_token"])
+            sent += 1
+        except SlackSendError:
+            failed += 1
+
+    record_audit_log(
+        org_id=session["org_id"],
+        actor=_ACTOR,
+        action="SLACK_MEMBER_ONBOARDING_DM_SENT",
+        after={"team_id": install["team_id"], "sent": sent, "failed": failed},
+    )
+
     return {"team_id": install["team_id"], "org_id": session["org_id"]}
