@@ -356,7 +356,13 @@ def test_get_run_still_strips_approval_token_hash(monkeypatch):
 
 def test_get_run_includes_claim_details(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_1")]
-    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [{"name": "아메리카노", "amount_minor": 4500}],
+        }
+    }
     recipients = {"rcp_1": {"display_name": "유진"}}
     _wire_get(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
 
@@ -372,9 +378,19 @@ def test_get_run_includes_claim_details(monkeypatch):
             "merchant_name": "스타벅스",
             "transaction_date": "2026-08-10",
             "recipient_name": "유진",
-            "items": [],
+            "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
     ]
+
+
+def test_get_run_claim_items_defaults_to_empty_list_when_receipt_has_none(monkeypatch):
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    _wire_get(monkeypatch, claims=claims, receipts=receipts)
+
+    result = routes.get_settlement_run_route("run_1")
+
+    assert result["claims"][0]["items"] == []
 
 
 def test_get_run_claim_recipient_name_falls_back_to_id_when_recipient_missing(monkeypatch):

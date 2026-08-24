@@ -21,6 +21,16 @@ from ..schemas.enums import AccountCategory
 _AMOUNT_NOISE = str.maketrans({",": None, " ": None, "₩": None, "$": None, "¥": None, "€": None, "원": None})
 
 
+class ParsedReceiptItem(BaseModel):
+    """영수증 물품 내역 한 줄. amount_minor가 없는 이유는 위 ParsedReceipt와
+    같다 — 금액 계산은 LLM이 하지 않는다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    amount_text: str | None = None
+
+
 class ParsedReceipt(BaseModel):
     """Gemini structured output이 채우는 형태. 전부 nullable이다 —
     흐릿한 사진에서 일부만 읽히는 게 정상 경로이고(fixture 02), 못 읽은 필드는
@@ -41,6 +51,10 @@ class ParsedReceipt(BaseModel):
     account_category_code: AccountCategory | None = None
     confidence: float | None = None
     raw_text: str = ""
+    # 영수증에 개별 품목이 인쇄돼 있으면 옮긴다. 없거나 못 읽으면 빈 리스트 —
+    # 정산 판단(§5 게이트, amount_parsed 등)은 여전히 전체 amount_text 기준이라
+    # items가 비어도 파싱 자체는 정상이다.
+    items: list[ParsedReceiptItem] = []
 
 
 def amount_to_minor(amount_text: str | None, currency: str | None) -> int | None:

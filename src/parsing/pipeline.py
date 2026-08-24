@@ -93,8 +93,16 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         content_type="text/plain; charset=utf-8",
     )
 
-    # 숫자는 코드가 만든다 (공통 CLAUDE.md 절대 규칙 3).
+    # 숫자는 코드가 만든다 (공통 CLAUDE.md 절대 규칙 3). 품목별 금액도 같은
+    # 함수·같은 currency로 변환한다 — 품목은 영수증 전체와 다른 통화를 쓸 수 없다.
     amount_minor = amount_to_minor(parsed.amount_text, parsed.currency)
+    items = [
+        {
+            "name": mask_pii(item.name),
+            "amount_minor": amount_to_minor(item.amount_text, parsed.currency),
+        }
+        for item in parsed.items
+    ]
     signals = build_parse_signals(parsed, amount_minor)
     category, source, confidence = route_category(parsed, signals)
 
@@ -111,6 +119,7 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         # ★ merchant_name과 같은 이유로 마스킹한다 — OCR이 읽은 자유 텍스트라
         # 카드번호 등 마스킹 대상 패턴을 우연히 포함할 수 있다.
         "receipt_serial_number": mask_pii(parsed.receipt_serial_number),
+        "items": items,
         "parsed_amount_minor": amount_minor,
         "currency": parsed.currency,
         "account_category_code": category.value,
