@@ -11,6 +11,7 @@
 일시적 실패에 FAILED를 찍으면 멀쩡한 영수증이 재요청 DM 대상이 된다.
 """
 
+import os
 import re
 
 import requests as http_requests
@@ -50,10 +51,16 @@ class SlackFile(BaseModel):
 
 def _bot_token(org_id: str) -> str:
     workspace = get_slack_workspace_by_org(org_id)
-    if workspace is None:
+    if workspace is not None:
+        return workspace["bot_token"]
+    # ingest/routes.py와 같은 폴백 — 정식 설치(/auth/slack/callback)를 아직
+    # 아무도 안 거쳤어도, ingest/slack_client.py가 발송용으로 이미 쓰는 전역
+    # SLACK_BOT_TOKEN이 있으면 그걸로 다운로드도 시도한다.
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
         # 설정 누락이지 영수증 문제가 아니다. 영구 실패로 찍으면 안 된다.
         raise TransientParseError(f"no slack_workspaces installed for org_id={org_id}")
-    return workspace["bot_token"]
+    return token
 
 
 def download_slack_file(slack_file_id: str, org_id: str) -> SlackFile:

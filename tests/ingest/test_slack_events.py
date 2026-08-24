@@ -80,6 +80,7 @@ def client(monkeypatch):
         "get_slack_workspace_by_team",
         lambda team_id: {"org_id": "org_1"} if team_id == "T01ABCDEF" else None,
     )
+    monkeypatch.setattr(routes, "get_or_create_default_org_id", lambda: "org_default")
     monkeypatch.setattr(
         routes,
         "find_recipient_by_slack_user",
@@ -170,14 +171,14 @@ def test_unregistered_user_is_acked_without_receipt(client):
     assert client.calls["registered"] == []
 
 
-def test_unknown_workspace_is_rejected(client):
-    """team_id로 설치된 워크스페이스를 못 찾으면 서명은 통과했어도 어느
-    기관 데이터로 쓸지 알 수 없으므로 거부한다."""
+def test_unknown_workspace_falls_back_to_default_org(client):
+    """team_id로 정식 설치된 워크스페이스를 못 찾아도(/auth/slack/callback을
+    아직 아무도 안 거쳤어도), 서명(앱 전체 단위 시크릿)은 이미 통과했으니
+    기본 기관으로 자동 연결해 처리한다 — 거부하지 않는다."""
     payload = _file_message(["F_AAA"], team_id="T_UNKNOWN")
     response = _post(client, payload)
-    assert response.status_code == 401
-    assert client.calls["created"] == []
-    assert client.calls["registered"] == []
+    assert response.status_code == 200
+    assert [c["org_id"] for c in client.calls["created"]] == ["org_default"]
 
 
 def test_unregistered_user_without_email_gets_registration_prompt(client):

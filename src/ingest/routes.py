@@ -19,7 +19,7 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from ..auth.store import get_slack_workspace_by_team
+from ..auth.store import get_or_create_default_org_id, get_slack_workspace_by_team
 from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
 from ..parsing.store import get_receipt
@@ -102,17 +102,18 @@ async def slack_events(request: Request):
 
     team_id = payload.get("team_id", "")
     workspace = get_slack_workspace_by_team(team_id)
+    # 로그인 게이트를 뗀 것과 같은 이유·같은 방식(guards/routes.py,
+    # settlements/routes.py) — 이 team_id로 정식 설치(/auth/slack/callback)를
+    # 아직 아무도 안 거쳤어도, 서명(앱 전체 단위 시크릿)은 이미 통과했으니
+    # 기본 기관으로 자동 연결한다. 진짜 멀티테넌시가 필요해지면 이 폴백을
+    # 떼고 정식 설치를 다시 강제하면 된다.
     if workspace is None:
-        # 이 team_id로 앱을 설치한 기관이 없다 — 서명은 통과했지만(앱 전체
-        # 단위 시크릿) 어느 기관 데이터로 쓸지 알 수 없으므로 거부한다.
         record_audit_log(
             actor="api/src/ingest",
-            action="RECEIPT_INGEST_SKIPPED",
-            reason=f"unregistered slack team_id: {team_id}",
+            action="RECEIPT_INGEST_AUTO_LINKED",
+            reason=f"unregistered slack team_id: {team_id}, falling back to default org",
         )
-        raise HTTPException(status_code=401, detail="workspace not installed")
-
-    org_id = workspace["org_id"]
+    org_id = workspace["org_id"] if workspace else get_or_create_default_org_id()
 
     slack_user_id = event.get("user", "")
     # 미등록 사용자 셀프 등록 — 파일 유무와 무관하게 먼저 확인한다. 텍스트만
