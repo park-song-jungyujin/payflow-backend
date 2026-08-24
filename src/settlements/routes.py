@@ -122,13 +122,14 @@ def list_settlements(authorization: str = Header(default="")):
 
 
 @router.get("/settlements/unsettled-claims")
-def list_unsettled_claims():
+def list_unsettled_claims(authorization: str = Header(default="")):
     """web 대시보드 왼쪽 파트 — 아직 어떤 정산 실행에도 안 들어간 확정 청구
     목록. select_claims_for_run(필터 없음)이 이미 "정산 대상 CONFIRMED claims
     전체"를 준다 — 여기서 검증(verify_candidates)은 돌리지 않는다. 검증은
     Gemini 단발 호출이라 비용·지연이 있고, 이건 실행을 만드는 게 아니라
     조회만 하는 화면이라 필요 없다 — 실제 검증은 정산 실행을 만들 때 한다."""
-    candidates = select_claims_for_run(SettlementFilter())
+    session = _session_from_header(authorization)
+    candidates = select_claims_for_run(session["org_id"], SettlementFilter())
     receipts = get_receipts({c["receipt_id"] for c in candidates})
     name_cache: dict[str, str] = {}
     claims = []
