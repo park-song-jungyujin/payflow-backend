@@ -85,6 +85,19 @@ resource "google_secret_manager_secret_iam_member" "run_service_agent_secret_acc
   member    = "serviceAccount:service-${data.google_project.current.number}@serverless-robot-prod.iam.gserviceaccount.com"
 }
 
+# web 배포 워크플로가 next build 시점에 NEXT_PUBLIC_GOOGLE_CLIENT_ID를 굽기 위해
+# GOOGLE_CLIENT_ID만 읽는다 — client id는 비밀이 아니다(auth/google_oauth.py
+# 주석 참조, 브라우저 리다이렉트 URL에 그대로 노출됨). 그래도 Secret Manager에
+# 이미 있는 값을 그대로 재사용하는 게 값을 이중 관리하는 것보다 낫다. web
+# deployer SA에는 GOOGLE_CLIENT_SECRET·PayPal·Slack 시크릿 접근을 주지 않는다
+# — 이 바인딩 하나만 좁게 추가한다.
+resource "google_secret_manager_secret_iam_member" "web_deployer_google_client_id_access" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.secrets["GOOGLE_CLIENT_ID"].secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.web_deployer.email}"
+}
+
 # --- Cloud Run invoker ---
 # web은 공개(브라우저가 직접 침). api도 공개(Slack webhook + web BFF).
 # agent는 비공개 — Cloud Tasks가 api SA로 OIDC 토큰을 만들어 부르는 경로만 허용한다.
