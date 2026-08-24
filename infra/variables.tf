@@ -42,8 +42,12 @@ variable "google_oauth_redirect_uri" {
 }
 
 variable "slack_oauth_redirect_uri" {
-  type        = string
-  default     = "https://payflow-api-1095757595735.asia-northeast3.run.app/auth/slack/callback"
+  type = string
+  # api를 직접 가리키면 안 된다 — /auth/slack/callback은 POST 전용이라 Slack의
+  # 브라우저 GET 리다이렉트를 못 받는다(405). google_oauth_redirect_uri와 같은
+  # 이유로 web의 BFF 라우트를 거쳐야 한다(그 라우트가 세션 쿠키를 들고 api에
+  # POST로 넘긴다).
+  default     = "https://payflow-web-1095757595735.asia-northeast3.run.app/api/auth/slack/callback"
   description = "auth/slack_oauth.py의 SLACK_OAUTH_REDIRECT_URI. Slack App의 Redirect URLs와 정확히 일치해야 한다."
 }
 
