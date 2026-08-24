@@ -13,12 +13,10 @@ from ..payouts.store import get_client
 
 
 def get_or_create_default_org_id() -> str:
-    """로그인 게이트를 뗀 뒤 web 대시보드가 쓰는 단일 기관.
-
-    3인 팀 해커톤이라 사실상 org가 하나뿐이다 — Firestore에 이미 org가 있으면
-    (Google 로그인으로 만들어졌던 것 포함) 그걸 그대로 쓰고, 하나도 없으면
-    새로 만든다. org_id를 쓰는 다른 기능(payouts 다중 수취인, Slack 셀프 등록
-    등)은 이 함수와 무관하게 그대로 동작한다."""
+    """ingest/routes.py — Slack 워크스페이스가 아직 /auth/slack/install로 등록되기
+    전에 영수증이 먼저 들어올 때 쓰는 폴백 기관. 대시보드 로그인 게이트와는
+    무관하다(그쪽은 세션에서 org_id를 받는다) — Firestore에 org가 하나도 없으면
+    새로 만들고, 있으면 그대로 쓴다."""
     docs = get_client().collection("orgs").limit(1).stream()
     existing = next(iter(docs), None)
     if existing is not None:
