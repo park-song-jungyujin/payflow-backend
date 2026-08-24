@@ -15,7 +15,7 @@ import pytest
 
 from src.parsing import pipeline
 from src.parsing import store as parsing_store
-from src.parsing.models import ParsedReceipt
+from src.parsing.models import ParsedReceipt, ParsedReceiptItem
 from src.parsing.slack_files import PermanentParseError, SlackFile, TransientParseError
 from src.parsing.storage import LocalObjectStore
 from src.schemas.enums import AccountCategory
@@ -123,6 +123,33 @@ def test_writes_parsed_status_and_fields(monkeypatch, wired):
     assert updates["llm_confidence"] == 0.93
     assert updates["image_gcs_uri"].startswith("file://")
     assert updates["raw_text_gcs_uri"].startswith("file://")
+
+
+def test_items_converted_to_minor_and_masked(monkeypatch, wired):
+    result = _clean_result(
+        items=[
+            ParsedReceiptItem(name="아메리카노 010-1234-5678", amount_text="4,500"),
+            ParsedReceiptItem(name="배송비", amount_text=None),
+        ]
+    )
+    _install_parser(monkeypatch, RecordingParser(result=result))
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    _, updates = wired["updates"][-1]
+    assert updates["items"] == [
+        {"name": "아메리카노 [PHONE]", "amount_minor": 4500},
+        {"name": "배송비", "amount_minor": None},
+    ]
+
+
+def test_empty_items_defaults_to_empty_list(monkeypatch, wired):
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    _, updates = wired["updates"][-1]
+    assert updates["items"] == []
 
 
 def test_transaction_date_is_stored_as_yyyy_mm_dd_string(monkeypatch, wired):

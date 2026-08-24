@@ -217,9 +217,11 @@ def _run_claims(run_id: str) -> list[dict]:
     for c in claims:
         summary = _claim_summary(c, receipts)
         summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
-        # list_unsettled_claims와 같은 이유로 web 전용 필드다 — _claim_summary
-        # (에이전트 enqueue와 공유)에는 안 넣는다. 이게 빠져서 web이
-        # claim.items.length를 undefined에서 읽어 500이 났다.
+        # items도 recipient_name과 같은 이유로 web 전용이다 — _claim_summary(에이전트
+        # enqueue와 공유)에는 넣지 않는다. 이상징후 판단에 품목 단위 정보가
+        # 필요하지 않고, §6 "인젝션 표면 축소" 원칙상 안 쓰는 필드는 안 보낸다.
+        # (list_unsettled_claims도 같은 이유로 web 전용 — 빠지면 web이
+        # claim.items.length를 undefined에서 읽어 500이 난다.)
         summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
         summaries.append(summary)
     return summaries
