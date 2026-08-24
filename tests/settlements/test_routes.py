@@ -31,6 +31,14 @@ def _claim(claim_id, receipt_id="rct_1", **overrides):
 # 안 들어간 확정 청구 조회 전용(선택 UI 없음, 단순 조회) ---
 
 
+def _wire_session(monkeypatch, *, org_id="org_1"):
+    monkeypatch.setattr(
+        routes,
+        "verify_session",
+        lambda token: {"executor_id": "exe_1", "org_id": org_id, "email": "alice@example.com"},
+    )
+
+
 def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_1")]
     receipts = {
@@ -40,20 +48,22 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
     }
-    captured_filter = []
+    _wire_session(monkeypatch, org_id="org_1")
+    captured_args = []
     monkeypatch.setattr(
         routes,
         "select_claims_for_run",
-        lambda filter: captured_filter.append(filter) or claims,
+        lambda org_id, filter: captured_args.append((org_id, filter)) or claims,
     )
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts)
     monkeypatch.setattr(routes, "get_recipient", lambda recipient_id: {"display_name": "박수현"})
 
-    result = routes.list_unsettled_claims()
+    result = routes.list_unsettled_claims(authorization="Bearer t")
 
-    # 필터 없이 전체 CONFIRMED claims를 본다 — 정산 실행 생성용 SettlementFilter와
-    # 같은 선정 로직을 재사용하지만 여기서는 조건을 하나도 안 건다.
-    assert captured_filter == [routes.SettlementFilter()]
+    # 필터 없이 이 세션의 org 전체 CONFIRMED claims를 본다 — 정산 실행 생성용
+    # SettlementFilter와 같은 선정 로직을 재사용하지만 여기서는 조건을 하나도
+    # 안 걸고, org_id는 세션에서 검증된 값만 쓴다(클라이언트가 못 정한다).
+    assert captured_args == [("org_1", routes.SettlementFilter())]
     assert result == {
         "claims": [
             {
@@ -74,7 +84,8 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
 def test_list_unsettled_claims_does_not_call_verification(monkeypatch):
     """조회 화면이라 Gemini 검증 단발 호출(비용·지연)을 돌리지 않는다 —
     verify_candidates를 아예 안 부르는지가 이 테스트의 계약이다."""
-    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: [])
+    _wire_session(monkeypatch)
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda org_id, filter: [])
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: {})
 
     def boom(candidates):
@@ -82,14 +93,15 @@ def test_list_unsettled_claims_does_not_call_verification(monkeypatch):
 
     monkeypatch.setattr(routes, "verify_candidates", boom)
 
-    assert routes.list_unsettled_claims() == {"claims": []}
+    assert routes.list_unsettled_claims(authorization="Bearer t") == {"claims": []}
 
 
 def test_list_unsettled_claims_empty_when_nothing_confirmed(monkeypatch):
-    monkeypatch.setattr(routes, "select_claims_for_run", lambda filter: [])
+    _wire_session(monkeypatch)
+    monkeypatch.setattr(routes, "select_claims_for_run", lambda org_id, filter: [])
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: {})
 
-    assert routes.list_unsettled_claims() == {"claims": []}
+    assert routes.list_unsettled_claims(authorization="Bearer t") == {"claims": []}
 
 
 class _FakeStub:
