@@ -128,6 +128,9 @@ def list_unsettled_claims():
     for c in candidates:
         summary = _claim_summary(c, receipts)
         summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
+        # _run_claims와 같은 이유로 web 전용 필드다 — _claim_summary(에이전트
+        # enqueue와 공유)에는 안 넣는다.
+        summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
         claims.append(summary)
     return {"claims": claims}
 

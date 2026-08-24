@@ -33,7 +33,13 @@ def _claim(claim_id, receipt_id="rct_1", **overrides):
 
 def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch):
     claims = [_claim("clm_1", receipt_id="rct_1")]
-    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [{"name": "아메리카노", "amount_minor": 4500}],
+        }
+    }
     captured_filter = []
     monkeypatch.setattr(
         routes,
@@ -59,6 +65,7 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
                 "merchant_name": "스타벅스",
                 "transaction_date": "2026-08-10",
                 "recipient_name": "박수현",
+                "items": [{"name": "아메리카노", "amount_minor": 4500}],
             }
         ]
     }
