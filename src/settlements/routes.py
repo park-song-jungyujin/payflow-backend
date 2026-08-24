@@ -114,6 +114,27 @@ def list_settlements():
     return {"settlement_runs": runs}
 
 
+@router.get("/settlements/unsettled-claims")
+def list_unsettled_claims():
+    """web 대시보드 왼쪽 파트 — 아직 어떤 정산 실행에도 안 들어간 확정 청구
+    목록. select_claims_for_run(필터 없음)이 이미 "정산 대상 CONFIRMED claims
+    전체"를 준다 — 여기서 검증(verify_candidates)은 돌리지 않는다. 검증은
+    Gemini 단발 호출이라 비용·지연이 있고, 이건 실행을 만드는 게 아니라
+    조회만 하는 화면이라 필요 없다 — 실제 검증은 정산 실행을 만들 때 한다."""
+    candidates = select_claims_for_run(SettlementFilter())
+    receipts = get_receipts({c["receipt_id"] for c in candidates})
+    name_cache: dict[str, str] = {}
+    claims = []
+    for c in candidates:
+        summary = _claim_summary(c, receipts)
+        summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
+        # _run_claims와 같은 이유로 web 전용 필드다 — _claim_summary(에이전트
+        # enqueue와 공유)에는 안 넣는다.
+        summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        claims.append(summary)
+    return {"claims": claims}
+
+
 @router.post("/settlements/runs")
 def create_settlement_run_route(body: dict | None = None):
     filter = SettlementFilter(**(body or {}).get("filter", {}))
