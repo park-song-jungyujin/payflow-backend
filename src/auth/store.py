@@ -4,9 +4,39 @@
 만들 이유가 없다.
 """
 
+from datetime import UTC, datetime
+
 from google.cloud.firestore_v1.base_query import FieldFilter
+from ulid import ULID
 
 from ..payouts.store import get_client
+
+
+def get_or_create_default_org_id() -> str:
+    """로그인 게이트를 뗀 뒤 web 대시보드가 쓰는 단일 기관.
+
+    3인 팀 해커톤이라 사실상 org가 하나뿐이다 — Firestore에 이미 org가 있으면
+    (Google 로그인으로 만들어졌던 것 포함) 그걸 그대로 쓰고, 하나도 없으면
+    새로 만든다. org_id를 쓰는 다른 기능(payouts 다중 수취인, Slack 셀프 등록
+    등)은 이 함수와 무관하게 그대로 동작한다."""
+    docs = get_client().collection("orgs").limit(1).stream()
+    existing = next(iter(docs), None)
+    if existing is not None:
+        return existing.id
+
+    org_id = f"org_{ULID()}"
+    now = datetime.now(UTC)
+    create_org(
+        org_id,
+        {
+            "org_id": org_id,
+            "name": "Default Org",
+            "created_by": "system",
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return org_id
 
 
 def get_executor_by_google_sub(google_sub: str) -> dict | None:
