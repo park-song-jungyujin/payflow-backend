@@ -136,3 +136,115 @@ def test_missing_authorization_returns_401(monkeypatch, _patch):
     with pytest.raises(HTTPException) as exc:
         agent_drafts.write_agent_draft(_body(), authorization="")
     assert exc.value.status_code == 401
+
+
+# --- Gemma 번역 배선 — payflow-agent는 한국어만 쓰고, 여기서 en 필드를 채운다 ---
+
+
+def test_claimant_requery_message_gets_translated(monkeypatch, _patch):
+    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
+    calls = []
+    monkeypatch.setattr(
+        agent_drafts,
+        "translate_lines",
+        lambda texts: calls.append(texts) or ["Please resend the receipt."],
+    )
+
+    agent_drafts.write_agent_draft(
+        _body(payload={"needs_requery": True, "requery_message": "영수증을 다시 보내주세요."})
+    )
+
+    assert calls == [["영수증을 다시 보내주세요."]]
+    stored = _patch["client"].data["CLAIMANT:rct_1"]
+    assert stored["payload"]["requery_message_en"] == "Please resend the receipt."
+
+
+def test_claimant_no_requery_message_skips_translation(monkeypatch, _patch):
+    """needs_requery=False처럼 requery_message가 없으면 번역 호출 자체를 안 한다."""
+    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
+    calls = []
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
+
+    agent_drafts.write_agent_draft(_body(payload={"needs_requery": False}))
+
+    assert calls == []
+
+
+def test_claimant_translation_failure_keeps_korean_draft(monkeypatch, _patch):
+    """번역이 실패해도(None) 원본 한국어 draft 쓰기는 막지 않는다."""
+    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: None)
+
+    result = agent_drafts.write_agent_draft(
+        _body(payload={"needs_requery": True, "requery_message": "영수증을 다시 보내주세요."})
+    )
+
+    assert result["status"] == "ok"
+    stored = _patch["client"].data["CLAIMANT:rct_1"]
+    assert "requery_message_en" not in stored["payload"]
+    assert stored["payload"]["requery_message"] == "영수증을 다시 보내주세요."
+
+
+def test_executor_summary_and_anomalies_get_translated_in_one_call(monkeypatch, _patch):
+    calls = []
+
+    def fake_translate(texts):
+        calls.append(texts)
+        return ["summary in english", "anomaly 1 in english", "anomaly 2 in english"]
+
+    monkeypatch.setattr(agent_drafts, "translate_lines", fake_translate)
+
+    result = agent_drafts.write_agent_draft(
+        _body(
+            agent="EXECUTOR",
+            target_type="SETTLEMENT_RUN",
+            target_id="run_1",
+            task_id="EXECUTOR:run_1",
+            payload={
+                "summary_text": "요약",
+                "anomalies": ["이상징후 1", "이상징후 2"],
+            },
+        )
+    )
+
+    assert result["status"] == "ok"
+    # summary_text가 맨 앞, anomalies가 순서대로 뒤 — 한 번의 호출로 합쳐 보낸다.
+    assert calls == [["요약", "이상징후 1", "이상징후 2"]]
+    stored = _patch["client"].data["EXECUTOR:run_1"]
+    assert stored["payload"]["summary_text_en"] == "summary in english"
+    assert stored["payload"]["anomalies_en"] == ["anomaly 1 in english", "anomaly 2 in english"]
+
+
+def test_executor_empty_summary_skips_translation(monkeypatch, _patch):
+    calls = []
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
+
+    agent_drafts.write_agent_draft(
+        _body(
+            agent="EXECUTOR",
+            target_type="SETTLEMENT_RUN",
+            target_id="run_1",
+            task_id="EXECUTOR:run_1",
+            payload={"summary_text": "", "anomalies": []},
+        )
+    )
+
+    assert calls == []
+
+
+def test_safety_draft_is_never_translated(monkeypatch, _patch):
+    """safety는 아직 아무 데도 안 보이는 출력이다 — 번역 대상이 아니다."""
+    calls = []
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
+
+    agent_drafts.write_agent_draft(
+        _body(
+            agent="SAFETY",
+            target_type="SETTLEMENT_RUN",
+            target_id="run_1",
+            task_id="SAFETY:run_1",
+            payload={"risk_report": "위험 없음"},
+        )
+    )
+
+    assert calls == []

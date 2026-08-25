@@ -157,6 +157,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.gemini_model_id
       }
       env {
+        name  = "GEMMA_MODEL_ID"
+        value = var.gemma_model_id
+      }
+      env {
         name  = "VERTEX_LOCATION"
         value = var.vertex_location
       }

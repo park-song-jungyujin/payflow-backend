@@ -68,6 +68,12 @@ variable "gemini_model_id" {
   description = "api의 영수증 파싱/검증 단발 Gemini 호출(ADK 아님)이 쓰는 모델 ID."
 }
 
+variable "gemma_model_id" {
+  type        = string
+  default     = "gemma-3-27b-it"
+  description = "api의 에이전트 출력 영어 번역 단발 호출(guards/translate.py, ADK 아님)이 쓰는 모델 ID. Vertex AI Model Garden에 이 리전(var.vertex_location)으로 실제 호스팅되는지 배포 전 확인 필요 — 기본값은 미검증."
+}
+
 variable "vertex_location" {
   type        = string
   default     = "global"
