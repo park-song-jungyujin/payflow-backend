@@ -44,6 +44,7 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
     receipts = {
         "rct_1": {
             "merchant_name": "스타벅스",
+            "merchant_name_en": "Starbucks",
             "transaction_date": date(2026, 8, 10),
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
@@ -76,6 +77,7 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
                 "transaction_date": "2026-08-10",
                 "recipient_name": "박수현",
                 "items": [{"name": "아메리카노", "amount_minor": 4500}],
+                "merchant_name_en": "Starbucks",
             }
         ]
     }
@@ -415,6 +417,7 @@ def test_get_run_includes_claim_details(monkeypatch):
     receipts = {
         "rct_1": {
             "merchant_name": "스타벅스",
+            "merchant_name_en": "Starbucks",
             "transaction_date": date(2026, 8, 10),
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
@@ -435,6 +438,7 @@ def test_get_run_includes_claim_details(monkeypatch):
             "transaction_date": "2026-08-10",
             "recipient_name": "유진",
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
+            "merchant_name_en": "Starbucks",
         }
     ]
 

@@ -147,7 +147,9 @@ def list_unsettled_claims(authorization: str = Header(default="")):
         summary["recipient_name"] = _recipient_display_name(c["recipient_id"], name_cache)
         # _run_claims와 같은 이유로 web 전용 필드다 — _claim_summary(에이전트
         # enqueue와 공유)에는 안 넣는다.
-        summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        receipt = receipts.get(c["receipt_id"]) or {}
+        summary["items"] = receipt.get("items", [])
+        summary["merchant_name_en"] = receipt.get("merchant_name_en")
         claims.append(summary)
     return {"claims": claims}
 
@@ -261,7 +263,9 @@ def _run_claims(run_id: str) -> list[dict]:
         # 필요하지 않고, §6 "인젝션 표면 축소" 원칙상 안 쓰는 필드는 안 보낸다.
         # (list_unsettled_claims도 같은 이유로 web 전용 — 빠지면 web이
         # claim.items.length를 undefined에서 읽어 500이 난다.)
-        summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        receipt = receipts.get(c["receipt_id"]) or {}
+        summary["items"] = receipt.get("items", [])
+        summary["merchant_name_en"] = receipt.get("merchant_name_en")
         summaries.append(summary)
     return summaries
 

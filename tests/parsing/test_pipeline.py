@@ -152,6 +152,74 @@ def test_empty_items_defaults_to_empty_list(monkeypatch, wired):
     assert updates["items"] == []
 
 
+def test_merchant_and_items_translated_to_english(monkeypatch, wired):
+    """web이 언어 전환 시 즉시 보여줄 영어를 파싱 시점에 미리 만들어 둔다 —
+    마스킹 이후 텍스트(merchant_name 다음 각 item.name 순서)를 한 번에 번역
+    요청하고, 응답을 같은 순서로 merchant_name_en/items[].name_en에 되돌려
+    꽂는다."""
+    result = _clean_result(
+        items=[
+            ParsedReceiptItem(name="아메리카노", amount_text="4,500"),
+            ParsedReceiptItem(name="배송비", amount_text=None),
+        ]
+    )
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    captured_texts = []
+
+    def fake_translate(texts):
+        captured_texts.append(texts)
+        return [f"[EN] {t}" for t in texts]
+
+    monkeypatch.setattr(pipeline, "translate_lines", fake_translate)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert captured_texts == [["스타벅스 강남점 [PHONE]", "아메리카노", "배송비"]]
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name_en"] == "[EN] 스타벅스 강남점 [PHONE]"
+    assert updates["items"] == [
+        {"name": "아메리카노", "amount_minor": 4500, "name_en": "[EN] 아메리카노"},
+        {"name": "배송비", "amount_minor": None, "name_en": "[EN] 배송비"},
+    ]
+
+
+def test_translation_failure_leaves_english_fields_absent(monkeypatch, wired):
+    """번역은 부가 기능이다 — 실패해도(None) 파싱 자체는 그대로 PARSED로
+    끝나고, 영어 필드만 조용히 비게 된다."""
+    result = _clean_result(items=[ParsedReceiptItem(name="아메리카노", amount_text="4,500")])
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    monkeypatch.setattr(pipeline, "translate_lines", lambda texts: None)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name_en"] is None
+    assert updates["items"] == [{"name": "아메리카노", "amount_minor": 4500}]
+
+
+def test_no_merchant_name_still_translates_items(monkeypatch, wired):
+    """merchant_name을 못 읽었어도(None) item 번역까지 건너뛸 이유는 없다 —
+    번역 대상 목록에서 merchant_name만 빠지고 인덱스가 밀리지 않아야 한다."""
+    result = _clean_result(
+        merchant_name=None, items=[ParsedReceiptItem(name="아메리카노", amount_text="4,500")]
+    )
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    captured_texts = []
+
+    def fake_translate(texts):
+        captured_texts.append(texts)
+        return [f"[EN] {t}" for t in texts]
+
+    monkeypatch.setattr(pipeline, "translate_lines", fake_translate)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert captured_texts == [["아메리카노"]]
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name_en"] is None
+    assert updates["items"] == [{"name": "아메리카노", "amount_minor": 4500, "name_en": "[EN] 아메리카노"}]
+
+
 def test_transaction_date_is_stored_as_yyyy_mm_dd_string(monkeypatch, wired):
     """§1 시각 — transaction_date는 유일한 예외다. Timestamp로 저장하면
     KST/UTC 경계에서 하루가 밀린다."""

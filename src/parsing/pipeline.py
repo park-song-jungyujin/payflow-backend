@@ -12,6 +12,7 @@ account_category_code = UNCLASSIFIED로 표현된다 (§5).
 from datetime import UTC, datetime
 
 from ..guards.audit import record_audit_log
+from ..guards.translate import translate_lines
 from ..ingest.claims import ClaimNotCreatable, build_claim
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
@@ -96,6 +97,7 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     # 숫자는 코드가 만든다 (공통 CLAUDE.md 절대 규칙 3). 품목별 금액도 같은
     # 함수·같은 currency로 변환한다 — 품목은 영수증 전체와 다른 통화를 쓸 수 없다.
     amount_minor = amount_to_minor(parsed.amount_text, parsed.currency)
+    merchant_name = mask_pii(parsed.merchant_name)
     items = [
         {
             "name": mask_pii(item.name),
@@ -103,6 +105,23 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         }
         for item in parsed.items
     ]
+
+    # web이 언어 전환 시 즉시 보여줄 영어 번역을 파싱 시점에 미리 만들어 둔다 —
+    # executor 분석과 달리 web 전용이라 나중에 에이전트 draft를 기다릴 필요가
+    # 없다. 마스킹 이후 텍스트만 번역 대상으로 보낸다(§2 — Firestore로 나가는
+    # 자유 텍스트는 마스킹 이후여야 한다는 원칙과 같다). 실패하면 조용히
+    # 건너뛴다 — translate.py와 같은 정책, 번역은 부가 기능이라 파싱 자체를
+    # 막지 않는다.
+    translate_texts = ([merchant_name] if merchant_name else []) + [item["name"] for item in items]
+    translated = translate_lines(translate_texts) if translate_texts else []
+    merchant_name_en = None
+    if translated:
+        item_translations = translated[1:] if merchant_name else translated
+        if merchant_name:
+            merchant_name_en = translated[0]
+        for item, name_en in zip(items, item_translations):
+            item["name_en"] = name_en
+
     signals = build_parse_signals(parsed, amount_minor)
     category, source, confidence = route_category(parsed, signals)
 
@@ -111,7 +130,8 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         "image_gcs_uri": image_uri,
         "raw_text_gcs_uri": raw_text_uri,
         # ★ 마스킹은 여기서. Firestore로 나가는 유일한 자유 텍스트다.
-        "merchant_name": mask_pii(parsed.merchant_name),
+        "merchant_name": merchant_name,
+        "merchant_name_en": merchant_name_en,
         # §1 시각 예외 — transaction_date는 YYYY-MM-DD 문자열이다.
         # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
         "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
