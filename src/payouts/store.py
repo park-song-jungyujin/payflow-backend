@@ -111,6 +111,19 @@ def increment_recipient_monthly(recipient_id: str, delta_minor: int) -> None:
     )
 
 
+def list_executing_settlement_runs() -> list[dict]:
+    """Cloud Scheduler sweep 전용 — org 무관하게 status=EXECUTING인 run 전부.
+    개별 reconcile 재예약 체인이 끊긴 run(enqueue_reconcile 실패 등)을 잡아내는
+    안전망이라 org_id로 좁히지 않는다."""
+    docs = (
+        get_client()
+        .collection("settlement_runs")
+        .where(filter=FieldFilter("status", "==", "EXECUTING"))
+        .stream()
+    )
+    return [d.to_dict() for d in docs]
+
+
 def find_run_id_by_payout_batch_id(payout_batch_id: str) -> str | None:
     docs = (
         get_client()

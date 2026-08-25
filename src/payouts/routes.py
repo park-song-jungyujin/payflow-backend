@@ -1,5 +1,8 @@
 """schema-contract.md §10 — POST /payouts, /payouts/{run_id}/retry, /webhooks/paypal.
 Cloud Tasks 전용: /tasks/execute-payout, /tasks/reconcile (OIDC 필수).
+Cloud Scheduler 전용: /tasks/sweep-reconcile (OIDC 필수) — enqueue_reconcile 실패 등으로
+재예약 체인이 끊긴 EXECUTING run을 주기적으로 잡아내는 안전망. 정상 경로(주 경로)는
+여전히 /tasks/reconcile 자체 재예약이다.
 
 `/payouts`는 승인 토큰 게이트(§7)를 통과해야 한다 — money-safety.md 절대 규칙.
 승인 응답에서 PayPal을 동기 호출하지 않는다 — `/payouts`는 EXECUTING 마킹 후
@@ -31,6 +34,7 @@ from .store import (
     get_recipient,
     get_settlement_run,
     increment_recipient_monthly,
+    list_executing_settlement_runs,
     set_sender_items,
     update_settlement_run,
 )
@@ -341,3 +345,28 @@ def task_reconcile(body: dict, authorization: str = Header(default="")):
             status_code=409,
             detail="run is EXECUTING but has no payout_batch_id — execute-payout must run first",
         )
+
+
+@router.post("/tasks/sweep-reconcile")
+def task_sweep_reconcile(authorization: str = Header(default="")):
+    """Cloud Scheduler가 주기적으로 부르는 안전망. status=EXECUTING인 run을 전부 훑어
+    reconcile()을 직접 돌린다 — /tasks/reconcile의 자체 재예약 체인이 끊긴 run(예:
+    enqueue_reconcile 실패, Cloud Tasks 유실)도 다음 스윕 주기 안에는 잡힌다. run
+    하나가 실패해도 나머지 스윕을 막지 않는다."""
+    verify_oidc(authorization)
+
+    swept = []
+    for run in list_executing_settlement_runs():
+        run_id = run["settlement_run_id"]
+        try:
+            swept.append(reconcile(run_id))
+        except (RunNotFound, NotExecuting, MissingPayoutBatch) as e:
+            swept.append({"settlement_run_id": run_id, "error": type(e).__name__})
+
+    record_audit_log(
+        actor="api/src/payouts",
+        action="SWEEP_RECONCILE",
+        after={"swept": len(swept)},
+    )
+
+    return {"swept": len(swept), "results": swept}

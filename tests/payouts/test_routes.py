@@ -477,3 +477,66 @@ def test_task_reconcile_reschedule_failure_does_not_break_response(monkeypatch):
 
     assert result["pending_items"] == 1
     assert audits[0]["action"] == "RECONCILE_ENQUEUE_FAILED"
+
+
+# ---- POST /tasks/sweep-reconcile ----
+
+
+def test_sweep_reconcile_calls_reconcile_for_each_executing_run(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "list_executing_settlement_runs",
+        lambda: [{"settlement_run_id": "run_1"}, {"settlement_run_id": "run_2"}],
+    )
+    called = []
+    monkeypatch.setattr(
+        routes,
+        "reconcile",
+        lambda rid: called.append(rid) or {"settlement_run_id": rid, "status": "SETTLED"},
+    )
+
+    result = routes.task_sweep_reconcile(authorization="Bearer x")
+
+    assert called == ["run_1", "run_2"]
+    assert result["swept"] == 2
+    assert result["results"] == [
+        {"settlement_run_id": "run_1", "status": "SETTLED"},
+        {"settlement_run_id": "run_2", "status": "SETTLED"},
+    ]
+
+
+def test_sweep_reconcile_no_executing_runs_returns_empty(monkeypatch):
+    monkeypatch.setattr(routes, "list_executing_settlement_runs", lambda: [])
+    result = routes.task_sweep_reconcile(authorization="Bearer x")
+    assert result == {"swept": 0, "results": []}
+
+
+def test_sweep_reconcile_one_run_failing_does_not_break_others(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        "list_executing_settlement_runs",
+        lambda: [{"settlement_run_id": "run_1"}, {"settlement_run_id": "run_2"}],
+    )
+
+    def flaky(rid):
+        if rid == "run_1":
+            raise MissingPayoutBatch(rid)
+        return {"settlement_run_id": rid, "status": "SETTLED"}
+
+    monkeypatch.setattr(routes, "reconcile", flaky)
+
+    result = routes.task_sweep_reconcile(authorization="Bearer x")
+
+    assert result["swept"] == 2
+    assert result["results"][0] == {"settlement_run_id": "run_1", "error": "MissingPayoutBatch"}
+    assert result["results"][1] == {"settlement_run_id": "run_2", "status": "SETTLED"}
+
+
+def test_sweep_reconcile_requires_oidc(monkeypatch):
+    from src.guards.oidc import verify_oidc as real_verify_oidc
+
+    monkeypatch.setattr(routes, "verify_oidc", real_verify_oidc)
+    monkeypatch.setattr(routes, "list_executing_settlement_runs", lambda: [])
+    with pytest.raises(HTTPException) as exc:
+        routes.task_sweep_reconcile(authorization="")
+    assert exc.value.status_code == 401
