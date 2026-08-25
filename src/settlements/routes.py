@@ -2,15 +2,12 @@
 GET /settlements/runs/{run_id}, GET /settlements/runs/{run_id}/export.
 
 POST /settlements/runs 순서(§7 승인 토큰 흐름): 필터로 후보 조회 → 검증(§2) →
-탈락분 제외 → 살아남은 후보만 배치에 링크 → 집행자 에이전트 분석 enqueue(§9).
-검증이 claims CONFIRMED → IN_RUN 전이보다 먼저 끝나야 한다 — 순서를 뒤집으면
-나중에 검증 탈락한 claim이 어느 run에도 속하지 않으면서 IN_RUN을 들고 있는
-상태가 생긴다. enqueue는 배치 커밋 이후에 한다 — 실패해도(QueueNotConfigured
-등) 정산 실행 자체를 막지 않는다, 분석은 조언일 뿐이다(agent-tools.md).
-
-TODO: `link_claims_to_run`(payouts/store.py)이 아직 TEMP다 — 진짜 CAS 트랜잭션이
-아니라 무조건 덮어쓰는 batch write다. schema-contract.md §2 `claims`는 이 전이를
-C(`guards/`) 담당으로 명시한다 — B 소유 파일이 아니라 여기서 고치지 않는다.
+탈락분 제외 → 살아남은 후보만 CAS로 배치에 링크(§2, guards.claims) → 링크에
+실제로 성공한 것만 배치 커밋·집행자 에이전트 분석 enqueue(§9). 검증이 claims
+CONFIRMED → IN_RUN 전이보다 먼저 끝나야 한다 — 순서를 뒤집으면 나중에 검증
+탈락한 claim이 어느 run에도 속하지 않으면서 IN_RUN을 들고 있는 상태가 생긴다.
+enqueue는 배치 커밋 이후에 한다 — 실패해도(QueueNotConfigured 등) 정산 실행
+자체를 막지 않는다, 분석은 조언일 뿐이다(agent-tools.md).
 """
 
 import os
@@ -23,6 +20,7 @@ from ulid import ULID
 
 from ..auth.session import verify_session
 from ..guards.audit import record_audit_log
+from ..guards.claims import link_claims_to_run_cas
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
@@ -31,7 +29,6 @@ from ..payouts.store import (
     get_claims_for_run,
     get_recipient,
     get_settlement_run,
-    link_claims_to_run,
     list_settled_claims,
     list_settlement_runs,
     update_claim,
@@ -215,8 +212,27 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
         "created_at": now,
         "updated_at": now,
     }
+    linked_claim_ids = set(link_claims_to_run_cas(run_id, [c["claim_id"] for c in claims]))
+    if len(linked_claim_ids) < len(claims):
+        # 동시에 다른 배치가 먼저 채간 claim이 있다 — CAS가 조용히 뺀 만큼
+        # 여기서만 감사 로그로 남긴다(schema-contract.md §2, guards.claims 참조).
+        record_audit_log(
+            actor=_ACTOR,
+            action="CLAIM_CAS_CONFLICT",
+            run_id=run_id,
+            reason=f"{len(claims) - len(linked_claim_ids)}건이 동시 배치 선점으로 제외됨",
+            after={"linked_claim_ids": sorted(linked_claim_ids)},
+        )
+    claims = [c for c in claims if c["claim_id"] in linked_claim_ids]
+
+    if not claims:
+        # CAS 이후 남은 claim이 없다 — 위와 같은 이유로 빈 run을 만들지 않는다.
+        raise HTTPException(
+            status_code=409,
+            detail="선택된 청구 항목이 모두 동시에 다른 정산 실행에 선점되었습니다. 다시 시도해주세요.",
+        )
+
     create_settlement_run(run_id, doc)
-    link_claims_to_run(run_id, [c["claim_id"] for c in claims])
 
     claim_summaries = [_claim_summary(c, receipts) for c in claims]
     duplicate_groups = find_duplicate_groups(claims, receipts)
