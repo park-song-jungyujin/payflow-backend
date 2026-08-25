@@ -187,6 +187,57 @@ def list_unsettled_claims(authorization: str = Header(default="")):
     return {"claims": claims}
 
 
+def _enqueue_executor_analysis(run_id: str, claims: list[dict], receipts: dict, org_id: str) -> None:
+    """집행자 에이전트 분석 enqueue — 배치 생성 시점과 web "재시도" 버튼이 공유한다
+    (settlements/enqueue.py.enqueue_executor_analyze를 감싸 상태 기록까지 묶는다).
+
+    items는 _claim_summary(§6 최소화 대상)에는 없다 — 청구 반려 자동화(집행자가
+    개인적 사용 의심 물품을 골라내는 것)에 필요해 여기서만 얹는다. list_unsettled_claims·
+    _run_claims가 web 전용으로 따로 얹는 것과 같은 패턴이다."""
+    claim_summaries = [
+        {**_claim_summary(c, receipts), "items": (receipts.get(c["receipt_id"]) or {}).get("items", [])}
+        for c in claims
+    ]
+    duplicate_groups = find_duplicate_groups(claims, receipts)
+    # 이번 배치 후보끼리뿐 아니라 이미 IN_RUN·SETTLED로 넘어간 과거 claim과도
+    # 대조한다 — 안 그러면 이미 송금 끝난 영수증이 다른 달 배치에 다시 청구돼도
+    # 아무 것도 못 잡는다(list_confirmed_claims는 미배치 claim만 보므로).
+    settled_claims = list_settled_claims(org_id)
+    settled_receipts = get_receipts({c["receipt_id"] for c in settled_claims})
+    exact_duplicate_groups = find_exact_duplicate_receipts(
+        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
+    )
+    try:
+        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id)
+    except Exception as e:
+        # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
+        # 감싸 감사 로그 실패가 호출부의 응답을 가리지 않게 한다.
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="EXECUTOR_ENQUEUE_FAILED",
+                run_id=run_id,
+                reason=str(e),
+                after={"settlement_run_id": run_id},
+            )
+        except Exception:
+            pass
+        try:
+            set_executor_analysis_status(run_id, "FAILED", reason=str(e))
+        except Exception:
+            pass
+    else:
+        # enqueue 성공 = 집행자 에이전트가 언젠가 분석을 시작한다는 뜻일 뿐,
+        # 지금 당장 시작했다는 뜻은 아니다 — 그래도 web이 "아직 분석 안 됨"과
+        # "진행 중"을 구분해 보여줄 수 있도록 여기서 먼저 표시해둔다. 에이전트가
+        # submit_settlement_analysis로 최종 결과를 쓰면 이 문서를 통째로 덮어써
+        # status가 사라지고(_executor_analysis가 DONE으로 기본값 처리).
+        try:
+            set_executor_analysis_status(run_id, "PROCESSING")
+        except Exception:
+            pass
+
+
 @router.post("/settlements/runs")
 def create_settlement_run_route(body: dict | None = None, authorization: str = Header(default="")):
     session = _session_from_header(authorization)
@@ -251,55 +302,7 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
 
     create_settlement_run(run_id, doc)
 
-    # items는 _claim_summary(§6 최소화 대상)에는 없다 — 청구 반려 자동화(집행자가
-    # 개인적 사용 의심 물품을 골라내는 것)에 필요해 여기서만 얹는다. list_unsettled_claims·
-    # _run_claims가 web 전용으로 따로 얹는 것과 같은 패턴이다.
-    claim_summaries = [
-        {**_claim_summary(c, receipts), "items": (receipts.get(c["receipt_id"]) or {}).get("items", [])}
-        for c in claims
-    ]
-    duplicate_groups = find_duplicate_groups(claims, receipts)
-    # 이번 배치 후보끼리뿐 아니라 이미 IN_RUN·SETTLED로 넘어간 과거 claim과도
-    # 대조한다 — 안 그러면 이미 송금 끝난 영수증이 다른 달 배치에 다시 청구돼도
-    # 아무 것도 못 잡는다(list_confirmed_claims는 미배치 claim만 보므로).
-    settled_claims = list_settled_claims(session["org_id"])
-    settled_receipts = get_receipts({c["receipt_id"] for c in settled_claims})
-    exact_duplicate_groups = find_exact_duplicate_receipts(
-        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
-    )
-    try:
-        enqueue_executor_analyze(
-            run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, session["org_id"]
-        )
-    except Exception as e:
-        # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
-        # 감싸 감사 로그 실패가 이미 커밋된 배치 생성 응답을 가리지 않게 한다.
-        try:
-            record_audit_log(
-                actor=_ACTOR,
-                action="EXECUTOR_ENQUEUE_FAILED",
-                run_id=run_id,
-                reason=str(e),
-                after={"settlement_run_id": run_id},
-            )
-        except Exception:
-            pass
-        try:
-            set_executor_analysis_status(run_id, "FAILED", reason=str(e))
-        except Exception:
-            pass
-    else:
-        # enqueue 성공 = 집행자 에이전트가 언젠가 분석을 시작한다는 뜻일 뿐,
-        # 지금 당장 시작했다는 뜻은 아니다 — 그래도 web이 "아직 분석 안 됨"과
-        # "진행 중"을 구분해 보여줄 수 있도록 여기서 먼저 표시해둔다. 에이전트가
-        # submit_settlement_analysis로 최종 결과를 쓰면 이 문서를 통째로 덮어써
-        # status가 사라지고(_executor_analysis가 DONE으로 기본값 처리), 실패로
-        # 끝나면(agent 쪽 500 등) 이 PROCESSING이 그대로 남는다 — 재시도 없이는
-        # FAILED로 못 바꾼다는 뜻이지만, 그 이상의 실패 감지 배선은 이번 범위 밖이다.
-        try:
-            set_executor_analysis_status(run_id, "PROCESSING")
-        except Exception:
-            pass
+    _enqueue_executor_analysis(run_id, claims, receipts, session["org_id"])
 
     try:
         enqueue_safety_report(run_id, _task_safe_run(doc))
@@ -364,6 +367,38 @@ def get_settlement_run_route(run_id: str, authorization: str = Header(default=""
     public["safety_report"] = _safety_report(run_id)
     public["claims"] = _run_claims(run_id)
     return public
+
+
+@router.post("/settlements/runs/{run_id}/executor-analysis/retry")
+def retry_executor_analysis_route(run_id: str, authorization: str = Header(default="")):
+    """web "재시도" 버튼 — 집행자 에이전트 분석이 FAILED(또는 응답 없이 PROCESSING에
+    갇힘)로 끝났을 때, 사람이 같은 run에 이미 링크된 claim으로 분석을 다시 enqueue한다.
+    DRAFT 상태에서만 허용한다 — 승인 이후엔 금액이 이미 고정돼 재분석이 의미가 없다
+    (set_claim_item_excluded_route와 같은 제약)."""
+    session = _session_from_header(authorization)
+    run = get_settlement_run(run_id)
+    if run is None or run.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    claims = get_claims_for_run(run_id)
+    if not claims:
+        raise HTTPException(status_code=404, detail=f"no claims linked to settlement_run_id: {run_id}")
+    receipts = get_receipts({c["receipt_id"] for c in claims})
+
+    record_audit_log(
+        actor=session["email"],
+        actor_type="USER",
+        action="EXECUTOR_ANALYSIS_RETRY_REQUESTED",
+        org_id=session["org_id"],
+        run_id=run_id,
+    )
+    _enqueue_executor_analysis(run_id, claims, receipts, session["org_id"])
+    return {"executor_analysis": _executor_analysis(run_id)}
 
 
 def _apply_item_exclusion(
