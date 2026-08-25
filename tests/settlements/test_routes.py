@@ -196,12 +196,32 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
             "account_category_code": "TRAVEL",
             "merchant_name": "스타벅스",
             "transaction_date": "2026-08-10",
+            "items": [],
         }
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
     assert exact_duplicate_groups == []  # receipt_serial_number가 없으니 판정 대상도 없다
     assert stub.status_calls == [(run_id, "PROCESSING", None)]
     assert stub.safety_status_calls == [(run_id, "PROCESSING", None)]
+
+
+def test_create_run_claim_summaries_include_items_for_reject_automation(monkeypatch):
+    """청구 반려 자동화(집행자가 개인적 사용 의심 물품을 골라내는 것)에 필요해서
+    _claim_summary(§6 최소화 대상)와 달리 여기 얹는다."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [{"name": "아메리카노", "amount_minor": 4500}],
+        }
+    }
+    _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
+
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    _, claim_summaries, _, _, _ = enqueue_calls[0]
+    assert claim_summaries[0]["items"] == [{"name": "아메리카노", "amount_minor": 4500}]
 
 
 def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
@@ -730,3 +750,168 @@ def test_item_toggle_rejected_when_excluded_field_not_boolean(monkeypatch):
         routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": "yes"}, authorization="Bearer t")
 
     assert exc_info.value.status_code == 400
+
+
+# --- POST /agents/executor/reject-items — 청구 반려 자동화(집행자 에이전트가
+# 개인적 사용 의심 물품을 골라 정산 금액에서 제외한다). _apply_item_exclusion을
+# PATCH .../items/{i}(사람)와 공유한다 — 여기서는 OIDC로 인증하고 배치로 받는다. ---
+
+
+def _wire_reject_items(monkeypatch, *, run=None, claim=None, receipt=None):
+    update_receipt_calls, update_claim_calls = _wire_item_toggle(
+        monkeypatch, run=run, claim=claim, receipt=receipt
+    )
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+    return update_receipt_calls, update_claim_calls, audit_calls
+
+
+def test_reject_items_excludes_and_records_reason_and_audit_log(monkeypatch):
+    receipt = {
+        "parsed_amount_minor": 10000,
+        "items": [{"name": "아메리카노", "amount_minor": 4500}, {"name": "케이크", "amount_minor": 5500}],
+    }
+    _, update_claim_calls, audit_calls = _wire_reject_items(
+        monkeypatch, claim=_linked_claim(), receipt=receipt
+    )
+
+    result = routes.reject_claim_items_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "개인 음료로 추정"}],
+        },
+        authorization="Bearer t",
+    )
+
+    assert result == {
+        "results": [{"claim_id": "clm_1", "item_index": 0, "status": "ok", "amount_minor": 5500}]
+    }
+    assert update_claim_calls == [("clm_1", {"amount_minor": 5500, "updated_at": update_claim_calls[0][1]["updated_at"]})]
+    assert receipt["items"][0]["excluded"] is True
+    assert receipt["items"][0]["rejected_reason"] == "개인 음료로 추정"
+    assert receipt["items"][0]["rejected_by"] == "EXECUTOR"
+    assert audit_calls == [
+        {
+            "org_id": "org_1",
+            "actor": "agent/executor",
+            "actor_type": "AGENT",
+            "action": "CLAIM_ITEM_REJECTED",
+            "run_id": "run_1",
+            "reason": "개인 음료로 추정",
+            "after": {"claim_id": "clm_1", "item_index": 0, "amount_minor": 5500},
+        }
+    ]
+
+
+def test_reject_items_partial_failure_does_not_block_the_rest_of_the_batch(monkeypatch):
+    receipt = {
+        "parsed_amount_minor": 10000,
+        "items": [{"name": "아메리카노", "amount_minor": 4500}],
+    }
+    _, update_claim_calls, audit_calls = _wire_reject_items(
+        monkeypatch, claim=_linked_claim(), receipt=receipt
+    )
+
+    result = routes.reject_claim_items_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [
+                {"claim_id": "clm_1", "item_index": 99, "reason": "존재하지 않는 인덱스"},
+                {"claim_id": "clm_1", "item_index": 0, "reason": "개인 음료로 추정"},
+            ],
+        },
+        authorization="Bearer t",
+    )
+
+    assert result["results"][0]["status"] == "error"
+    assert result["results"][1] == {
+        "claim_id": "clm_1",
+        "item_index": 0,
+        "status": "ok",
+        "amount_minor": 5500,
+    }
+    assert len(update_claim_calls) == 1  # 실패한 첫 항목은 claim을 건드리지 않는다
+    assert len(audit_calls) == 1  # 성공한 것만 감사 로그에 남는다
+
+
+def test_reject_items_missing_claim_id_or_reason_reported_as_error(monkeypatch):
+    receipt = {"parsed_amount_minor": 10000, "items": [{"name": "a", "amount_minor": 4500}]}
+    _wire_reject_items(monkeypatch, claim=_linked_claim(), receipt=receipt)
+
+    result = routes.reject_claim_items_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": ""}],
+        },
+        authorization="Bearer t",
+    )
+
+    assert result["results"] == [
+        {
+            "claim_id": "clm_1",
+            "item_index": 0,
+            "status": "error",
+            "detail": "claim_id, item_index, reason required",
+        }
+    ]
+
+
+def test_reject_items_rejected_when_run_not_draft(monkeypatch):
+    _wire_reject_items(monkeypatch, run=_run_doc(status="APPROVED"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claim_items_route(
+            {
+                "settlement_run_id": "run_1",
+                "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+            },
+            authorization="Bearer t",
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+def test_reject_items_requires_settlement_run_id_and_rejections(monkeypatch):
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claim_items_route({}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_reject_items_unknown_run_is_404(monkeypatch):
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claim_items_route(
+            {
+                "settlement_run_id": "run_missing",
+                "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+            },
+            authorization="Bearer t",
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_reject_items_calls_verify_oidc_not_session(monkeypatch):
+    """web PATCH 라우트와 달리 세션이 아니라 OIDC로 인증한다 — agent 서비스 계정이
+    직접 부른다(agent_invoker_api)."""
+    receipt = {"parsed_amount_minor": 10000, "items": [{"name": "a", "amount_minor": 4500}]}
+    _wire_item_toggle(monkeypatch, claim=_linked_claim(), receipt=receipt)
+    oidc_calls = []
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: oidc_calls.append(auth) or {})
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+
+    routes.reject_claim_items_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+        },
+        authorization="Bearer agent-oidc-token",
+    )
+
+    assert oidc_calls == ["Bearer agent-oidc-token"]

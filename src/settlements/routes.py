@@ -21,6 +21,7 @@ from ulid import ULID
 from ..auth.session import verify_session
 from ..guards.audit import record_audit_log
 from ..guards.claims import link_claims_to_run_cas
+from ..guards.oidc import verify_oidc
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
@@ -234,7 +235,13 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
 
     create_settlement_run(run_id, doc)
 
-    claim_summaries = [_claim_summary(c, receipts) for c in claims]
+    # items는 _claim_summary(§6 최소화 대상)에는 없다 — 청구 반려 자동화(집행자가
+    # 개인적 사용 의심 물품을 골라내는 것)에 필요해 여기서만 얹는다. list_unsettled_claims·
+    # _run_claims가 web 전용으로 따로 얹는 것과 같은 패턴이다.
+    claim_summaries = [
+        {**_claim_summary(c, receipts), "items": (receipts.get(c["receipt_id"]) or {}).get("items", [])}
+        for c in claims
+    ]
     duplicate_groups = find_duplicate_groups(claims, receipts)
     # 이번 배치 후보끼리뿐 아니라 이미 IN_RUN·SETTLED로 넘어간 과거 claim과도
     # 대조한다 — 안 그러면 이미 송금 끝난 영수증이 다른 달 배치에 다시 청구돼도
@@ -343,6 +350,52 @@ def get_settlement_run_route(run_id: str, authorization: str = Header(default=""
     return public
 
 
+def _apply_item_exclusion(
+    run: dict, claim_id: str, item_index: int, excluded: bool, reason: str | None = None
+) -> dict:
+    """청구 반려 핵심 로직 — 사람이 web 체크박스로 직접 하는 것(PATCH ...items/{i})과
+    집행자 에이전트가 자동으로 하는 것(POST /agents/executor/reject-items)이 공유한다.
+    claim이 run에 실제로 링크돼 있고 같은 org 소속인지는 여기서 확인한다 — 세션이
+    아니라 run["org_id"] 기준이다(claim.org_id는 link_claims_to_run이 보장하는 대로
+    항상 run과 같아야 한다 — 세션 컨텍스트가 없는 OIDC 호출도 이 함수를 그대로 쓸 수
+    있게 하려는 것).
+
+    reason은 excluded=True일 때만 물품에 남는다(rejected_reason/rejected_by) —
+    나중에 청구 반려 내역·사유를 Slack으로 청구자에게 보낼 때 쓸 근거다. 체크를
+    다시 되돌리면(excluded=False) 지운다 — 더 이상 반려 상태가 아니므로.
+    """
+    claim = get_claim(claim_id)
+    if claim is None or claim.get("settlement_run_id") != run["settlement_run_id"] or claim.get(
+        "org_id"
+    ) != run.get("org_id"):
+        raise HTTPException(status_code=404, detail=f"unknown claim_id: {claim_id}")
+
+    receipt = get_receipts({claim["receipt_id"]}).get(claim["receipt_id"])
+    items = list((receipt or {}).get("items") or [])
+    if item_index < 0 or item_index >= len(items):
+        raise HTTPException(status_code=404, detail=f"unknown item_index: {item_index}")
+
+    updated_item = dict(items[item_index])
+    updated_item["excluded"] = excluded
+    if excluded and reason:
+        updated_item["rejected_reason"] = reason
+        updated_item["rejected_by"] = "EXECUTOR"
+    else:
+        updated_item.pop("rejected_reason", None)
+        updated_item.pop("rejected_by", None)
+    items[item_index] = updated_item
+    update_receipt_items(claim["receipt_id"], items)
+
+    # 기준값은 항상 receipt.parsed_amount_minor다(§3 절대 규칙 — 숫자는 코드가
+    # 만든다) — claim.amount_minor를 누적 감산하면 토글을 반복할 때 오차가 쌓인다.
+    base_amount_minor = receipt.get("parsed_amount_minor") or 0
+    excluded_total = sum(item.get("amount_minor") or 0 for item in items if item.get("excluded"))
+    new_amount_minor = max(base_amount_minor - excluded_total, 0)
+    update_claim(claim_id, {"amount_minor": new_amount_minor, "updated_at": datetime.now(UTC)})
+
+    return {"claim_id": claim_id, "amount_minor": new_amount_minor, "items": items}
+
+
 @router.patch("/settlements/runs/{run_id}/claims/{claim_id}/items/{item_index}")
 def set_claim_item_excluded_route(
     run_id: str,
@@ -351,9 +404,10 @@ def set_claim_item_excluded_route(
     body: dict,
     authorization: str = Header(default=""),
 ):
-    """청구 반려 — 집행자가 물품 단위로 체크를 해제하면 그 물품 가격을 claim.amount_minor에서
-    뺀다. DRAFT 상태에서만 허용한다 — 승인 이후엔 approval_amount_hash가 이미 금액을
-    고정하므로 여기서 바꾸면 승인·집행 사이 금액이 달라진다(money-safety.md)."""
+    """청구 반려 — 집행자(사람)가 물품 단위로 체크를 해제하면 그 물품 가격을
+    claim.amount_minor에서 뺀다. DRAFT 상태에서만 허용한다 — 승인 이후엔
+    approval_amount_hash가 이미 금액을 고정하므로 여기서 바꾸면 승인·집행 사이
+    금액이 달라진다(money-safety.md)."""
     session = _session_from_header(authorization)
     run = get_settlement_run(run_id)
     if run is None or run.get("org_id") != session["org_id"]:
@@ -368,26 +422,78 @@ def set_claim_item_excluded_route(
     if not isinstance(excluded, bool):
         raise HTTPException(status_code=400, detail="excluded must be a boolean")
 
-    claim = get_claim(claim_id)
-    if claim is None or claim.get("settlement_run_id") != run_id or claim.get("org_id") != session["org_id"]:
-        raise HTTPException(status_code=404, detail=f"unknown claim_id: {claim_id}")
+    return _apply_item_exclusion(run, claim_id, item_index, excluded)
 
-    receipt = get_receipts({claim["receipt_id"]}).get(claim["receipt_id"])
-    items = list((receipt or {}).get("items") or [])
-    if item_index < 0 or item_index >= len(items):
-        raise HTTPException(status_code=404, detail=f"unknown item_index: {item_index}")
 
-    items[item_index] = {**items[item_index], "excluded": excluded}
-    update_receipt_items(claim["receipt_id"], items)
+@router.post("/agents/executor/reject-items")
+def reject_claim_items_route(body: dict, authorization: str = Header(default="")):
+    """청구 반려 자동화 — 집행자 에이전트가 이상징후 분석을 마친 뒤 개인적 사용이
+    의심되는 물품을 한 번에 제외한다(executor/tools.py flag_personal_use_items).
+    사람이 web에서 체크박스로 직접 하는 것과 최종 효과(_apply_item_exclusion)는
+    같다 — 승인 전까지는 사람이 web에서 언제든 다시 체크해 되돌릴 수 있으므로,
+    최종 결정권은 여전히 사람에게 있다(절대 규칙 3 — 금액은 코드가 계산하고,
+    LLM은 "어떤 물품이 의심스러운가"만 판단한다).
 
-    # 기준값은 항상 receipt.parsed_amount_minor다(§3 절대 규칙 — 숫자는 코드가
-    # 만든다) — claim.amount_minor를 누적 감산하면 토글을 반복할 때 오차가 쌓인다.
-    base_amount_minor = receipt.get("parsed_amount_minor") or 0
-    excluded_total = sum(item.get("amount_minor") or 0 for item in items if item.get("excluded"))
-    new_amount_minor = max(base_amount_minor - excluded_total, 0)
-    update_claim(claim_id, {"amount_minor": new_amount_minor, "updated_at": datetime.now(UTC)})
+    Cloud Tasks가 아니라 agent 서비스 계정이 직접 부른다 — /agents/drafts와 같은
+    인증 방식(agent_invoker_api)."""
+    verify_oidc(authorization)
 
-    return {"claim_id": claim_id, "amount_minor": new_amount_minor, "items": items}
+    run_id = body.get("settlement_run_id")
+    rejections = body.get("rejections")
+    if not run_id or not rejections:
+        raise HTTPException(status_code=400, detail="settlement_run_id, rejections required")
+
+    run = get_settlement_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    results = []
+    for r in rejections:
+        claim_id = r.get("claim_id")
+        item_index = r.get("item_index")
+        reason = r.get("reason")
+        if not claim_id or not isinstance(item_index, int) or not reason:
+            results.append(
+                {
+                    "claim_id": claim_id,
+                    "item_index": item_index,
+                    "status": "error",
+                    "detail": "claim_id, item_index, reason required",
+                }
+            )
+            continue
+        try:
+            outcome = _apply_item_exclusion(run, claim_id, item_index, excluded=True, reason=reason)
+        except HTTPException as e:
+            results.append(
+                {"claim_id": claim_id, "item_index": item_index, "status": "error", "detail": e.detail}
+            )
+            continue
+
+        record_audit_log(
+            org_id=run.get("org_id"),
+            actor="agent/executor",
+            actor_type="AGENT",
+            action="CLAIM_ITEM_REJECTED",
+            run_id=run_id,
+            reason=reason,
+            after={"claim_id": claim_id, "item_index": item_index, "amount_minor": outcome["amount_minor"]},
+        )
+        results.append(
+            {
+                "claim_id": claim_id,
+                "item_index": item_index,
+                "status": "ok",
+                "amount_minor": outcome["amount_minor"],
+            }
+        )
+
+    return {"results": results}
 
 
 @router.get("/settlements/runs/{run_id}/export")

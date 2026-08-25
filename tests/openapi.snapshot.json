@@ -828,7 +828,7 @@
     "/settlements/runs/{run_id}/claims/{claim_id}/items/{item_index}": {
       "patch": {
         "summary": "Set Claim Item Excluded Route",
-        "description": "청구 반려 — 집행자가 물품 단위로 체크를 해제하면 그 물품 가격을 claim.amount_minor에서\n뺀다. DRAFT 상태에서만 허용한다 — 승인 이후엔 approval_amount_hash가 이미 금액을\n고정하므로 여기서 바꾸면 승인·집행 사이 금액이 달라진다(money-safety.md).",
+        "description": "청구 반려 — 집행자(사람)가 물품 단위로 체크를 해제하면 그 물품 가격을\nclaim.amount_minor에서 뺀다. DRAFT 상태에서만 허용한다 — 승인 이후엔\napproval_amount_hash가 이미 금액을 고정하므로 여기서 바꾸면 승인·집행 사이\n금액이 달라진다(money-safety.md).",
         "operationId": "set_claim_item_excluded_route_settlements_runs__run_id__claims__claim_id__items__item_index__patch",
         "parameters": [
           {
@@ -858,6 +858,57 @@
               "title": "Item Index"
             }
           },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/executor/reject-items": {
+      "post": {
+        "summary": "Reject Claim Items Route",
+        "description": "청구 반려 자동화 — 집행자 에이전트가 이상징후 분석을 마친 뒤 개인적 사용이\n의심되는 물품을 한 번에 제외한다(executor/tools.py flag_personal_use_items).\n사람이 web에서 체크박스로 직접 하는 것과 최종 효과(_apply_item_exclusion)는\n같다 — 승인 전까지는 사람이 web에서 언제든 다시 체크해 되돌릴 수 있으므로,\n최종 결정권은 여전히 사람에게 있다(절대 규칙 3 — 금액은 코드가 계산하고,\nLLM은 \"어떤 물품이 의심스러운가\"만 판단한다).\n\nCloud Tasks가 아니라 agent 서비스 계정이 직접 부른다 — /agents/drafts와 같은\n인증 방식(agent_invoker_api).",
+        "operationId": "reject_claim_items_route_agents_executor_reject_items_post",
+        "parameters": [
           {
             "name": "authorization",
             "in": "header",

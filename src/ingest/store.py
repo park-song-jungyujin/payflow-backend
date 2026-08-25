@@ -120,9 +120,11 @@ def create_recipient_from_slack(
 ) -> dict:
     """셀프 등록 — Slack DM으로 받은 PayPal 이메일로 recipients 문서를 새로 만든다.
 
-    verified=False로 시작한다: 사칭·오타 위험이 있어 관리자 확인 전이라는 뜻이다.
-    TODO: guards가 verified=False인 recipient로의 송금을 막게 만든다 — 오늘은 이
-    필드를 payout 게이트 어디서도 보지 않는다.
+    verified=False로 시작하지만 이 필드를 True로 바꾸는 경로가 아직 어디에도
+    없다 — 관리자 확인 UI·엔드포인트가 없다. payout 게이트도 이 필드를 보지
+    않는다: 지금 막으면 모든 송금이 영구히 차단되므로(검증 완료로 갈 방법이
+    없다), 관리자 검증 플로우를 실제로 만들기 전까지는 의도적으로 미시행 상태로
+    둔다.
 
     display_name: 호출부(routes.py)가 slack_client.get_display_name으로 미리
     조회해 넘긴다. Slack 이름을 못 가져왔으면(스코프 없음·API 실패) None이
