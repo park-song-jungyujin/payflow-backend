@@ -35,6 +35,7 @@ from .slack_client import (
     SlackSendPermanent,
     SlackSendTransient,
     get_display_name,
+    get_user_locale,
     post_message,
     requery_blocks,
 )
@@ -408,14 +409,18 @@ def _audit_best_effort(**kwargs) -> None:
         )
 
 
-def _requery_message(receipt_id: str | None) -> str | None:
+def _requery_message(receipt_id: str | None, recipient_id: str | None) -> str | None:
     """DM 본문은 청구자 에이전트가 쓴 `requery_message`에서만 온다. 없으면 None —
     **코드가 대체 문장을 만들지 않는다.** 문안을 여기서 지어내면 "에이전트가 뭐라고
     했는지"의 기록이 사라지고, 사람은 에이전트가 판단한 적 없는 이유로 재요청을 받는다.
 
     draft 읽기는 settlements/store.py의 get_agent_draft(agent_drafts의 유일한
     읽기)를 그대로 쓴다 — task_apply_claimant_draft와 같은 경로다.
-    """
+
+    영어 문안(requery_message_en)은 agent_drafts.py가 Gemma로 번역해 채운다
+    (payflow-agent는 한국어만 쓴다). 수취인 Slack 계정의 locale이 en으로
+    시작하면 그걸 쓰고, 없거나 조회 실패하면 한국어로 폴백한다 — 번역이
+    "안 됨"이 발송 자체를 막으면 안 된다."""
     if not receipt_id:
         return None
     draft = get_agent_draft(f"CLAIMANT:{receipt_id}")
@@ -426,6 +431,14 @@ def _requery_message(receipt_id: str | None) -> str | None:
     # 에이전트 출력은 비신뢰 입력이다 — str이 아닐 수도 있다(drafts.py와 같은 전제).
     if not isinstance(message, str) or not message.strip():
         return None
+
+    recipient = get_recipient(recipient_id) if recipient_id else None
+    slack_user_id = (recipient or {}).get("slack_user_id")
+    locale = get_user_locale(slack_user_id) if slack_user_id else None
+    if locale and locale.startswith("en"):
+        message_en = payload.get("requery_message_en")
+        if isinstance(message_en, str) and message_en.strip():
+            return message_en
     return message
 
 
@@ -584,7 +597,7 @@ def task_remind(body: dict, authorization: str = Header(default="")):
 
         receipt_id = claim_request.get("receipt_id")
 
-        message = _requery_message(receipt_id)
+        message = _requery_message(receipt_id, claim_request.get("recipient_id"))
         if message is None:
             # 문안이 없으면 보내지 않는다. 재시도해도 draft는 그대로다.
             # 만료 태스크를 **감사 로그보다 먼저** 건다 — 감사 싱크가 죽어서

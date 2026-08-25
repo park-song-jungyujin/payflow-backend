@@ -162,6 +162,33 @@ def test_get_display_name_returns_none_without_bot_token(monkeypatch):
     assert slack_client.get_display_name("U_NEW") is None
 
 
+# --- get_user_locale — 번역된 재요청 DM 발송 여부 판단용(읽기 전용, best-effort) ---
+
+
+def test_get_user_locale_returns_locale_and_requests_include_locale(monkeypatch):
+    calls = _wire_get(monkeypatch, FakeResponse(json_body={"ok": True, "user": {"locale": "en-US"}}))
+    assert slack_client.get_user_locale("U_NEW") == "en-US"
+    assert calls[0]["params"] == {"user": "U_NEW", "include_locale": "true"}
+
+
+def test_get_user_locale_returns_none_when_ok_is_false(monkeypatch):
+    _wire_get(monkeypatch, FakeResponse(json_body={"ok": False, "error": "missing_scope"}))
+    assert slack_client.get_user_locale("U_NEW") is None
+
+
+def test_get_user_locale_returns_none_on_network_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise slack_client.http_requests.RequestException("connection reset")
+
+    monkeypatch.setattr(slack_client.http_requests, "get", boom)
+    assert slack_client.get_user_locale("U_NEW") is None
+
+
+def test_get_user_locale_returns_none_without_bot_token(monkeypatch):
+    monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
+    assert slack_client.get_user_locale("U_NEW") is None
+
+
 # --- list_workspace_members — 설치 직후 온보딩 DM 대상 조회 ---
 
 

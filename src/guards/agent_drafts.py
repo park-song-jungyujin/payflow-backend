@@ -17,11 +17,40 @@ from ..payouts.store import get_client
 from .audit import record_audit_log
 from .oidc import verify_oidc
 from .tasks import enqueue_task
+from .translate import translate_lines
 
 router = APIRouter()
 
 _VALID_AGENTS = {"CLAIMANT", "EXECUTOR", "SAFETY"}
 _VALID_TARGET_TYPES = {"RECEIPT", "SETTLEMENT_RUN"}
+
+
+def _with_translated_fields(agent: str, payload: dict) -> dict:
+    """schema-contract.md §9 — 에이전트는 한국어만 쓴다. web 대시보드(EXECUTOR)·
+    Slack DM(CLAIMANT)이 보여줄 영어는 여기서 Gemma로 번역해 채운다. 번역
+    실패는 조용히 무시한다 — payload는 원본 그대로 반환하고, 읽는 쪽
+    (settlements/routes.py._executor_analysis, ingest/routes.py._requery_message)이
+    이미 en 필드 없음을 정상 상태로 다룬다."""
+    if agent == "EXECUTOR":
+        summary_text = payload.get("summary_text")
+        anomalies = payload.get("anomalies") or []
+        if not isinstance(summary_text, str) or not summary_text.strip():
+            return payload
+        translated = translate_lines([summary_text, *anomalies])
+        if translated is None:
+            return payload
+        return {**payload, "summary_text_en": translated[0], "anomalies_en": translated[1:]}
+
+    if agent == "CLAIMANT":
+        requery_message = payload.get("requery_message")
+        if not isinstance(requery_message, str) or not requery_message.strip():
+            return payload
+        translated = translate_lines([requery_message])
+        if translated is None:
+            return payload
+        return {**payload, "requery_message_en": translated[0]}
+
+    return payload
 
 
 @router.post("/agents/drafts")
@@ -39,6 +68,8 @@ def write_agent_draft(body: dict, authorization: str = Header(default="")):
         raise HTTPException(status_code=400, detail=f"invalid target_type: {target_type}")
     if not target_id or not task_id or payload is None:
         raise HTTPException(status_code=400, detail="target_id, task_id, payload required")
+
+    payload = _with_translated_fields(agent, payload)
 
     # schema-contract.md §2 — task_id가 멱등키다. 문서 ID로 재사용해 Cloud Tasks
     # 재시도가 새 draft를 쌓지 않고 같은 draft를 덮어쓰게 한다.

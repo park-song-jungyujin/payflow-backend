@@ -94,6 +94,31 @@ def get_display_name(slack_user_id: str) -> str | None:
     return profile.get("display_name") or profile.get("real_name") or None
 
 
+def get_user_locale(slack_user_id: str) -> str | None:
+    """번역된 재요청 DM을 보낼지 정할 때만 쓴다(ingest/routes.py) — get_display_name과
+    같은 이유로 실패해도 예외를 던지지 않는다(None이면 호출부가 한국어로 폴백한다).
+
+    include_locale=true가 있어야 응답에 locale이 실린다 — get_display_name이 이미
+    쓰는 users.info라 새 스코프는 필요 없다(users:read로 충분).
+    """
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        return None
+    try:
+        response = http_requests.get(
+            _SLACK_USERS_INFO,
+            headers={"Authorization": f"Bearer {token}"},
+            params={"user": slack_user_id, "include_locale": "true"},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        body = response.json()
+    except (http_requests.RequestException, ValueError):
+        return None
+    if not body.get("ok"):
+        return None
+    return body.get("user", {}).get("locale")
+
+
 def list_workspace_members(bot_token: str) -> list[dict]:
     """설치 직후 온보딩 DM 대상 조회(auth/routes.py 전용).
 
