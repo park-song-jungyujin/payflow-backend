@@ -934,3 +934,88 @@ def test_reject_items_calls_verify_oidc_not_session(monkeypatch):
     )
 
     assert oidc_calls == ["Bearer agent-oidc-token"]
+
+
+def _wire_retry(monkeypatch, *, run=None, claims=None, receipts=None, enqueue_error=None):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims if claims is not None else [_claim("clm_1")])
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts or {})
+    monkeypatch.setattr(routes, "list_settled_claims", lambda org_id: [])
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: None)
+
+    enqueue_calls = []
+
+    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id):
+        enqueue_calls.append((run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id))
+        if enqueue_error:
+            raise enqueue_error
+
+    monkeypatch.setattr(routes, "enqueue_executor_analyze", fake_enqueue)
+
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+
+    status_calls = []
+    monkeypatch.setattr(
+        routes,
+        "set_executor_analysis_status",
+        lambda run_id, status, reason=None: status_calls.append((run_id, status, reason)),
+    )
+
+    return enqueue_calls, audit_calls, status_calls
+
+
+def test_retry_executor_analysis_reenqueues_linked_claims(monkeypatch):
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    enqueue_calls, audit_calls, status_calls = _wire_retry(monkeypatch, claims=claims, receipts=receipts)
+
+    result = routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
+
+    assert len(enqueue_calls) == 1
+    run_id, claim_summaries, _, _, org_id = enqueue_calls[0]
+    assert run_id == "run_1"
+    assert org_id == "org_1"
+    assert claim_summaries[0]["claim_id"] == "clm_1"
+    assert status_calls == [("run_1", "PROCESSING", None)]
+    assert any(c["action"] == "EXECUTOR_ANALYSIS_RETRY_REQUESTED" for c in audit_calls)
+    assert result["executor_analysis"] is None  # get_agent_draft가 None을 돌려주므로
+
+
+def test_retry_executor_analysis_rejected_when_run_not_draft(monkeypatch):
+    enqueue_calls, _, _ = _wire_retry(monkeypatch, run=_run_doc(status="EXECUTING"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+    assert enqueue_calls == []
+
+
+def test_retry_executor_analysis_rejected_for_other_orgs_run(monkeypatch):
+    enqueue_calls, _, _ = _wire_retry(monkeypatch, run=_run_doc(org_id="org_other"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+    assert enqueue_calls == []
+
+
+def test_retry_executor_analysis_404_when_no_claims_linked(monkeypatch):
+    enqueue_calls, _, _ = _wire_retry(monkeypatch, claims=[])
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+    assert enqueue_calls == []
+
+
+def test_retry_executor_analysis_enqueue_failure_sets_failed_status(monkeypatch):
+    enqueue_calls, _, status_calls = _wire_retry(monkeypatch, enqueue_error=RuntimeError("boom"))
+
+    routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
+
+    assert len(enqueue_calls) == 1
+    assert status_calls == [("run_1", "FAILED", "boom")]
