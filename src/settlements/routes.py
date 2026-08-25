@@ -20,7 +20,7 @@ from ulid import ULID
 
 from ..auth.session import verify_session
 from ..guards.audit import record_audit_log
-from ..guards.claims import link_claims_to_run_cas
+from ..guards.claims import link_claims_to_run_cas, unlink_claim_from_run_cas
 from ..guards.oidc import verify_oidc
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
@@ -474,6 +474,56 @@ def set_claim_item_excluded_route(
         raise HTTPException(status_code=400, detail="excluded must be a boolean")
 
     return _apply_item_exclusion(run, claim_id, item_index, excluded)
+
+
+@router.post("/settlements/runs/{run_id}/claims/{claim_id}/exclude")
+def exclude_claim_from_run_route(
+    run_id: str,
+    claim_id: str,
+    body: dict | None = None,
+    authorization: str = Header(default=""),
+):
+    """청구 전체 제외 — 물품 하나가 아니라 claim 자체(예: 이미 송금 완료된
+    영수증 재청구 의심)를 이번 run에서 뺀다. items 반려와 달리 amount_minor를
+    깎는 게 아니라 claim을 통째로 이 run에서 떼어 CONFIRMED로 되돌린다
+    (guards/claims.unlink_claim_from_run_cas) — schema-contract.md §2 "배치가
+    FAILED로 끝나면 IN_RUN → CONFIRMED로 되돌린다"와 같은 전이를 claim 하나에
+    대해 사람이 직접 트리거하는 것. 되돌아간 claim은 다음 정산 실행 후보로 다시
+    잡힐 수 있다 — 영구 삭제가 아니다. DRAFT 상태에서만 허용한다(item 반려와
+    같은 이유 — 승인 이후엔 approval_amount_hash가 금액을 이미 고정한다)."""
+    session = _session_from_header(authorization)
+    run = get_settlement_run(run_id)
+    if run is None or run.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    claim = get_claim(claim_id)
+    if claim is None or claim.get("settlement_run_id") != run_id or claim.get("org_id") != run.get(
+        "org_id"
+    ):
+        raise HTTPException(status_code=404, detail=f"unknown claim_id: {claim_id}")
+
+    reason = (body or {}).get("reason")
+    if not unlink_claim_from_run_cas(run_id, claim_id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"claim_id {claim_id}이(가) 이미 다른 상태로 바뀌어 제외할 수 없습니다.",
+        )
+
+    record_audit_log(
+        actor=session["email"],
+        actor_type="USER",
+        action="CLAIM_EXCLUDED_FROM_RUN",
+        org_id=session["org_id"],
+        run_id=run_id,
+        reason=reason,
+        after={"claim_id": claim_id},
+    )
+    return {"claim_id": claim_id, "excluded": True}
 
 
 @router.post("/agents/executor/reject-items")

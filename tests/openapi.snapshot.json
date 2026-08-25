@@ -951,6 +951,81 @@
         }
       }
     },
+    "/settlements/runs/{run_id}/claims/{claim_id}/exclude": {
+      "post": {
+        "summary": "Exclude Claim From Run Route",
+        "description": "청구 전체 제외 — 물품 하나가 아니라 claim 자체(예: 이미 송금 완료된\n영수증 재청구 의심)를 이번 run에서 뺀다. items 반려와 달리 amount_minor를\n깎는 게 아니라 claim을 통째로 이 run에서 떼어 CONFIRMED로 되돌린다\n(guards/claims.unlink_claim_from_run_cas) — schema-contract.md §2 \"배치가\nFAILED로 끝나면 IN_RUN → CONFIRMED로 되돌린다\"와 같은 전이를 claim 하나에\n대해 사람이 직접 트리거하는 것. 되돌아간 claim은 다음 정산 실행 후보로 다시\n잡힐 수 있다 — 영구 삭제가 아니다. DRAFT 상태에서만 허용한다(item 반려와\n같은 이유 — 승인 이후엔 approval_amount_hash가 금액을 이미 고정한다).",
+        "operationId": "exclude_claim_from_run_route_settlements_runs__run_id__claims__claim_id__exclude_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "claim_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Claim Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agents/executor/reject-items": {
       "post": {
         "summary": "Reject Claim Items Route",

@@ -40,3 +40,27 @@ def link_claims_to_run_cas(run_id: str, claim_ids: list[str]) -> list[str]:
         return linked
 
     return _txn(client.transaction())
+
+
+def unlink_claim_from_run_cas(run_id: str, claim_id: str) -> bool:
+    """schema-contract.md §2 claims — "배치가 FAILED로 끝나면 IN_RUN → CONFIRMED로
+    되돌리고 settlement_run_id를 비운다"와 같은 전이를, 배치 전체가 아니라 claim
+    하나에 대해 사람이 직접 트리거하는 버전(정산 실행에서 이 claim만 제외). 이미
+    이 run 소속 IN_RUN이 아니면(다른 run으로 옮겨졌거나 이미 SETTLED 등) 조용히
+    실패한다 — link_claims_to_run_cas와 같은 이유로 예외 대신 bool로 알린다."""
+    client = get_client()
+    ref = client.collection("claims").document(claim_id)
+
+    @firestore.transactional
+    def _txn(transaction):
+        snapshot = ref.get(transaction=transaction)
+        data = snapshot.to_dict() if snapshot.exists else None
+        if data is None or data.get("settlement_run_id") != run_id or data.get("status") != "IN_RUN":
+            return False
+        transaction.update(
+            ref,
+            {"settlement_run_id": None, "status": "CONFIRMED", "updated_at": datetime.now(UTC)},
+        )
+        return True
+
+    return _txn(client.transaction())
