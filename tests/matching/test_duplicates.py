@@ -265,3 +265,69 @@ def test_serial_group_of_one_not_returned():
     receipts = {"rct_1": _serial_receipt("A1234")}
 
     assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
+def test_no_settled_args_yields_empty_already_settled_field():
+    """settled_claims를 안 넘기면(기존 호출부와 하위호환) 기존처럼 후보끼리만
+    비교하고, already_settled_claim_ids는 항상 빈 리스트다."""
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {"rct_1": _serial_receipt("A1234"), "rct_2": _serial_receipt("A1234")}
+
+    groups = find_exact_duplicate_receipts(claims, receipts)
+
+    assert groups[0]["already_settled_claim_ids"] == []
+
+
+# --- find_exact_duplicate_receipts — 과거 IN_RUN·SETTLED claim과의 대조 ---
+# (같은 배치 안에서만 비교하면, 이미 송금 끝난 영수증이 다른 달 배치에 다시
+# 청구돼도 못 잡는다 — settled_claims/settled_receipts가 그 구멍을 닫는다.)
+
+
+def test_candidate_matches_settled_claim_is_flagged():
+    claims = [_claim("clm_new", receipt_id="rct_new")]
+    receipts = {"rct_new": _serial_receipt("A1234")}
+    settled_claims = [_claim("clm_old", receipt_id="rct_old")]
+    settled_receipts = {"rct_old": _serial_receipt("A1234")}
+
+    groups = find_exact_duplicate_receipts(
+        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
+    )
+
+    assert len(groups) == 1
+    assert groups[0]["claim_ids"] == ["clm_new"]
+    assert groups[0]["already_settled_claim_ids"] == ["clm_old"]
+    assert groups[0]["receipt_serial_number"] == "A1234"
+
+
+def test_settled_only_pair_not_returned():
+    """과거 claim끼리만 겹치는 그룹은 지금 새로 보여줄 게 없다 — candidate가
+    하나도 없으면 만들지 않는다."""
+    claims = []
+    receipts = {}
+    settled_claims = [
+        _claim("clm_old_1", receipt_id="rct_old_1"),
+        _claim("clm_old_2", receipt_id="rct_old_2"),
+    ]
+    settled_receipts = {
+        "rct_old_1": _serial_receipt("A1234"),
+        "rct_old_2": _serial_receipt("A1234"),
+    }
+
+    groups = find_exact_duplicate_receipts(
+        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
+    )
+
+    assert groups == []
+
+
+def test_candidate_matches_settled_different_recipient_not_grouped():
+    claims = [_claim("clm_new", recipient_id="rcp_1", receipt_id="rct_new")]
+    receipts = {"rct_new": _serial_receipt("A1234")}
+    settled_claims = [_claim("clm_old", recipient_id="rcp_2", receipt_id="rct_old")]
+    settled_receipts = {"rct_old": _serial_receipt("A1234")}
+
+    groups = find_exact_duplicate_receipts(
+        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
+    )
+
+    assert groups == []

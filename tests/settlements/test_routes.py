@@ -118,7 +118,7 @@ class _FakeStub:
         self.linked.append((run_id, claim_ids))
 
 
-def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
+def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=None):
     monkeypatch.setattr(
         routes,
         "verify_session",
@@ -130,6 +130,7 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
         "verify_candidates",
         lambda candidates: {"passed_claims": claims, "failed_claims": [], "receipts": receipts},
     )
+    monkeypatch.setattr(routes, "list_settled_claims", lambda org_id: settled_claims or [])
 
     stub = _FakeStub()
     monkeypatch.setattr(routes, "create_settlement_run", stub.create)
