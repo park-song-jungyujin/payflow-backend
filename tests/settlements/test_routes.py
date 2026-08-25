@@ -147,6 +147,14 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
     audit_calls = []
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
 
+    status_calls = []
+    monkeypatch.setattr(
+        routes,
+        "set_executor_analysis_status",
+        lambda run_id, status, reason=None: status_calls.append((run_id, status, reason)),
+    )
+    stub.status_calls = status_calls
+
     return stub, enqueue_calls, audit_calls
 
 
@@ -173,6 +181,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
     assert exact_duplicate_groups == []  # receipt_serial_number가 없으니 판정 대상도 없다
+    assert stub.status_calls == [(run_id, "PROCESSING", None)]
 
 
 def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
@@ -223,6 +232,7 @@ def test_enqueue_failure_does_not_break_run_creation(monkeypatch):
             "after": {"settlement_run_id": result["settlement_run_id"]},
         }
     ]
+    assert stub.status_calls == [(result["settlement_run_id"], "FAILED", "boom")]
 
 
 def test_audit_log_failure_does_not_mask_response(monkeypatch):
@@ -323,12 +333,37 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
     # 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
     assert captured_task_id == ["EXECUTOR:run_1"]
     assert result["executor_analysis"] == {
+        "status": "DONE",
         "anomalies": ["같은 가맹점·같은 금액 2건"],
         "summary_text": "중복 의심 1건",
         "anomalies_en": ["Same merchant, same amount, 2 claims"],
         "summary_text_en": "1 suspected duplicate",
         "created_at": "2026-08-21T00:00:00Z",
     }
+
+
+def test_get_run_reports_processing_status_before_agent_writes_final_draft(monkeypatch):
+    """set_executor_analysis_status(routes.py)가 정산 실행 생성 시점에 미리 써둔
+    placeholder — 에이전트가 아직 submit_settlement_analysis를 안 부른 상태다."""
+    draft = {"payload": {"status": "PROCESSING"}, "created_at": "2026-08-21T00:00:00Z"}
+    _wire_get(monkeypatch, draft=draft)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["executor_analysis"]["status"] == "PROCESSING"
+    assert result["executor_analysis"]["anomalies"] == []
+
+
+def test_get_run_reports_failed_status_when_enqueue_never_started_analysis(monkeypatch):
+    draft = {
+        "payload": {"status": "FAILED", "reason": "boom"},
+        "created_at": "2026-08-21T00:00:00Z",
+    }
+    _wire_get(monkeypatch, draft=draft)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["executor_analysis"]["status"] == "FAILED"
 
 
 def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):

@@ -18,11 +18,15 @@ class _FakeSnapshot:
 
 
 class _FakeDocRef:
-    def __init__(self, data):
-        self._data = data
+    def __init__(self, docs, doc_id):
+        self._docs = docs
+        self._doc_id = doc_id
 
     def get(self):
-        return _FakeSnapshot(self._data)
+        return _FakeSnapshot(self._docs.get(self._doc_id))
+
+    def set(self, data):
+        self._docs[self._doc_id] = data
 
 
 class _FakeCollection:
@@ -30,7 +34,7 @@ class _FakeCollection:
         self._docs = docs
 
     def document(self, doc_id):
-        return _FakeDocRef(self._docs.get(doc_id))
+        return _FakeDocRef(self._docs, doc_id)
 
 
 class _FakeClient:
@@ -63,3 +67,26 @@ def test_returns_draft_dict_when_present(monkeypatch):
     )
 
     assert store.get_agent_draft("EXECUTOR:run_1") == draft
+
+
+def test_set_executor_analysis_status_writes_processing_placeholder(monkeypatch):
+    docs = {}
+    monkeypatch.setattr(store, "get_client", lambda: _FakeClient(docs))
+
+    store.set_executor_analysis_status("run_1", "PROCESSING")
+
+    written = docs["EXECUTOR:run_1"]
+    assert written["agent"] == "EXECUTOR"
+    assert written["target_type"] == "SETTLEMENT_RUN"
+    assert written["target_id"] == "run_1"
+    assert written["task_id"] == "EXECUTOR:run_1"
+    assert written["payload"] == {"status": "PROCESSING"}
+
+
+def test_set_executor_analysis_status_includes_reason_when_given(monkeypatch):
+    docs = {}
+    monkeypatch.setattr(store, "get_client", lambda: _FakeClient(docs))
+
+    store.set_executor_analysis_status("run_1", "FAILED", reason="boom")
+
+    assert docs["EXECUTOR:run_1"]["payload"] == {"status": "FAILED", "reason": "boom"}
