@@ -1136,11 +1136,11 @@
         }
       }
     },
-    "/tasks/notify-claim-rejections": {
+    "/tasks/notify-settlement-complete": {
       "post": {
-        "summary": "Task Notify Claim Rejections",
-        "description": "청구 반려 자동화 — 승인 시점에 그때까지 남아있는 물품 반려 내역을\n청구자에게 Slack DM으로 안내한다. guards/routes.py.approve_settlement_run이\n승인 CAS 직후 enqueue한다.\n\n**승인 시점을 고른 이유**: 반려는 사람이 승인 전까지 web에서 언제든\n되돌릴 수 있는 잠정 상태다(settlements/routes.py._apply_item_exclusion).\n분석 직후(집행자가 반려한 그 순간)에 바로 알리면, 사람이 web에서 되돌린\n반려까지 \"제외됐습니다\"로 잘못 통보하게 된다 — 승인이 곧 그 시점의 반려\n상태를 확정하는 지점이라 여기서 걷는다.\n\nclaim이 여러 개인 수취인도 이번 run에서 반려된 물품을 모아 DM 하나로\n보낸다. 반려가 하나도 없으면 조용히 끝난다(정상 경로 — 대부분의 run).",
-        "operationId": "task_notify_claim_rejections_tasks_notify_claim_rejections_post",
+        "summary": "Task Notify Settlement Complete",
+        "description": "정산 완료 통보 — payouts/reconcile.py.reconcile()이 claim을 SETTLED로\n바꾼 직후(=PayPal 송금이 실제로 성공한 직후) enqueue한다.\n\n**정산 완료 시점을 고른 이유**: 물품 반려는 승인 전까지 web에서 언제든\n되돌릴 수 있는 잠정 상태다(settlements/routes.py._apply_item_exclusion).\n승인 시점에 알리면 아직 돈이 안 나간 상태를 \"정산 완료\"라고 잘못 말하게\n되고, 반려 직후에 바로 알리면 사람이 나중에 되돌린 반려까지 통보하게\n된다 — 송금까지 끝난 이 시점이라야 되돌릴 수 없는 확정된 사실만 안전하게\n전달할 수 있다.\n\n반려 판단 기준은 excluded=true 전체다 — 집행자 에이전트가 자동으로 뗀\n것(rejected_by=\"EXECUTOR\")과 사람이 web 체크박스로 직접 뗀 것을 구분하지\n않는다. 청구자 입장에서는 \"누가 뺐는지\"가 아니라 \"무엇이 왜 빠졌는지\"가\n중요하다.\n\nrecipients는 reconcile()이 넘긴다 — 이번 호출에서 SUCCESS로 확정된\nsender_item(recipient_id, amount_minor, currency)만큼만. 부분 실패 run에서\n아직 결과가 안 난 recipient에게는 여기서 알리지 않는다(재발송이 나중에\n성공하면 그때 별도로 통보된다).",
+        "operationId": "task_notify_settlement_complete_tasks_notify_settlement_complete_post",
         "parameters": [
           {
             "name": "authorization",

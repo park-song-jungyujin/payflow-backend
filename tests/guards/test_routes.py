@@ -231,37 +231,6 @@ def test_approved_by_comes_from_session_not_client_input(monkeypatch):
     assert result["approved_by"] == "alice@example.com"
 
 
-# --- 청구 반려 자동화 §10 — 승인 CAS 직후 Slack 알림 태스크를 enqueue한다 ---
-
-
-def test_approval_enqueues_claim_rejection_notification(monkeypatch):
-    run = _run()
-    _wire_store(monkeypatch, run)
-    calls = []
-    monkeypatch.setattr(
-        routes, "enqueue_task", lambda path, body: calls.append((path, body))
-    )
-
-    routes.approve_settlement_run("run_1", authorization="Bearer t")
-
-    assert calls == [("/tasks/notify-claim-rejections", {"settlement_run_id": "run_1"})]
-
-
-def test_approval_succeeds_even_when_notify_enqueue_fails(monkeypatch):
-    """알림은 조언성 부가 기능이다 — enqueue 실패가 승인 자체를 막으면 안 된다."""
-    run = _run()
-    _wire_store(monkeypatch, run)
-
-    def boom(path, body):
-        raise RuntimeError("CLOUD_TASKS_QUEUE not configured")
-
-    monkeypatch.setattr(routes, "enqueue_task", boom)
-
-    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
-
-    assert result["status"] == "APPROVED"
-
-
 def test_concurrent_double_approval_second_caller_rejected(monkeypatch):
     """CAS — 승인 시작 시점엔 DRAFT였지만, 트랜잭션이 실제로 읽을 때는 이미
     다른 요청이 먼저 APPROVED로 바꿔놓은 경우(레이스)."""

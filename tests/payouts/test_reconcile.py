@@ -16,6 +16,7 @@ class Store:
         self.sender_items = {}
         self.recipients = {}
         self.audit_log = []
+        self.enqueued = []
 
     def wire(self, monkeypatch):
         monkeypatch.setattr(reconcile, "get_settlement_run", lambda rid: self.runs.get(rid))
@@ -47,6 +48,9 @@ class Store:
             ),
         )
         monkeypatch.setattr(reconcile, "record_audit_log", lambda **kw: self.audit_log.append(kw))
+        monkeypatch.setattr(
+            reconcile, "enqueue_task", lambda path, body: self.enqueued.append((path, body))
+        )
 
 
 @pytest.fixture
@@ -160,6 +164,7 @@ def test_all_success_settles_run_and_all_claims(store, monkeypatch):
             "payout_item_id": "itm_1",
             "recipient_id": "rcp_1",
             "amount_minor": 1000,
+            "currency": "KRW",
             "paypal_transaction_status": "SUCCESS",
             "status": "PENDING",
         }
@@ -172,6 +177,61 @@ def test_all_success_settles_run_and_all_claims(store, monkeypatch):
     assert result["status"] == "SETTLED"
     assert store.runs["run_1"]["status"] == "SETTLED"
     assert store.claims["clm_1"]["status"] == "SETTLED"
+
+
+def test_all_success_enqueues_settlement_complete_notification(store, monkeypatch):
+    store.runs["run_1"] = _run(payout_batch_id="batch_1")
+    store.sender_items["run_1"] = [
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "currency": "KRW",
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        }
+    ]
+    store.claims["clm_1"] = _claim("clm_1", "run_1")
+    _wire_payout_batch(monkeypatch, [{"payout_item_id": "itm_1", "transaction_status": "SUCCESS"}])
+
+    reconcile.reconcile("run_1")
+
+    assert store.enqueued == [
+        (
+            "/tasks/notify-settlement-complete",
+            {
+                "settlement_run_id": "run_1",
+                "recipients": [{"recipient_id": "rcp_1", "amount_minor": 1000, "currency": "KRW"}],
+            },
+        )
+    ]
+
+
+def test_notify_enqueue_failure_does_not_break_reconcile(store, monkeypatch):
+    """알림은 조언성 부가 기능이다 — enqueue 실패가 정산 종결 처리를 막으면 안 된다."""
+    store.runs["run_1"] = _run(payout_batch_id="batch_1")
+    store.sender_items["run_1"] = [
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "currency": "KRW",
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        }
+    ]
+    store.claims["clm_1"] = _claim("clm_1", "run_1")
+    _wire_payout_batch(monkeypatch, [{"payout_item_id": "itm_1", "transaction_status": "SUCCESS"}])
+
+    def boom(path, body):
+        raise RuntimeError("CLOUD_TASKS_QUEUE not configured")
+
+    monkeypatch.setattr(reconcile, "enqueue_task", boom)
+
+    result = reconcile.reconcile("run_1")
+
+    assert result["status"] == "SETTLED"
+    assert store.audit_log[-1]["action"] == "SETTLEMENT_COMPLETE_NOTIFY_ENQUEUE_FAILED"
 
 
 def test_failed_item_reverts_claim_to_confirmed_but_keeps_run_id(store, monkeypatch):
@@ -227,6 +287,7 @@ def test_multi_recipient_partial_failure_only_rolls_back_failed_recipients_own_a
             "payout_item_id": "itm_1",
             "recipient_id": "rcp_1",
             "amount_minor": 2000,
+            "currency": "KRW",
             "paypal_transaction_status": "SUCCESS",
             "status": "PENDING",
         },
@@ -234,6 +295,7 @@ def test_multi_recipient_partial_failure_only_rolls_back_failed_recipients_own_a
             "payout_item_id": "itm_2",
             "recipient_id": "rcp_2",
             "amount_minor": 1500,
+            "currency": "KRW",
             "paypal_transaction_status": "FAILED",
             "status": "PENDING",
         },
@@ -254,6 +316,17 @@ def test_multi_recipient_partial_failure_only_rolls_back_failed_recipients_own_a
 
     assert store.recipients["rcp_1"]["monthly_paid_minor"] == 2000  # 성공 — 그대로
     assert store.recipients["rcp_2"]["monthly_paid_minor"] == 0  # 실패 — 자기 몫만 롤백
+    # 부분 실패에서도 성공한 recipient만 통보 대상이다 — 실패한 rcp_2는 아직
+    # 결과가 안 났으니(재발송 대기) 여기서 안 낀다.
+    assert store.enqueued == [
+        (
+            "/tasks/notify-settlement-complete",
+            {
+                "settlement_run_id": "run_1",
+                "recipients": [{"recipient_id": "rcp_1", "amount_minor": 2000, "currency": "KRW"}],
+            },
+        )
+    ]
 
 
 def test_monthly_paid_rollback_never_goes_negative(store, monkeypatch):
