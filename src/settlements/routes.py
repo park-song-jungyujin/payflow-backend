@@ -31,6 +31,7 @@ from ..payouts.store import (
     get_recipient,
     get_settlement_run,
     link_claims_to_run,
+    list_settled_claims,
     list_settlement_runs,
 )
 from ..schemas.models import SettlementFilter
@@ -196,7 +197,14 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
 
     claim_summaries = [_claim_summary(c, receipts) for c in claims]
     duplicate_groups = find_duplicate_groups(claims, receipts)
-    exact_duplicate_groups = find_exact_duplicate_receipts(claims, receipts)
+    # 이번 배치 후보끼리뿐 아니라 이미 IN_RUN·SETTLED로 넘어간 과거 claim과도
+    # 대조한다 — 안 그러면 이미 송금 끝난 영수증이 다른 달 배치에 다시 청구돼도
+    # 아무 것도 못 잡는다(list_confirmed_claims는 미배치 claim만 보므로).
+    settled_claims = list_settled_claims(session["org_id"])
+    settled_receipts = get_receipts({c["receipt_id"] for c in settled_claims})
+    exact_duplicate_groups = find_exact_duplicate_receipts(
+        claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
+    )
     try:
         enqueue_executor_analyze(
             run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, session["org_id"]

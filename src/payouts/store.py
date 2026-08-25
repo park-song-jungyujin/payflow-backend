@@ -85,6 +85,19 @@ def list_confirmed_claims(org_id: str) -> list[dict]:
     return [d.to_dict() for d in docs]
 
 
+def list_settled_claims(org_id: str) -> list[dict]:
+    """이미 배치에 묶였거나(IN_RUN) 송금까지 끝난(SETTLED) claim 전체, 같은 기관
+    소속만. matching/duplicates.py가 이번 배치 후보와 과거 배치를 대조해 "이미
+    처리된 영수증이 새 배치에 또 청구됐는지"를 잡는 데 쓴다 — list_confirmed_claims
+    는 아직 배치에 안 묶인 것만 보므로 이 비교를 할 수 없다."""
+    docs = get_client().collection("claims").where(
+        filter=FieldFilter("org_id", "==", org_id)
+    ).where(
+        filter=FieldFilter("status", "in", ["IN_RUN", "SETTLED"])
+    ).stream()
+    return [d.to_dict() for d in docs]
+
+
 def link_claims_to_run(run_id: str, claim_ids: list[str]) -> None:
     """TEMP(B): 선택된 claims를 배치에 묶고 IN_RUN으로 전이."""
     batch = get_client().batch()

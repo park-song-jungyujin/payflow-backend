@@ -110,7 +110,13 @@ def find_duplicate_groups(claims: list[dict], receipts: dict[str, dict]) -> list
     ]
 
 
-def find_exact_duplicate_receipts(claims: list[dict], receipts: dict[str, dict]) -> list[dict]:
+def find_exact_duplicate_receipts(
+    claims: list[dict],
+    receipts: dict[str, dict],
+    *,
+    settled_claims: list[dict] | None = None,
+    settled_receipts: dict[str, dict] | None = None,
+) -> list[dict]:
     """같은 recipient_id의 후보 claim들 중 receipt_serial_number(카드 승인번호 ·
     영수증 고유번호)가 완전히 일치하는 클러스터를 찾는다.
 
@@ -125,27 +131,47 @@ def find_exact_duplicate_receipts(claims: list[dict], receipts: dict[str, dict])
     amount_minor도 함께 일치해야 클러스터로 묶는다 — OCR 오독으로 서로 다른
     영수증이 우연히 같은 문자열을 내는 극단적인 경우를 막는 이중 확인이다.
 
-    claims, receipts: find_duplicate_groups와 같은 형태.
-    반환: [{"claim_ids": [...], "receipt_serial_number": str, "amount_minor": int,
-            "currency": str}, ...]. claim_id가 2개 미만인 그룹은 만들지 않는다.
+    claims, receipts: find_duplicate_groups와 같은 형태 — **이번 배치 후보만**.
+
+    settled_claims, settled_receipts: 이미 IN_RUN·SETTLED로 전이된 과거 claim들
+    (payouts.store.list_settled_claims). 생략하면(None) 이번 배치 후보끼리만
+    비교한다 — 과거 배치를 함께 대조하지 않으면, 이미 송금까지 끝난 영수증이
+    나중 배치에 다시 청구돼도 아무 것도 못 잡는다(같은 배치 안에서만 비교하는
+    한계). 과거 claim은 지금 와서 빼거나 막을 대상이 아니므로 반환값의
+    "claim_ids"에는 넣지 않고, "already_settled_claim_ids"에 참고용으로만 담는다.
+
+    반환: [{"claim_ids": [...이번 배치 candidate만...],
+            "already_settled_claim_ids": [...과거 claim, 없으면 빈 리스트...],
+            "receipt_serial_number": str, "amount_minor": int, "currency": str},
+           ...].
+    이번 배치 candidate가 하나도 없는 그룹(과거 claim끼리만 겹침)은 만들지 않는다
+    — 지금 새로 보여줄 게 없다.
     """
-    comparable = []
-    for c in claims:
-        receipt = receipts.get(c["receipt_id"])
-        if receipt is None:
-            continue
-        serial = receipt.get("receipt_serial_number")
-        if not serial:
-            continue
-        comparable.append(
-            {
-                "claim_id": c["claim_id"],
-                "recipient_id": c["recipient_id"],
-                "amount_minor": c["amount_minor"],
-                "currency": c["currency"],
-                "receipt_serial_number": serial,
-            }
-        )
+
+    def _comparable(claim_list: list[dict], receipt_map: dict[str, dict], *, is_settled: bool):
+        out = []
+        for c in claim_list:
+            receipt = receipt_map.get(c["receipt_id"])
+            if receipt is None:
+                continue
+            serial = receipt.get("receipt_serial_number")
+            if not serial:
+                continue
+            out.append(
+                {
+                    "claim_id": c["claim_id"],
+                    "recipient_id": c["recipient_id"],
+                    "amount_minor": c["amount_minor"],
+                    "currency": c["currency"],
+                    "receipt_serial_number": serial,
+                    "is_settled": is_settled,
+                }
+            )
+        return out
+
+    comparable = _comparable(claims, receipts, is_settled=False) + _comparable(
+        settled_claims or [], settled_receipts or {}, is_settled=True
+    )
 
     parent = {c["claim_id"]: c["claim_id"] for c in comparable}
 
@@ -174,13 +200,18 @@ def find_exact_duplicate_receipts(claims: list[dict], receipts: dict[str, dict])
     for c in comparable:
         groups.setdefault(find(c["claim_id"]), []).append(c)
 
-    return [
-        {
-            "claim_ids": [m["claim_id"] for m in members],
-            "receipt_serial_number": members[0]["receipt_serial_number"],
-            "amount_minor": members[0]["amount_minor"],
-            "currency": members[0]["currency"],
-        }
-        for members in groups.values()
-        if len(members) >= 2
-    ]
+    result = []
+    for members in groups.values():
+        candidate_ids = [m["claim_id"] for m in members if not m["is_settled"]]
+        settled_ids = [m["claim_id"] for m in members if m["is_settled"]]
+        if len(candidate_ids) >= 2 or (candidate_ids and settled_ids):
+            result.append(
+                {
+                    "claim_ids": candidate_ids,
+                    "already_settled_claim_ids": settled_ids,
+                    "receipt_serial_number": members[0]["receipt_serial_number"],
+                    "amount_minor": members[0]["amount_minor"],
+                    "currency": members[0]["currency"],
+                }
+            )
+    return result
