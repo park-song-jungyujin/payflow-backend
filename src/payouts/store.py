@@ -107,6 +107,11 @@ def link_claims_to_run(run_id: str, claim_ids: list[str]) -> None:
     batch.commit()
 
 
+def get_claim(claim_id: str) -> dict | None:
+    doc = get_client().collection("claims").document(claim_id).get()
+    return doc.to_dict() if doc.exists else None
+
+
 def update_claim(claim_id: str, updates: dict) -> None:
     get_client().collection("claims").document(claim_id).update(updates)
 

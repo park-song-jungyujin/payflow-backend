@@ -90,3 +90,34 @@ def test_set_executor_analysis_status_includes_reason_when_given(monkeypatch):
     store.set_executor_analysis_status("run_1", "FAILED", reason="boom")
 
     assert docs["EXECUTOR:run_1"]["payload"] == {"status": "FAILED", "reason": "boom"}
+
+
+class _FakeUpdatingDocRef:
+    def __init__(self, docs, doc_id):
+        self._docs = docs
+        self._doc_id = doc_id
+
+    def update(self, updates):
+        self._docs[self._doc_id] = {**self._docs.get(self._doc_id, {}), **updates}
+
+
+class _FakeReceiptsClient:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def collection(self, name):
+        assert name == "receipts"
+        return self
+
+    def document(self, doc_id):
+        return _FakeUpdatingDocRef(self._docs, doc_id)
+
+
+def test_update_receipt_items_overwrites_the_full_items_array(monkeypatch):
+    docs = {"rct_1": {"parsed_amount_minor": 10000}}
+    monkeypatch.setattr(store, "get_client", lambda: _FakeReceiptsClient(docs))
+
+    store.update_receipt_items("rct_1", [{"name": "아메리카노", "amount_minor": 4500, "excluded": True}])
+
+    assert docs["rct_1"]["items"] == [{"name": "아메리카노", "amount_minor": 4500, "excluded": True}]
+    assert docs["rct_1"]["parsed_amount_minor"] == 10000  # 다른 필드는 안 건드린다
