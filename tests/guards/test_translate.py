@@ -11,8 +11,8 @@ from src.guards import translate
 
 
 class FakeResponse:
-    def __init__(self, parsed=None):
-        self.parsed = parsed
+    def __init__(self, text=None):
+        self.text = text
 
 
 class FakeModels:
@@ -52,21 +52,31 @@ def test_empty_input_skips_call_entirely(monkeypatch):
 
 
 def test_returns_translations_in_order(monkeypatch):
-    result = translate._TranslationResult(translations=["hello", "world"])
-    _mock(monkeypatch, FakeModels(FakeResponse(parsed=result)))
+    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello", "world"]')))
 
     assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
 
 
 def test_count_mismatch_returns_none(monkeypatch):
-    result = translate._TranslationResult(translations=["hello"])
-    _mock(monkeypatch, FakeModels(FakeResponse(parsed=result)))
+    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello"]')))
 
     assert translate.translate_lines(["안녕", "세계"]) is None
 
 
-def test_no_parsed_output_returns_none(monkeypatch):
-    _mock(monkeypatch, FakeModels(FakeResponse(parsed=None)))
+def test_non_string_items_returns_none(monkeypatch):
+    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello", 1]')))
+
+    assert translate.translate_lines(["안녕", "세계"]) is None
+
+
+def test_non_array_json_returns_none(monkeypatch):
+    _mock(monkeypatch, FakeModels(FakeResponse(text='{"1": "hello"}')))
+
+    assert translate.translate_lines(["안녕"]) is None
+
+
+def test_invalid_json_returns_none(monkeypatch):
+    _mock(monkeypatch, FakeModels(FakeResponse(text="not json")))
 
     assert translate.translate_lines(["안녕"]) is None
 

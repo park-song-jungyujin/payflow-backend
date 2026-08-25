@@ -70,8 +70,8 @@ variable "gemini_model_id" {
 
 variable "gemma_model_id" {
   type        = string
-  default     = "gemma-3-27b-it"
-  description = "api의 에이전트 출력 영어 번역 단발 호출(guards/translate.py, ADK 아님)이 쓰는 모델 ID. Vertex AI Model Garden에 이 리전(var.vertex_location)으로 실제 호스팅되는지 배포 전 확인 필요 — 기본값은 미검증."
+  default     = "google/gemma-4-26b-a4b-it-maas"
+  description = "api의 에이전트 출력 영어 번역 단발 호출(guards/translate.py, ADK 아님)이 쓰는 모델 ID. gemma-3-27b-it 등 나머지 Model Garden Gemma는 CAN_PREDICT=No라 GPU 엔드포인트 자가 배포가 필요하다 — 이 모델만 CAN_PREDICT=Yes인 MaaS라 generate_content로 바로 호출된다."
 }
 
 variable "vertex_location" {
