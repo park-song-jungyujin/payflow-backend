@@ -105,20 +105,26 @@ def test_list_unsettled_claims_empty_when_nothing_confirmed(monkeypatch):
 
 
 class _FakeStub:
-    """create_settlement_run/link_claims_to_run 호출만 기록한다."""
+    """create_settlement_run/link_claims_to_run_cas 호출만 기록한다. CAS는 기본적으로
+    넘겨받은 claim_id 전부를 링크 성공으로 취급한다 — 동시성 충돌 시나리오는
+    link_result_override로 일부만 반환하게 만든다."""
 
-    def __init__(self):
+    def __init__(self, link_result_override=None):
         self.created = []
         self.linked = []
+        self._link_result_override = link_result_override
 
     def create(self, run_id, doc):
         self.created.append((run_id, doc))
 
     def link(self, run_id, claim_ids):
         self.linked.append((run_id, claim_ids))
+        if self._link_result_override is not None:
+            return self._link_result_override
+        return list(claim_ids)
 
 
-def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=None):
+def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=None, link_result_override=None):
     monkeypatch.setattr(
         routes,
         "verify_session",
@@ -132,9 +138,9 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=N
     )
     monkeypatch.setattr(routes, "list_settled_claims", lambda org_id: settled_claims or [])
 
-    stub = _FakeStub()
+    stub = _FakeStub(link_result_override=link_result_override)
     monkeypatch.setattr(routes, "create_settlement_run", stub.create)
-    monkeypatch.setattr(routes, "link_claims_to_run", stub.link)
+    monkeypatch.setattr(routes, "link_claims_to_run_cas", stub.link)
 
     enqueue_calls = []
 
@@ -321,6 +327,48 @@ def test_empty_candidate_batch_rejected_without_creating_run(monkeypatch):
     assert exc_info.value.status_code == 400
     assert stub.created == []
     assert stub.linked == []
+    assert enqueue_calls == []
+
+
+def test_cas_conflict_excludes_claim_and_logs_audit(monkeypatch):
+    """schema-contract.md §2 — 동시에 다른 배치가 먼저 채간 claim(CAS 전이 실패)은
+    조용히 배치에서 빠지고, 남은 claim만으로 정산 실행이 만들어진다."""
+    claims = [_claim("clm_1", receipt_id="rct_1"), _claim("clm_2", receipt_id="rct_2")]
+    receipts = {
+        "rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)},
+        "rct_2": {"merchant_name": "이디야", "transaction_date": date(2026, 8, 11)},
+    }
+    stub, enqueue_calls, audit_calls = _wire(
+        monkeypatch, claims=claims, receipts=receipts, link_result_override=["clm_1"]
+    )
+
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    assert len(stub.created) == 1  # clm_2가 빠졌어도 남은 clm_1로 run은 만들어진다
+    run_id, claim_summaries, _, _, _ = enqueue_calls[0]
+    assert [c["claim_id"] for c in claim_summaries] == ["clm_1"]  # clm_2는 엔큐에서도 빠진다
+    assert {
+        "actor": "api/src/settlements",
+        "action": "CLAIM_CAS_CONFLICT",
+        "run_id": run_id,
+        "reason": "1건이 동시 배치 선점으로 제외됨",
+        "after": {"linked_claim_ids": ["clm_1"]},
+    } in audit_calls
+
+
+def test_cas_conflict_on_every_claim_rejects_without_creating_run(monkeypatch):
+    """후보 전부가 CAS에 밀리면(전부 다른 배치에 선점) 빈 run을 만들지 않는다."""
+    claims = [_claim("clm_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    stub, enqueue_calls, _ = _wire(
+        monkeypatch, claims=claims, receipts=receipts, link_result_override=[]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+    assert stub.created == []
     assert enqueue_calls == []
 
 

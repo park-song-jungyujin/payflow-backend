@@ -4,9 +4,9 @@
 가맹점명)은 `duplicates.find_duplicate_groups`에 별도로 있다 — 후보를 배치에서
 빼지 않는 advisory 판정이라 이 필터링과 섞지 않는다.
 
-TODO(B): 검증(schema-contract.md §2 "검증") 반영은 아직 없다. `settlements/routes.py`가
-이 함수의 후보 목록을 받아 receipt별로 검증을 돌리고 탈락분을 제외한 뒤에만
-claims CONFIRMED → IN_RUN CAS로 넘긴다.
+검증(schema-contract.md §2 "검증")은 이 함수가 아니라 `settlements/routes.py`가
+후보 목록을 받아 receipt별로 돌린다 — 탈락분을 제외한 뒤에만
+`guards/claims.link_claims_to_run_cas`로 claims CONFIRMED → IN_RUN CAS 전이를 한다.
 """
 
 from datetime import date

@@ -98,15 +98,6 @@ def list_settled_claims(org_id: str) -> list[dict]:
     return [d.to_dict() for d in docs]
 
 
-def link_claims_to_run(run_id: str, claim_ids: list[str]) -> None:
-    """TEMP(B): 선택된 claims를 배치에 묶고 IN_RUN으로 전이."""
-    batch = get_client().batch()
-    col = get_client().collection("claims")
-    for cid in claim_ids:
-        batch.update(col.document(cid), {"settlement_run_id": run_id, "status": "IN_RUN"})
-    batch.commit()
-
-
 def get_claim(claim_id: str) -> dict | None:
     doc = get_client().collection("claims").document(claim_id).get()
     return doc.to_dict() if doc.exists else None
