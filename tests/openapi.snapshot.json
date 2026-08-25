@@ -1136,6 +1136,57 @@
         }
       }
     },
+    "/tasks/notify-claim-rejections": {
+      "post": {
+        "summary": "Task Notify Claim Rejections",
+        "description": "청구 반려 자동화 — 승인 시점에 그때까지 남아있는 물품 반려 내역을\n청구자에게 Slack DM으로 안내한다. guards/routes.py.approve_settlement_run이\n승인 CAS 직후 enqueue한다.\n\n**승인 시점을 고른 이유**: 반려는 사람이 승인 전까지 web에서 언제든\n되돌릴 수 있는 잠정 상태다(settlements/routes.py._apply_item_exclusion).\n분석 직후(집행자가 반려한 그 순간)에 바로 알리면, 사람이 web에서 되돌린\n반려까지 \"제외됐습니다\"로 잘못 통보하게 된다 — 승인이 곧 그 시점의 반려\n상태를 확정하는 지점이라 여기서 걷는다.\n\nclaim이 여러 개인 수취인도 이번 run에서 반려된 물품을 모아 DM 하나로\n보낸다. 반려가 하나도 없으면 조용히 끝난다(정상 경로 — 대부분의 run).",
+        "operationId": "task_notify_claim_rejections_tasks_notify_claim_rejections_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/tasks/parse-receipt": {
       "post": {
         "summary": "Task Parse Receipt",
