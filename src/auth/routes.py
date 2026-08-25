@@ -23,6 +23,7 @@ from .store import (
     create_slack_workspace,
     delete_session,
     get_executor_by_google_sub,
+    get_or_create_default_org_id,
     get_org,
 )
 
@@ -63,18 +64,38 @@ def google_callback(body: dict):
                 status_code=400,
                 detail="unknown account — org_name required to create a new organization",
             )
-        org_id = f"org_{ULID()}"
         executor_id = f"exe_{ULID()}"
-        create_org(
-            org_id,
-            {
-                "org_id": org_id,
-                "name": org_name,
-                "created_by": executor_id,
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
+
+        if org_name.strip().lower() == "payflow":
+            # "payflow"는 예약된 기관명이다 — 새 org를 만들지 않고 Slack 인입
+            # 폴백(ingest/routes.py get_or_create_default_org_id)이 쓰는 것과
+            # 같은 기본 기관에 합류시킨다. 로그인으로는 그 기관에 도달할 방법이
+            # 없었던 gap을 메운다.
+            org_id = get_or_create_default_org_id()
+            record_audit_log(
+                actor=_ACTOR,
+                org_id=org_id,
+                action="ORG_JOINED",
+                after={"org_id": org_id, "executor_id": executor_id},
+            )
+        else:
+            org_id = f"org_{ULID()}"
+            create_org(
+                org_id,
+                {
+                    "org_id": org_id,
+                    "name": org_name,
+                    "created_by": executor_id,
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+            record_audit_log(
+                actor=_ACTOR,
+                action="ORG_CREATED",
+                after={"org_id": org_id, "executor_id": executor_id},
+            )
+
         executor = {
             "executor_id": executor_id,
             "org_id": org_id,
@@ -86,11 +107,6 @@ def google_callback(body: dict):
             "updated_at": now,
         }
         create_executor(executor_id, executor)
-        record_audit_log(
-            actor=_ACTOR,
-            action="ORG_CREATED",
-            after={"org_id": org_id, "executor_id": executor_id},
-        )
 
     if executor["status"] != "ACTIVE":
         raise HTTPException(status_code=403, detail="executor account disabled")

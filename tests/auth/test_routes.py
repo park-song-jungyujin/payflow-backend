@@ -47,6 +47,35 @@ def test_google_callback_creates_org_and_executor_on_first_login(monkeypatch):
     assert created_executors[0]["org_id"] == result["org_id"]
 
 
+def test_google_callback_org_name_payflow_joins_default_org_without_creating_new_one(monkeypatch):
+    created_orgs, created_executors, audits = [], [], []
+
+    monkeypatch.setattr(
+        routes, "exchange_google_code", lambda code, redirect_uri: {
+            "google_sub": "sub_1", "email": "alice@acme.com", "name": "Alice"
+        }
+    )
+    monkeypatch.setattr(routes, "get_executor_by_google_sub", lambda sub: None)
+    monkeypatch.setattr(routes, "get_or_create_default_org_id", lambda: "org_default")
+    monkeypatch.setattr(routes, "create_org", lambda org_id, doc: created_orgs.append(doc))
+    monkeypatch.setattr(
+        routes, "create_executor", lambda executor_id, doc: created_executors.append(doc)
+    )
+    monkeypatch.setattr(
+        routes, "issue_session", lambda executor_id, org_id, email: "raw-session-token"
+    )
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audits.append(kw))
+
+    # 대소문자·앞뒤 공백은 구분하지 않는다.
+    result = routes.google_callback({"code": "abc", "org_name": "  Payflow  "})
+
+    assert result["org_id"] == "org_default"
+    assert created_orgs == []  # 새 org를 만들지 않는다
+    assert created_executors[0]["org_id"] == "org_default"
+    assert any(a["action"] == "ORG_JOINED" for a in audits)
+    assert not any(a["action"] == "ORG_CREATED" for a in audits)
+
+
 def test_google_callback_unknown_account_without_org_name_is_400(monkeypatch):
     monkeypatch.setattr(
         routes, "exchange_google_code", lambda code, redirect_uri: {
