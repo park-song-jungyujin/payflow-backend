@@ -137,8 +137,10 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None):
 
     enqueue_calls = []
 
-    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups):
-        enqueue_calls.append((run_id, claim_summaries, duplicate_groups, exact_duplicate_groups))
+    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id):
+        enqueue_calls.append(
+            (run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id)
+        )
         if enqueue_error:
             raise enqueue_error
 
@@ -166,8 +168,9 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
-    run_id, claim_summaries, duplicate_groups, exact_duplicate_groups = enqueue_calls[0]
+    run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id = enqueue_calls[0]
     assert run_id == result["settlement_run_id"]
+    assert org_id == "org_1"
     assert claim_summaries == [
         {
             "claim_id": "clm_1",
@@ -194,7 +197,7 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, _, duplicate_groups, _ = enqueue_calls[0]
+    _, _, duplicate_groups, _, _ = enqueue_calls[0]
     assert len(duplicate_groups) == 1
     assert set(duplicate_groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
 
@@ -206,7 +209,7 @@ def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, claim_summaries, _, _ = enqueue_calls[0]
+    _, claim_summaries, _, _, _ = enqueue_calls[0]
     assert claim_summaries[0]["merchant_name"] is None
     assert claim_summaries[0]["transaction_date"] is None
 

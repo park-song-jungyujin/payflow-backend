@@ -38,6 +38,9 @@ _SNAPSHOT_FIELDS = (
     "account_category_code",
     "parse_confidence",
     "raw_text_gcs_uri",
+    # org_id는 판단 대상이 아니라 agent_sessions 스코핑 키다 — tiered-memory-review.html
+    # §8 Phase 2. 조직 간 세션 요약 누출(§7)을 막으려면 agent 쪽이 org_id를 알아야 한다.
+    "org_id",
 )
 
 

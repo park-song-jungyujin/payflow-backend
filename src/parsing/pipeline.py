@@ -254,6 +254,7 @@ def _parse(receipt_id: str, receipt: dict) -> str:
                 "account_category_code": updates["account_category_code"],
                 "parse_confidence": updates["llm_confidence"],
                 "raw_text_gcs_uri": updates["raw_text_gcs_uri"],
+                "org_id": receipt["org_id"],
             },
         )
     except Exception as e:
