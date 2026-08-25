@@ -16,8 +16,10 @@ def get_or_create_default_org_id() -> str:
     """ingest/routes.py — Slack 워크스페이스가 아직 /auth/slack/install로 등록되기
     전에 영수증이 먼저 들어올 때 쓰는 폴백 기관. 대시보드 로그인 게이트와는
     무관하다(그쪽은 세션에서 org_id를 받는다) — Firestore에 org가 하나도 없으면
-    새로 만들고, 있으면 그대로 쓴다."""
-    docs = get_client().collection("orgs").limit(1).stream()
+    새로 만들고, 있으면 그대로 쓴다. 여러 org가 있으면 가장 먼저 생긴 org를
+    기본 기관으로 삼는다 — 정렬을 명시하지 않으면 Firestore의 문서 ID 오름차순
+    폴백에 우연히 기대는 꼴이라, "가장 이른 것"이라는 의도를 order_by로 못박는다."""
+    docs = get_client().collection("orgs").order_by("created_at").limit(1).stream()
     existing = next(iter(docs), None)
     if existing is not None:
         return existing.id
