@@ -771,6 +771,89 @@ def test_item_toggle_rejected_when_excluded_field_not_boolean(monkeypatch):
     assert exc_info.value.status_code == 400
 
 
+# --- POST /settlements/runs/{run_id}/claims/{claim_id}/exclude — claim 통째
+# 제외(재청구 의심 등). item 반려와 달리 amount_minor를 안 건드리고 claim을
+# IN_RUN → CONFIRMED로 되돌린다. ---
+
+
+def _wire_claim_exclude(monkeypatch, *, run=None, claim=None, unlinked=True):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_claim", lambda claim_id: claim)
+    monkeypatch.setattr(routes, "unlink_claim_from_run_cas", lambda run_id, claim_id: unlinked)
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+    return audit_calls
+
+
+def test_exclude_claim_unlinks_it_and_records_audit_log(monkeypatch):
+    audit_calls = _wire_claim_exclude(monkeypatch, claim=_linked_claim())
+
+    result = routes.exclude_claim_from_run_route(
+        "run_1", "clm_1", {"reason": "재청구 의심"}, authorization="Bearer t"
+    )
+
+    assert result == {"claim_id": "clm_1", "excluded": True}
+    assert audit_calls[0]["action"] == "CLAIM_EXCLUDED_FROM_RUN"
+    assert audit_calls[0]["reason"] == "재청구 의심"
+    assert audit_calls[0]["after"] == {"claim_id": "clm_1"}
+
+
+def test_exclude_claim_works_without_a_reason(monkeypatch):
+    _wire_claim_exclude(monkeypatch, claim=_linked_claim())
+
+    result = routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert result["excluded"] is True
+
+
+def test_exclude_claim_rejected_when_run_not_draft(monkeypatch):
+    _wire_claim_exclude(monkeypatch, run=_run_doc(status="APPROVED"), claim=_linked_claim())
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+
+
+def test_exclude_claim_rejected_for_other_orgs_run(monkeypatch):
+    _wire_claim_exclude(monkeypatch, run=_run_doc(org_id="org_2"), claim=_linked_claim())
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_exclude_claim_rejected_when_claim_not_linked_to_run(monkeypatch):
+    _wire_claim_exclude(monkeypatch, claim=_linked_claim(settlement_run_id="run_other"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_exclude_claim_rejected_when_unknown_claim(monkeypatch):
+    _wire_claim_exclude(monkeypatch, claim=None)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_exclude_claim_conflict_when_cas_unlink_fails(monkeypatch):
+    """claim이 이미 다른 상태로 바뀌었으면(예: 동시에 SETTLED) CAS가 조용히
+    실패하고, 라우트는 이걸 409로 알린다 — 감사 로그도 안 남긴다."""
+    audit_calls = _wire_claim_exclude(monkeypatch, claim=_linked_claim(), unlinked=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.exclude_claim_from_run_route("run_1", "clm_1", None, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+    assert audit_calls == []
+
+
 # --- POST /agents/executor/reject-items — 청구 반려 자동화(집행자 에이전트가
 # 개인적 사용 의심 물품을 골라 정산 금액에서 제외한다). _apply_item_exclusion을
 # PATCH .../items/{i}(사람)와 공유한다 — 여기서는 OIDC로 인증하고 배치로 받는다. ---

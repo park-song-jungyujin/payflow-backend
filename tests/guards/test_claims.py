@@ -134,3 +134,50 @@ def test_updated_at_is_a_datetime(monkeypatch):
     _, update = client.last_transaction.updates[0]
     assert isinstance(update["updated_at"], datetime)
     assert update["updated_at"].tzinfo is UTC
+
+
+def _in_run_claim(claim_id, run_id="run_1", status="IN_RUN"):
+    return {"claim_id": claim_id, "status": status, "settlement_run_id": run_id}
+
+
+def test_unlink_reverts_in_run_claim_to_confirmed(monkeypatch):
+    docs = {"clm_1": _in_run_claim("clm_1")}
+    client = _run_with_client(monkeypatch, docs)
+
+    ok = claims.unlink_claim_from_run_cas("run_1", "clm_1")
+
+    assert ok is True
+    doc_id, update = client.last_transaction.updates[0]
+    assert doc_id == "clm_1"
+    assert update["settlement_run_id"] is None
+    assert update["status"] == "CONFIRMED"
+    assert isinstance(update["updated_at"], datetime)
+
+
+def test_unlink_fails_when_claim_belongs_to_a_different_run(monkeypatch):
+    docs = {"clm_1": _in_run_claim("clm_1", run_id="run_other")}
+    client = _run_with_client(monkeypatch, docs)
+
+    ok = claims.unlink_claim_from_run_cas("run_1", "clm_1")
+
+    assert ok is False
+    assert client.last_transaction.updates == []
+
+
+def test_unlink_fails_when_claim_already_settled(monkeypatch):
+    docs = {"clm_1": _in_run_claim("clm_1", status="SETTLED")}
+    client = _run_with_client(monkeypatch, docs)
+
+    ok = claims.unlink_claim_from_run_cas("run_1", "clm_1")
+
+    assert ok is False
+    assert client.last_transaction.updates == []
+
+
+def test_unlink_fails_when_claim_missing(monkeypatch):
+    client = _run_with_client(monkeypatch, {})
+
+    ok = claims.unlink_claim_from_run_cas("run_1", "clm_missing")
+
+    assert ok is False
+    assert client.last_transaction.updates == []
