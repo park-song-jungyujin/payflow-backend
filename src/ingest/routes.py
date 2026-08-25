@@ -22,9 +22,10 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from ..auth.store import get_or_create_default_org_id, get_slack_workspace_by_team
 from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
+from ..guards.translate import translate_lines
 from ..parsing.store import get_receipt
-from ..payouts.store import get_recipient
-from ..settlements.store import get_agent_draft
+from ..payouts.store import get_claims_for_run, get_recipient
+from ..settlements.store import get_agent_draft, get_receipts
 from .drafts import InvalidDraftPayload, parse_claimant_payload
 from .enqueue import QueueNotConfigured, enqueue_parse_receipt, enqueue_remind
 from .reminders import ReminderAction, decide, parse_expires_at
@@ -685,3 +686,121 @@ def task_remind(body: dict, authorization: str = Header(default="")):
         _try_enqueue_remind(claim_request_id, delay_seconds)
 
     return {"status": "ok", "action": action.value, "slack_ts": slack_ts}
+
+
+def _rejection_notice_text(items: list[dict], locale: str | None) -> str:
+    """반려된 물품 목록을 사람이 읽을 Slack DM 본문으로 조립한다. reason은
+    집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴 한국어
+    문장이다 — _requery_message와 같은 원칙으로 여기서 대체 문장을 지어내지
+    않고 그대로 옮긴다.
+
+    영어 로케일이면 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로 번역한다 —
+    reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면 그 예산을
+    갉아먹어 반려 자체가 실패할 위험이 있어 여기로 미뤘다. 번역 실패는
+    translate_lines의 기존 계약대로 조용히 한국어 폴백으로 이어진다.
+    """
+    lines_ko = [f"- {i.get('name') or '(이름 없음)'}: {i.get('reason') or '사유 미기재'}" for i in items]
+    if locale and locale.startswith("en"):
+        translated = translate_lines(
+            [f"{i.get('name') or ''}: {i.get('reason') or ''}" for i in items]
+        )
+        if translated is not None:
+            lines_en = [f"- {t}" for t in translated]
+            return "The following items were excluded from this settlement:\n" + "\n".join(lines_en)
+    return "이번 정산에서 다음 물품이 정산 금액에서 제외됐습니다:\n" + "\n".join(lines_ko)
+
+
+@router.post("/tasks/notify-claim-rejections")
+def task_notify_claim_rejections(body: dict, authorization: str = Header(default="")):
+    """청구 반려 자동화 — 승인 시점에 그때까지 남아있는 물품 반려 내역을
+    청구자에게 Slack DM으로 안내한다. guards/routes.py.approve_settlement_run이
+    승인 CAS 직후 enqueue한다.
+
+    **승인 시점을 고른 이유**: 반려는 사람이 승인 전까지 web에서 언제든
+    되돌릴 수 있는 잠정 상태다(settlements/routes.py._apply_item_exclusion).
+    분석 직후(집행자가 반려한 그 순간)에 바로 알리면, 사람이 web에서 되돌린
+    반려까지 "제외됐습니다"로 잘못 통보하게 된다 — 승인이 곧 그 시점의 반려
+    상태를 확정하는 지점이라 여기서 걷는다.
+
+    claim이 여러 개인 수취인도 이번 run에서 반려된 물품을 모아 DM 하나로
+    보낸다. 반려가 하나도 없으면 조용히 끝난다(정상 경로 — 대부분의 run).
+    """
+    verify_oidc(authorization)
+
+    run_id = body.get("settlement_run_id")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="settlement_run_id required")
+
+    claims = get_claims_for_run(run_id)
+    receipts = get_receipts({c["receipt_id"] for c in claims})
+
+    by_recipient: dict[str, list[dict]] = {}
+    for c in claims:
+        receipt = receipts.get(c["receipt_id"]) or {}
+        for item in receipt.get("items") or []:
+            if item.get("rejected_by") != "EXECUTOR":
+                continue
+            by_recipient.setdefault(c["recipient_id"], []).append(
+                {"name": item.get("name"), "reason": item.get("rejected_reason")}
+            )
+
+    if not by_recipient:
+        return {"status": "ok", "notified": 0}
+
+    notified = 0
+    had_transient_failure = False
+    for recipient_id, items in by_recipient.items():
+        recipient = get_recipient(recipient_id)
+        slack_user_id = (recipient or {}).get("slack_user_id")
+        if not slack_user_id:
+            _audit_best_effort(
+                actor="api/src/ingest",
+                action="CLAIM_REJECTION_NOTICE_NO_TARGET",
+                reason=f"recipient {recipient_id}에 slack_user_id가 없다",
+                after={"settlement_run_id": run_id, "recipient_id": recipient_id},
+            )
+            continue
+
+        locale = get_user_locale(slack_user_id)
+        text = _rejection_notice_text(items, locale)
+
+        try:
+            post_message(channel=slack_user_id, text=text)
+        except SlackSendTransient as e:
+            # 다른 수취인 발송은 계속한다 — 이 사람만 다시 큐가 재시도한다.
+            had_transient_failure = True
+            _audit_best_effort(
+                actor="api/src/ingest",
+                action="CLAIM_REJECTION_NOTICE_SEND_TRANSIENT_FAILURE",
+                reason=str(e),
+                after={"settlement_run_id": run_id, "recipient_id": recipient_id},
+            )
+            continue
+        except SlackSendPermanent as e:
+            # 다시 보내도 같은 실패다 — 이 사람은 포기하고 나머지는 계속한다.
+            _audit_best_effort(
+                actor="api/src/ingest",
+                action="CLAIM_REJECTION_NOTICE_SEND_FAILED",
+                reason=str(e),
+                after={"settlement_run_id": run_id, "recipient_id": recipient_id},
+            )
+            continue
+
+        notified += 1
+        _audit_best_effort(
+            actor="api/src/ingest",
+            action="CLAIM_REJECTION_NOTICE_SENT",
+            after={
+                "settlement_run_id": run_id,
+                "recipient_id": recipient_id,
+                "item_count": len(items),
+            },
+        )
+
+    if had_transient_failure:
+        # 큐가 이 태스크 전체를 재시도한다 — 이미 성공한 수취인에게 같은 DM이
+        # 한 번 더 갈 수 있다. 금액이 걸린 동작이 아니라(money-safety.md 대상
+        # 아님) claim_send_slot 같은 CAS까지는 두지 않는다.
+        raise HTTPException(status_code=503, detail="one or more slack sends failed transiently")
+
+    return {"status": "ok", "notified": notified}

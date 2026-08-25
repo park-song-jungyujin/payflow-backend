@@ -24,6 +24,7 @@ from ..payouts.store import get_client, get_claims_for_run, get_settlement_run
 from .audit import record_audit_log
 from .errors import GuardRejection
 from .limits import check_caps
+from .tasks import enqueue_task
 from .tokens import approval_amount_hash
 
 router = APIRouter()
@@ -142,6 +143,24 @@ def approve_settlement_run(run_id: str, authorization: str = Header(default=""))
         run_id=run_id,
         after={"status": "APPROVED"},
     )
+
+    # 청구 반려 자동화 §10 — 승인 시점까지 남아 있는(사람이 web에서 안 되돌린)
+    # 물품 반려 내역을 청구자에게 알린다(ingest/routes.py.task_notify_claim_rejections).
+    # 실패해도 승인 자체를 되돌리지 않는다 — 알림은 조언성 부가 기능이다
+    # (settlements/routes.py의 EXECUTOR_ENQUEUE_FAILED와 같은 판단).
+    try:
+        enqueue_task("/tasks/notify-claim-rejections", {"settlement_run_id": run_id})
+    except Exception as e:
+        try:
+            record_audit_log(
+                org_id=session["org_id"],
+                actor="api/src/guards",
+                action="CLAIM_REJECTION_NOTIFY_ENQUEUE_FAILED",
+                run_id=run_id,
+                reason=str(e),
+            )
+        except Exception:
+            pass
 
     response = {**run, **updates}
     del response["approval_token_hash"]
