@@ -17,6 +17,7 @@ _SNAPSHOT_FIELDS = (
     "parse_confidence",
     "raw_text_gcs_uri",
     "org_id",
+    "recipient_id",
 )
 
 _FULL_RECEIPT_SNAPSHOT = {
@@ -28,10 +29,12 @@ _FULL_RECEIPT_SNAPSHOT = {
     "parse_confidence": 0.92,
     "raw_text_gcs_uri": "gs://payflow-receipts/raw_text/rct_01K3M9XQ7B2F4G6H8J0K2M4N6P.txt",
     "org_id": "org_1",
+    # recipient_id는 판단용이 아니라 agent_sessions.actor_ref 스코핑 키다
+    # (agent-session-memory.html 결정 3) — org_id와 같은 이유로 예외적으로 나간다.
+    "recipient_id": "rcp_1",
     # 나가면 안 되는 필드들 — 판단에 불필요한 식별자·상태다(§6).
     # raw_text(원문 자체)도 여기 있다 — URI만 나가고 원문은 태스크 본문에 실리지 않는다.
     "raw_text": "딤섬관 영수증 원문 010-1234-5678",
-    "recipient_id": "usr_should_not_leak",
     "status": "PARSED",
     "slack_channel_id": "C0123",
     "gcs_uri": "gs://should-not-leak",
@@ -78,15 +81,17 @@ def test_builds_oidc_task_for_claimant_review_route(monkeypatch):
         "parse_confidence": 0.92,
         "raw_text_gcs_uri": "gs://payflow-receipts/raw_text/rct_01K3M9XQ7B2F4G6H8J0K2M4N6P.txt",
         "org_id": "org_1",
+        "recipient_id": "rcp_1",
     }
     assert request["oidc_token"]["audience"] == "https://payflow-agent.test.invalid"
     assert captured["parent"].endswith("/queues/payflow-queue")
 
 
-def test_snapshot_fields_are_exactly_eight_and_exclude_recipient_id(monkeypatch):
-    """§6 최소화 — 판단에 불필요한 식별자(recipient_id)·status·slack_*·gcs_*는
-    나가지 않는다. 나가는 스냅샷 필드는 정확히 8개뿐이다(org_id는 판단 대상이
-    아니라 agent_sessions 스코핑 키라 예외 — tiered-memory-review.html §8 Phase 2).
+def test_snapshot_fields_are_exactly_nine_and_exclude_status(monkeypatch):
+    """§6 최소화 — 판단에 불필요한 식별자(status·slack_*·gcs_*)는 나가지 않는다.
+    나가는 스냅샷 필드는 정확히 9개뿐이다(org_id·recipient_id는 판단 대상이 아니라
+    agent_sessions 스코핑 키라 예외 — tiered-memory-review.html §8 Phase 2,
+    agent-session-memory.html 결정 3).
 
     원문(raw_text)도 나가지 않는다 — 태스크 본문은 큐에 영속화되고 로그에 남는데,
     §2가 금지하는 건 "마스킹 안 된 원문이 Firestore·감사 로그로 흘러가는 것"이다.
@@ -110,7 +115,6 @@ def test_snapshot_fields_are_exactly_eight_and_exclude_recipient_id(monkeypatch)
     snapshot_keys = set(body.keys()) - {"receipt_id", "task_id"}
     assert snapshot_keys == set(_SNAPSHOT_FIELDS)
     assert "raw_text" not in body
-    assert "recipient_id" not in body
     assert "status" not in body
     assert "slack_channel_id" not in body
     assert "gcs_uri" not in body

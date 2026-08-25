@@ -27,8 +27,8 @@ from ..guards.tasks import QueueNotConfigured, enqueue_task
 
 __all__ = ["QueueNotConfigured", "enqueue_claimant_review"]
 
-# §6 최소화 — Firestore 문서를 통째로 보내지 않는다. recipient_id·status·
-# slack_*·image_gcs_uri는 에이전트가 알 필요 없는, 판단에 불필요한 식별자다.
+# §6 최소화 — Firestore 문서를 통째로 보내지 않는다. status·slack_*·
+# image_gcs_uri는 에이전트가 알 필요 없는, 판단에 불필요한 식별자다.
 # raw_text(원문 자체)도 여기 없다 — 위 docstring 참조.
 _SNAPSHOT_FIELDS = (
     "merchant_name",
@@ -38,9 +38,11 @@ _SNAPSHOT_FIELDS = (
     "account_category_code",
     "parse_confidence",
     "raw_text_gcs_uri",
-    # org_id는 판단 대상이 아니라 agent_sessions 스코핑 키다 — tiered-memory-review.html
-    # §8 Phase 2. 조직 간 세션 요약 누출(§7)을 막으려면 agent 쪽이 org_id를 알아야 한다.
+    # org_id·recipient_id는 판단 대상이 아니라 agent_sessions 스코핑 키다 —
+    # tiered-memory-review.html §8 Phase 2(org_id), agent-session-memory.html
+    # 결정 3(recipient_id → actor_ref, 이전 세션 요약 조회 연결 키).
     "org_id",
+    "recipient_id",
 )
 
 
