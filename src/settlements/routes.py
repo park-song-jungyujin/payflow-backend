@@ -81,6 +81,15 @@ def _public_run(run: dict) -> dict:
     return {k: v for k, v in run.items() if k != "approval_token_hash"}
 
 
+def _task_safe_run(run: dict) -> dict:
+    """Cloud Tasks 페이로드용 run 스냅샷. `_public_run`을 그대로 태스크에 실으면
+    안 된다 — HTTP 응답은 FastAPI가 datetime을 알아서 직렬화하지만, 태스크 본문은
+    `guards/tasks.py`가 맨 `json.dumps`를 쓰므로 Timestamp/datetime에서
+    TypeError로 터진다(그러면 enqueue가 통째로 실패해 FAILED로 남는다).
+    `_claim_summary`가 transaction_date에 쓰는 것과 같은 변환 규칙을 적용한다."""
+    return {k: _isoformat_or_none(v) for k, v in _public_run(run).items()}
+
+
 def _recipient_display_name(recipient_id: str, cache: dict[str, str]) -> str:
     """export.py와 같은 패턴 — recipient_id당 한 번만 조회한다. web 전용 필드라
     _claim_summary(에이전트 enqueue와 공유)에는 넣지 않는다."""
@@ -112,6 +121,11 @@ def _executor_analysis(run_id: str) -> dict | None:
         # 필드 추가는 항상 nullable/기본값으로, 문서 백필 없이).
         "anomalies_en": payload.get("anomalies_en", []),
         "summary_text_en": payload.get("summary_text_en"),
+        # status=FAILED일 때 set_executor_analysis_status가 남긴 실패 사유.
+        # 이걸 안 실어 보내면 web은 "분석을 시작하지 못했습니다"까지만 말할 수
+        # 있고, 정작 원인(AGENT_SERVICE_URL 누락 등)은 Firestore를 직접 열어야
+        # 보인다 — 이미 저장돼 있는 값이라 노출만 하면 된다.
+        "reason": payload.get("reason"),
         "created_at": draft.get("created_at"),
     }
 
@@ -130,6 +144,8 @@ def _safety_report(run_id: str) -> dict | None:
     return {
         "status": payload.get("status", "DONE"),
         "risk_report": payload.get("risk_report"),
+        # _executor_analysis와 같은 이유 — FAILED 사유를 web까지 전달한다.
+        "reason": payload.get("reason"),
         "created_at": draft.get("created_at"),
     }
 
@@ -286,7 +302,7 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
             pass
 
     try:
-        enqueue_safety_report(run_id, _public_run(doc))
+        enqueue_safety_report(run_id, _task_safe_run(doc))
     except Exception as e:
         # 집행자 enqueue와 같은 이유로 별도 try — 안전 확인은 조언자일 뿐이라
         # 실패해도 정산 실행 생성 자체는 막지 않는다(agent-tools.md).

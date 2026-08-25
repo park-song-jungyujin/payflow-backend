@@ -447,6 +447,7 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
     assert result["safety_report"] == {
         "status": "DONE",
         "risk_report": "한도 근접 항목 없음",
+        "reason": None,
         "created_at": "2026-08-21T00:00:01Z",
     }
     assert result["executor_analysis"] == {
@@ -455,6 +456,7 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
         "summary_text": "중복 의심 1건",
         "anomalies_en": ["Same merchant, same amount, 2 claims"],
         "summary_text_en": "1 suspected duplicate",
+        "reason": None,
         "created_at": "2026-08-21T00:00:00Z",
     }
 
@@ -481,6 +483,22 @@ def test_get_run_reports_failed_status_when_enqueue_never_started_analysis(monke
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["executor_analysis"]["status"] == "FAILED"
+    # 실패 사유는 이미 Firestore에 저장돼 있다 — web이 "직접 확인해주세요"에서
+    # 멈추지 않으려면 응답에 실려 나가야 한다.
+    assert result["executor_analysis"]["reason"] == "boom"
+
+
+def test_get_run_analysis_reason_is_none_when_not_failed(monkeypatch):
+    """정상 분석 결과 draft에는 reason이 없다 — 없어도 죽지 않고 None이어야 한다."""
+    draft = {
+        "payload": {"status": "DONE", "anomalies": [], "summary_text": "이상 없음"},
+        "created_at": "2026-08-21T00:00:00Z",
+    }
+    _wire_get(monkeypatch, draft=draft)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["executor_analysis"]["reason"] is None
 
 
 def test_get_run_reports_processing_safety_status_before_agent_writes_final_draft(monkeypatch):
@@ -513,6 +531,7 @@ def test_get_run_reports_failed_safety_status_when_enqueue_never_started_report(
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["safety_report"]["status"] == "FAILED"
+    assert result["safety_report"]["reason"] == "boom"
 
 
 def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):
