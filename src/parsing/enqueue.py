@@ -8,9 +8,8 @@
 
 **파싱 스냅샷을 태스크 본문에 싣는다.** 청구자 에이전트는 `{receipt_id, task_id}`만
 받으면 영수증 내용을 볼 방법이 없다(shared/api_client.py에 읽기 기능 없음,
-Firestore 직접 접근은 agent_sessions 하나만 예외). 안전 확인 에이전트
-(settlement_run 스냅샷)·집행자(candidate_claims)와 같은 방식으로, 여기서도 파싱
-결과를 본문에 실어 보낸다.
+Firestore 직접 접근은 agent_sessions 하나만 예외). 집행자(candidate_claims)와
+같은 방식으로, 여기서도 파싱 결과를 본문에 실어 보낸다.
 
 **원문은 URI로만 보낸다** — §9 입력 계약이 `raw_text_gcs_uri`다. 원문 자체를
 본문에 실으면 Cloud Tasks 큐에 영속화되고 요청 로그에 남으며, 에이전트 컨텍스트에

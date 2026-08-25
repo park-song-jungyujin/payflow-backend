@@ -20,7 +20,7 @@ from .tasks import enqueue_task
 
 router = APIRouter()
 
-_VALID_AGENTS = {"CLAIMANT", "EXECUTOR", "SAFETY"}
+_VALID_AGENTS = {"CLAIMANT", "EXECUTOR"}
 _VALID_TARGET_TYPES = {"RECEIPT", "SETTLEMENT_RUN"}
 
 
@@ -53,15 +53,12 @@ def write_agent_draft(body: dict, authorization: str = Header(default="")):
     }
     get_client().collection("agent_drafts").document(task_id).set(draft)
 
-    # schema-contract.md §9 — 안전 확인 에이전트의 risk_report는 audit_logs.reason에
-    # 그대로 저장된다. 조언일 뿐이라 게이트 판단에는 쓰지 않는다.
     record_audit_log(
         actor=f"agent/{agent.lower()}",
         actor_type="AGENT",
         action="AGENT_DRAFT_WRITTEN",
         run_id=target_id if target_type == "SETTLEMENT_RUN" else None,
         after={"draft_id": draft["draft_id"]},
-        reason=payload.get("risk_report") if agent == "SAFETY" else None,
     )
 
     # 청구자 draft는 api가 읽어 상태 전이로 반영한다(§9). 실패해도 draft 쓰기를

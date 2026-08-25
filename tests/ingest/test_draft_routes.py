@@ -48,7 +48,7 @@ def test_unknown_task_id_returns_404(monkeypatch):
 
 
 def test_wrong_agent_returns_400(monkeypatch):
-    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft(agent="SAFETY"))
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: _draft(agent="EXECUTOR"))
     with pytest.raises(HTTPException) as exc:
         routes.task_apply_claimant_draft({"task_id": "CLAIMANT:rct_1"})
     assert exc.value.status_code == 400

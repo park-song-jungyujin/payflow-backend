@@ -1,7 +1,6 @@
 """schema-contract.md §9 — POST /agents/drafts. Task 3 hook: CLAIMANT draft
-쓰기가 /tasks/apply-claimant-draft enqueue를 촉발하는지, 다른 에이전트
-(SAFETY·EXECUTOR)에서는 안 촉발하는지, 큐 미설정이어도 draft 쓰기 자체는
-여전히 200을 돌려주는지 검증한다."""
+쓰기가 /tasks/apply-claimant-draft enqueue를 촉발하는지, EXECUTOR에서는 안
+촉발하는지, 큐 미설정이어도 draft 쓰기 자체는 여전히 200을 돌려주는지 검증한다."""
 
 import pytest
 from fastapi import HTTPException
@@ -64,18 +63,6 @@ def test_claimant_draft_enqueues_apply_task(monkeypatch, _patch):
 
     assert result["status"] == "ok"
     assert calls == [("/tasks/apply-claimant-draft", {"task_id": "CLAIMANT:rct_1"})]
-
-
-def test_safety_draft_does_not_enqueue(monkeypatch, _patch):
-    calls = []
-    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: calls.append((path, payload)))
-
-    result = agent_drafts.write_agent_draft(
-        _body(agent="SAFETY", target_type="SETTLEMENT_RUN", target_id="run_1", task_id="SAFETY:run_1")
-    )
-
-    assert result["status"] == "ok"
-    assert calls == []
 
 
 def test_executor_draft_does_not_enqueue(monkeypatch, _patch):

@@ -15,8 +15,8 @@ from src.settlements.enqueue import (
 
 def test_task_id_is_namespaced_by_agent():
     """agent_drafts 문서 ID는 task_id뿐이다(agent 필드는 안 섞는다) — 순수
-    run_id를 쓰면 나중에 안전 확인 에이전트가 같은 run_id를 task_id로 쓸 때
-    같은 문서를 덮어쓴다. 네임스페이스로 그 충돌을 막는다."""
+    run_id를 쓰면 나중에 같은 run_id를 task_id로 쓰는 다른 agent 라우트가
+    생겼을 때 같은 문서를 덮어쓴다. 네임스페이스로 그 충돌을 막는다."""
     assert executor_draft_task_id("run_260821_ABC") == "EXECUTOR:run_260821_ABC"
 
 

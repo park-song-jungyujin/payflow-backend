@@ -6,10 +6,10 @@
 호출 시점은 정산 실행(settlement_run) 생성 직후다. `task_id`는 순수
 `settlement_run_id`가 아니라 `executor_draft_task_id(run_id)`("EXECUTOR:{run_id}")
 를 쓴다 — `guards/agent_drafts.py`는 Firestore 문서 ID로 `task_id`만 쓰고 `agent`는
-섞지 않는다. 순수 run_id를 쓰면, 나중에 안전 확인 에이전트(C)가 같은 run_id를
-task_id로 써서 `/agents/safety/report`를 부르는 순간 같은 문서를 서로 덮어쓴다.
-agent별로 네임스페이스해 이 충돌을 원천 차단한다 — agent 쪽(payflow-agent)은
-받은 task_id를 그대로 되돌려 쓰기만 해서 이 변경에 영향받지 않는다.
+섞지 않는다. 순수 run_id를 쓰면, 같은 run_id를 task_id로 쓰는 다른 agent 라우트가
+나중에 생겼을 때 같은 문서를 서로 덮어쓴다. agent별로 네임스페이스해 이 충돌을
+원천 차단한다 — agent 쪽(payflow-agent)은 받은 task_id를 그대로 되돌려 쓰기만
+해서 이 변경에 영향받지 않는다.
 
 같은 run이 재분석돼도 agent_drafts는 "최신 분석"만 남으면 되고(agent_sessions가
 과거 턴을 따로 보존한다), Cloud Tasks 재시도도 같은 draft를 덮어쓰는 것으로

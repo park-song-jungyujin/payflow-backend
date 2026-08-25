@@ -90,11 +90,7 @@ def _executor_analysis(run_id: str) -> dict | None:
     submit_settlement_analysis로 최종 결과를 씀). status가 없으면 DONE으로
     기본값 처리한다 — 이 필드를 추가하기 전에 이미 쓰인 draft는 전부 에이전트가
     완료한 분석이었기 때문(schema-contract.md 필드 추가는 기존 문서 백필 없이
-    nullable/기본값으로).
-
-    TODO: safety_report 필드도 여기 같이 추가한다 — C가 /agents/safety/report
-    호출 배선을 만들고 task_id 컨벤션을 정하면(집행자와 같은 충돌 문제가 있어
-    executor_draft_task_id처럼 agent_drafts.py, "EXECUTOR:" 로 짐작하지 않는다)."""
+    nullable/기본값으로)."""
     draft = get_agent_draft(executor_draft_task_id(run_id))
     if draft is None:
         return None

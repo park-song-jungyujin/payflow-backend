@@ -1,5 +1,5 @@
 {
-  "_fixture_note": "3. 중복 청구 의심 — 안전 확인 에이전트 이상 서술 (코드 게이트가 아니라 조언)",
+  "_fixture_note": "3. 중복 청구 의심 — 코드가 결정론적으로 탐지한다(find_duplicate_groups)",
   "recipients": [
     {
       "recipient_id": "rcp_01SCN03SOYEON0000000003",
@@ -118,19 +118,5 @@
       "updated_at": "2026-08-16T10:00:00Z"
     }
   ],
-  "agent_drafts": [
-    {
-      "draft_id": "drf_01SCN03SAFETYDRAFT000001",
-      "agent": "SAFETY",
-      "target_type": "SETTLEMENT_RUN",
-      "target_id": "run_260817_01SCN03DUPCL",
-      "task_id": "task_01SCN03SAFETYREPORT0001",
-      "payload": {
-        "risk_report": "같은 수취인이 동일 가맹점(카카오모빌리티)·동일 금액(18,500원)·동일 결제일(2026-08-10)의 영수증 2건을 3분 간격으로 제출했습니다. 같은 택시비를 두 번 청구했을 가능성이 있어 승인 전 원본 영수증 대조를 권합니다. 이 판단은 참고용이며 배치 확정 여부는 사람이 결정합니다.",
-        "confidence": null
-      },
-      "created_at": "2026-08-16T10:05:00Z"
-    }
-  ],
-  "_fixture_note_gate": "코드 게이트(claim CAS 점유, exclude_claim_ids)는 여기서 중복을 막지 않는다 — receipt_id가 다르므로 두 claim 모두 정상적으로 CONFIRMED→IN_RUN 전이가 가능하다. 차단은 사람이 risk_report를 보고 판단해야 한다는 걸 보여주는 시나리오다."
+  "_fixture_note_gate": "코드 게이트(claim CAS 점유, exclude_claim_ids)는 여기서 중복을 막지 않는다 — receipt_id가 다르므로 두 claim 모두 정상적으로 CONFIRMED→IN_RUN 전이가 가능하다. 중복 탐지는 find_duplicate_groups가 금액·날짜·가맹점명을 대조해 결정론적으로 한다."
 }

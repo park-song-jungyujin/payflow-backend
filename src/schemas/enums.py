@@ -91,7 +91,6 @@ class SenderItemStatus(StrEnum):
 class AgentName(StrEnum):
     CLAIMANT = "CLAIMANT"
     EXECUTOR = "EXECUTOR"
-    SAFETY = "SAFETY"
 
 
 class AgentDraftTargetType(StrEnum):
