@@ -16,6 +16,7 @@ import os
 from datetime import UTC, datetime
 
 from ..guards.audit import record_audit_log
+from ..guards.tasks import enqueue_task
 from .paypal_client import get_payout_batch
 from .store import (
     get_claims_for_run,
@@ -161,5 +162,32 @@ def reconcile(run_id: str) -> dict:
         before={"status": before_status},
         after={"status": new_status},
     )
+
+    # 청구자 알림 — 이번 호출에서 실제로 SUCCESS로 확정된 recipient에게만
+    # "정산 완료" DM을 예약한다(ingest/routes.py.task_notify_settlement_complete).
+    # all_success든 부분 실패든 SUCCESS 항목 기준은 같다 — 부분 실패에서
+    # 아직 결과가 안 난(CONFIRMED로 되돌아간) recipient는 여기 안 낀다.
+    # 조언성 부가 기능이라 실패해도 종결 처리 자체를 되돌리지 않는다.
+    settled_recipients = [
+        {"recipient_id": i["recipient_id"], "amount_minor": i["amount_minor"], "currency": i["currency"]}
+        for i in items
+        if i["status"] == "SUCCESS"
+    ]
+    if settled_recipients:
+        try:
+            enqueue_task(
+                "/tasks/notify-settlement-complete",
+                {"settlement_run_id": run_id, "recipients": settled_recipients},
+            )
+        except Exception as e:
+            try:
+                record_audit_log(
+                    actor="api/src/payouts",
+                    action="SETTLEMENT_COMPLETE_NOTIFY_ENQUEUE_FAILED",
+                    run_id=run_id,
+                    reason=str(e),
+                )
+            except Exception:
+                pass
 
     return {"settlement_run_id": run_id, "status": new_status, "sender_items": items}

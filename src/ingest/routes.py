@@ -24,6 +24,7 @@ from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
 from ..guards.translate import translate_lines
 from ..parsing.store import get_receipt
+from ..payouts.currency import CURRENCY_EXPONENT
 from ..payouts.store import get_claims_for_run, get_recipient
 from ..settlements.store import get_agent_draft, get_receipts
 from .drafts import InvalidDraftPayload, parse_claimant_payload
@@ -688,81 +689,120 @@ def task_remind(body: dict, authorization: str = Header(default="")):
     return {"status": "ok", "action": action.value, "slack_ts": slack_ts}
 
 
-def _rejection_notice_text(items: list[dict], locale: str | None) -> str:
-    """반려된 물품 목록을 사람이 읽을 Slack DM 본문으로 조립한다. reason은
-    집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴 한국어
-    문장이다 — _requery_message와 같은 원칙으로 여기서 대체 문장을 지어내지
-    않고 그대로 옮긴다.
+def _format_amount(amount_minor: int, currency: str) -> str:
+    """사람이 읽을 금액 표시. payouts/currency.py의 CURRENCY_EXPONENT를 그대로
+    쓴다 — 등록 안 된 통화는 exponent 0으로 본다(여기 오는 값은 이미 실제로
+    지급까지 끝난 sender_item 금액이라 등록 안 된 통화일 일은 없다)."""
+    exponent = CURRENCY_EXPONENT.get(currency, 0)
+    if exponent == 0:
+        return f"{amount_minor:,} {currency}"
+    whole, remainder = divmod(amount_minor, 10**exponent)
+    return f"{whole:,}.{remainder:0{exponent}d} {currency}"
+
+
+def _settlement_complete_text(
+    *, amount_display: str, rejected_items: list[dict], locale: str | None
+) -> str:
+    """정산 완료 DM 본문 — "정산이 완료됐다"가 메인이고, 이번 run에서 제외된
+    물품이 있으면 그 아래에 물품명·사유를 덧붙인다.
+
+    reason은 집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴
+    한국어 문장이면 그대로 옮긴다 — _requery_message와 같은 원칙으로 여기서
+    대체 문장을 지어내지 않는다. 사람이 web에서 사유 없이 직접 체크를 해제한
+    항목은 reason이 없다 — 그땐 "왜 뺐는지 기록이 없다"를 정직하게 알리는
+    일반 문구로 대체한다(없는 사유를 지어내지 않는다).
 
     영어 로케일이면 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로 번역한다 —
     reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면 그 예산을
     갉아먹어 반려 자체가 실패할 위험이 있어 여기로 미뤘다. 번역 실패는
-    translate_lines의 기존 계약대로 조용히 한국어 폴백으로 이어진다.
+    한국어 사유로 폴백한다(헤더만 영어) — 번역이 안 됐다고 사유 자체를 숨기지
+    않는다.
     """
-    lines_ko = [f"- {i.get('name') or '(이름 없음)'}: {i.get('reason') or '사유 미기재'}" for i in items]
+    fallback_reason_ko = "담당자 검토에 의해 제외됨"
+    lines_ko = [
+        f"- {i.get('name') or '(이름 없음)'}: {i.get('reason') or fallback_reason_ko}"
+        for i in rejected_items
+    ]
+
     if locale and locale.startswith("en"):
+        header = f"Your settlement of {amount_display} has been completed."
+        if not rejected_items:
+            return header
         translated = translate_lines(
-            [f"{i.get('name') or ''}: {i.get('reason') or ''}" for i in items]
+            [f"{i.get('name') or ''}: {i.get('reason') or fallback_reason_ko}" for i in rejected_items]
         )
-        if translated is not None:
-            lines_en = [f"- {t}" for t in translated]
-            return "The following items were excluded from this settlement:\n" + "\n".join(lines_en)
-    return "이번 정산에서 다음 물품이 정산 금액에서 제외됐습니다:\n" + "\n".join(lines_ko)
+        body = "\n".join(f"- {t}" for t in translated) if translated is not None else "\n".join(lines_ko)
+        return f"{header}\n\nThe following items were excluded from this settlement:\n{body}"
+
+    header = f"{amount_display} 정산이 완료되었습니다."
+    if not rejected_items:
+        return header
+    return f"{header}\n\n다음 항목은 이번 정산에서 제외됐습니다:\n" + "\n".join(lines_ko)
 
 
-@router.post("/tasks/notify-claim-rejections")
-def task_notify_claim_rejections(body: dict, authorization: str = Header(default="")):
-    """청구 반려 자동화 — 승인 시점에 그때까지 남아있는 물품 반려 내역을
-    청구자에게 Slack DM으로 안내한다. guards/routes.py.approve_settlement_run이
-    승인 CAS 직후 enqueue한다.
+@router.post("/tasks/notify-settlement-complete")
+def task_notify_settlement_complete(body: dict, authorization: str = Header(default="")):
+    """정산 완료 통보 — payouts/reconcile.py.reconcile()이 claim을 SETTLED로
+    바꾼 직후(=PayPal 송금이 실제로 성공한 직후) enqueue한다.
 
-    **승인 시점을 고른 이유**: 반려는 사람이 승인 전까지 web에서 언제든
+    **정산 완료 시점을 고른 이유**: 물품 반려는 승인 전까지 web에서 언제든
     되돌릴 수 있는 잠정 상태다(settlements/routes.py._apply_item_exclusion).
-    분석 직후(집행자가 반려한 그 순간)에 바로 알리면, 사람이 web에서 되돌린
-    반려까지 "제외됐습니다"로 잘못 통보하게 된다 — 승인이 곧 그 시점의 반려
-    상태를 확정하는 지점이라 여기서 걷는다.
+    승인 시점에 알리면 아직 돈이 안 나간 상태를 "정산 완료"라고 잘못 말하게
+    되고, 반려 직후에 바로 알리면 사람이 나중에 되돌린 반려까지 통보하게
+    된다 — 송금까지 끝난 이 시점이라야 되돌릴 수 없는 확정된 사실만 안전하게
+    전달할 수 있다.
 
-    claim이 여러 개인 수취인도 이번 run에서 반려된 물품을 모아 DM 하나로
-    보낸다. 반려가 하나도 없으면 조용히 끝난다(정상 경로 — 대부분의 run).
+    반려 판단 기준은 excluded=true 전체다 — 집행자 에이전트가 자동으로 뗀
+    것(rejected_by="EXECUTOR")과 사람이 web 체크박스로 직접 뗀 것을 구분하지
+    않는다. 청구자 입장에서는 "누가 뺐는지"가 아니라 "무엇이 왜 빠졌는지"가
+    중요하다.
+
+    recipients는 reconcile()이 넘긴다 — 이번 호출에서 SUCCESS로 확정된
+    sender_item(recipient_id, amount_minor, currency)만큼만. 부분 실패 run에서
+    아직 결과가 안 난 recipient에게는 여기서 알리지 않는다(재발송이 나중에
+    성공하면 그때 별도로 통보된다).
     """
     verify_oidc(authorization)
 
     run_id = body.get("settlement_run_id")
-    if not run_id:
-        raise HTTPException(status_code=400, detail="settlement_run_id required")
+    recipients = body.get("recipients")
+    if not run_id or not recipients:
+        raise HTTPException(status_code=400, detail="settlement_run_id, recipients required")
 
     claims = get_claims_for_run(run_id)
     receipts = get_receipts({c["receipt_id"] for c in claims})
 
-    by_recipient: dict[str, list[dict]] = {}
+    rejected_by_recipient: dict[str, list[dict]] = {}
     for c in claims:
         receipt = receipts.get(c["receipt_id"]) or {}
         for item in receipt.get("items") or []:
-            if item.get("rejected_by") != "EXECUTOR":
+            if not item.get("excluded"):
                 continue
-            by_recipient.setdefault(c["recipient_id"], []).append(
+            rejected_by_recipient.setdefault(c["recipient_id"], []).append(
                 {"name": item.get("name"), "reason": item.get("rejected_reason")}
             )
 
-    if not by_recipient:
-        return {"status": "ok", "notified": 0}
-
     notified = 0
     had_transient_failure = False
-    for recipient_id, items in by_recipient.items():
+    for r in recipients:
+        recipient_id = r.get("recipient_id")
         recipient = get_recipient(recipient_id)
         slack_user_id = (recipient or {}).get("slack_user_id")
         if not slack_user_id:
             _audit_best_effort(
                 actor="api/src/ingest",
-                action="CLAIM_REJECTION_NOTICE_NO_TARGET",
+                action="SETTLEMENT_COMPLETE_NOTICE_NO_TARGET",
                 reason=f"recipient {recipient_id}에 slack_user_id가 없다",
                 after={"settlement_run_id": run_id, "recipient_id": recipient_id},
             )
             continue
 
         locale = get_user_locale(slack_user_id)
-        text = _rejection_notice_text(items, locale)
+        amount_display = _format_amount(r.get("amount_minor"), r.get("currency"))
+        rejected_items = rejected_by_recipient.get(recipient_id, [])
+        text = _settlement_complete_text(
+            amount_display=amount_display, rejected_items=rejected_items, locale=locale
+        )
 
         try:
             post_message(channel=slack_user_id, text=text)
@@ -771,7 +811,7 @@ def task_notify_claim_rejections(body: dict, authorization: str = Header(default
             had_transient_failure = True
             _audit_best_effort(
                 actor="api/src/ingest",
-                action="CLAIM_REJECTION_NOTICE_SEND_TRANSIENT_FAILURE",
+                action="SETTLEMENT_COMPLETE_NOTICE_SEND_TRANSIENT_FAILURE",
                 reason=str(e),
                 after={"settlement_run_id": run_id, "recipient_id": recipient_id},
             )
@@ -780,7 +820,7 @@ def task_notify_claim_rejections(body: dict, authorization: str = Header(default
             # 다시 보내도 같은 실패다 — 이 사람은 포기하고 나머지는 계속한다.
             _audit_best_effort(
                 actor="api/src/ingest",
-                action="CLAIM_REJECTION_NOTICE_SEND_FAILED",
+                action="SETTLEMENT_COMPLETE_NOTICE_SEND_FAILED",
                 reason=str(e),
                 after={"settlement_run_id": run_id, "recipient_id": recipient_id},
             )
@@ -789,11 +829,11 @@ def task_notify_claim_rejections(body: dict, authorization: str = Header(default
         notified += 1
         _audit_best_effort(
             actor="api/src/ingest",
-            action="CLAIM_REJECTION_NOTICE_SENT",
+            action="SETTLEMENT_COMPLETE_NOTICE_SENT",
             after={
                 "settlement_run_id": run_id,
                 "recipient_id": recipient_id,
-                "item_count": len(items),
+                "rejected_item_count": len(rejected_items),
             },
         )
 
