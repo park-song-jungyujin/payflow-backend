@@ -36,7 +36,7 @@ from ..payouts.store import (
 from ..schemas.models import SettlementFilter
 from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
-from .store import get_agent_draft, get_receipts
+from .store import get_agent_draft, get_receipts, set_executor_analysis_status
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -83,9 +83,14 @@ def _recipient_display_name(recipient_id: str, cache: dict[str, str]) -> str:
 
 
 def _executor_analysis(run_id: str) -> dict | None:
-    """agent_drafts.EXECUTOR를 읽는 유일한 지점. None이면 "아직 분석 안 됨"이지
-    "이상 없음"이 아니다 — web이 두 상태를 구분해 렌더링해야 한다(§9,
-    plan.md "요약 카드 — 정산 명세 + 위험 알림 렌더").
+    """agent_drafts.EXECUTOR를 읽는 유일한 지점. None이면 "정산 실행 생성 자체가
+    실패했거나 아주 옛날 run"이지 진행 상태가 아니다 — 진행 상태는 status 필드로
+    구분한다: PROCESSING(집행자 에이전트 enqueue 성공, 분석 대기/진행 중),
+    FAILED(enqueue 자체가 실패, store.set_executor_analysis_status), DONE(에이전트가
+    submit_settlement_analysis로 최종 결과를 씀). status가 없으면 DONE으로
+    기본값 처리한다 — 이 필드를 추가하기 전에 이미 쓰인 draft는 전부 에이전트가
+    완료한 분석이었기 때문(schema-contract.md 필드 추가는 기존 문서 백필 없이
+    nullable/기본값으로).
 
     TODO: safety_report 필드도 여기 같이 추가한다 — C가 /agents/safety/report
     호출 배선을 만들고 task_id 컨벤션을 정하면(집행자와 같은 충돌 문제가 있어
@@ -95,6 +100,7 @@ def _executor_analysis(run_id: str) -> dict | None:
         return None
     payload = draft["payload"]
     return {
+        "status": payload.get("status", "DONE"),
         "anomalies": payload.get("anomalies", []),
         "summary_text": payload.get("summary_text"),
         # anomalies_en/summary_text_en은 executor-agent가 새로 채우는 필드다 —
@@ -204,6 +210,22 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
                 reason=str(e),
                 after={"settlement_run_id": run_id},
             )
+        except Exception:
+            pass
+        try:
+            set_executor_analysis_status(run_id, "FAILED", reason=str(e))
+        except Exception:
+            pass
+    else:
+        # enqueue 성공 = 집행자 에이전트가 언젠가 분석을 시작한다는 뜻일 뿐,
+        # 지금 당장 시작했다는 뜻은 아니다 — 그래도 web이 "아직 분석 안 됨"과
+        # "진행 중"을 구분해 보여줄 수 있도록 여기서 먼저 표시해둔다. 에이전트가
+        # submit_settlement_analysis로 최종 결과를 쓰면 이 문서를 통째로 덮어써
+        # status가 사라지고(_executor_analysis가 DONE으로 기본값 처리), 실패로
+        # 끝나면(agent 쪽 500 등) 이 PROCESSING이 그대로 남는다 — 재시도 없이는
+        # FAILED로 못 바꾼다는 뜻이지만, 그 이상의 실패 감지 배선은 이번 범위 밖이다.
+        try:
+            set_executor_analysis_status(run_id, "PROCESSING")
         except Exception:
             pass
 
