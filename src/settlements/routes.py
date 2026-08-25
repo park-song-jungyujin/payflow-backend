@@ -39,7 +39,14 @@ from ..payouts.store import (
 from ..schemas.models import SettlementFilter
 from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
-from .store import get_agent_draft, get_receipts, set_executor_analysis_status, update_receipt_items
+from .safety_enqueue import enqueue_safety_report, safety_draft_task_id
+from .store import (
+    get_agent_draft,
+    get_receipts,
+    set_executor_analysis_status,
+    set_safety_report_status,
+    update_receipt_items,
+)
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -93,11 +100,7 @@ def _executor_analysis(run_id: str) -> dict | None:
     submit_settlement_analysis로 최종 결과를 씀). status가 없으면 DONE으로
     기본값 처리한다 — 이 필드를 추가하기 전에 이미 쓰인 draft는 전부 에이전트가
     완료한 분석이었기 때문(schema-contract.md 필드 추가는 기존 문서 백필 없이
-    nullable/기본값으로).
-
-    TODO: safety_report 필드도 여기 같이 추가한다 — C가 /agents/safety/report
-    호출 배선을 만들고 task_id 컨벤션을 정하면(집행자와 같은 충돌 문제가 있어
-    executor_draft_task_id처럼 agent_drafts.py, "EXECUTOR:" 로 짐작하지 않는다)."""
+    nullable/기본값으로)."""
     draft = get_agent_draft(executor_draft_task_id(run_id))
     if draft is None:
         return None
@@ -111,6 +114,24 @@ def _executor_analysis(run_id: str) -> dict | None:
         # 필드 추가는 항상 nullable/기본값으로, 문서 백필 없이).
         "anomalies_en": payload.get("anomalies_en", []),
         "summary_text_en": payload.get("summary_text_en"),
+        "created_at": draft.get("created_at"),
+    }
+
+
+def _safety_report(run_id: str) -> dict | None:
+    """agent_drafts.SAFETY를 읽는 유일한 지점. None이면 정산 실행 생성 자체가
+    실패했거나(enqueue 실패로 status 쓰기까지 죽은 경우) 아주 옛날 run이지
+    진행 상태가 아니다 — 진행 상태는 status 필드로 구분한다: PROCESSING(enqueue
+    성공, 리포트 대기/작성 중), FAILED(enqueue 자체가 실패, set_safety_report_status),
+    DONE(에이전트가 submit_risk_report로 최종 결과를 씀). _executor_analysis와
+    같은 이유로 status 없으면 DONE 기본값 처리한다."""
+    draft = get_agent_draft(safety_draft_task_id(run_id))
+    if draft is None:
+        return None
+    payload = draft["payload"]
+    return {
+        "status": payload.get("status", "DONE"),
+        "risk_report": payload.get("risk_report"),
         "created_at": draft.get("created_at"),
     }
 
@@ -241,6 +262,33 @@ def create_settlement_run_route(body: dict | None = None, authorization: str = H
         except Exception:
             pass
 
+    try:
+        enqueue_safety_report(run_id, _public_run(doc))
+    except Exception as e:
+        # 집행자 enqueue와 같은 이유로 별도 try — 안전 확인은 조언자일 뿐이라
+        # 실패해도 정산 실행 생성 자체는 막지 않는다(agent-tools.md).
+        try:
+            record_audit_log(
+                actor=_ACTOR,
+                action="SAFETY_ENQUEUE_FAILED",
+                run_id=run_id,
+                reason=str(e),
+                after={"settlement_run_id": run_id},
+            )
+        except Exception:
+            pass
+        try:
+            set_safety_report_status(run_id, "FAILED", reason=str(e))
+        except Exception:
+            pass
+    else:
+        # executor와 같은 이유 — enqueue 성공 = 언젠가 에이전트가 시작한다는
+        # 뜻일 뿐이라 web이 "아직 없음"과 "진행 중"을 구분하도록 먼저 표시해둔다.
+        try:
+            set_safety_report_status(run_id, "PROCESSING")
+        except Exception:
+            pass
+
     return _public_run(doc)
 
 
@@ -274,6 +322,7 @@ def get_settlement_run_route(run_id: str, authorization: str = Header(default=""
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
     public = _public_run(run)
     public["executor_analysis"] = _executor_analysis(run_id)
+    public["safety_report"] = _safety_report(run_id)
     public["claims"] = _run_claims(run_id)
     return public
 

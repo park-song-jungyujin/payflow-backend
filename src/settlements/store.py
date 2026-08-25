@@ -21,6 +21,7 @@ from ulid import ULID
 from ..payouts.store import get_client
 from ..schemas.models import VerificationSignals
 from .enqueue import executor_draft_task_id
+from .safety_enqueue import safety_draft_task_id
 
 
 def get_receipts(receipt_ids: set[str]) -> dict[str, dict]:
@@ -104,6 +105,26 @@ def set_executor_analysis_status(run_id: str, status: str, reason: str | None = 
         {
             "draft_id": f"drf_{task_id}",
             "agent": "EXECUTOR",
+            "target_type": "SETTLEMENT_RUN",
+            "target_id": run_id,
+            "task_id": task_id,
+            "payload": {"status": status, **({"reason": reason} if reason else {})},
+            "created_at": datetime.now(UTC),
+        }
+    )
+
+
+def set_safety_report_status(run_id: str, status: str, reason: str | None = None) -> None:
+    """set_executor_analysis_status와 같은 패턴 — 정산 실행 생성 시점에 backend가
+    agent_drafts.SAFETY에 직접 쓰는 임시 상태(PROCESSING/FAILED). 안전 확인 에이전트가
+    submit_risk_report로 최종 payload({"risk_report": ...})를 쓰면 같은 문서를
+    통째로 덮어써 status가 사라진다 — routes._safety_report가 status 없으면 DONE으로
+    기본값 처리하는 이유가 이것."""
+    task_id = safety_draft_task_id(run_id)
+    get_client().collection("agent_drafts").document(task_id).set(
+        {
+            "draft_id": f"drf_{task_id}",
+            "agent": "SAFETY",
             "target_type": "SETTLEMENT_RUN",
             "target_id": run_id,
             "task_id": task_id,

@@ -146,6 +146,7 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=N
             raise enqueue_error
 
     monkeypatch.setattr(routes, "enqueue_executor_analyze", fake_enqueue)
+    monkeypatch.setattr(routes, "enqueue_safety_report", lambda run_id, snapshot: None)
 
     audit_calls = []
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
@@ -157,6 +158,14 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=N
         lambda run_id, status, reason=None: status_calls.append((run_id, status, reason)),
     )
     stub.status_calls = status_calls
+
+    safety_status_calls = []
+    monkeypatch.setattr(
+        routes,
+        "set_safety_report_status",
+        lambda run_id, status, reason=None: safety_status_calls.append((run_id, status, reason)),
+    )
+    stub.safety_status_calls = safety_status_calls
 
     return stub, enqueue_calls, audit_calls
 
@@ -186,6 +195,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
     assert exact_duplicate_groups == []  # receipt_serial_number가 없으니 판정 대상도 없다
     assert stub.status_calls == [(run_id, "PROCESSING", None)]
+    assert stub.safety_status_calls == [(run_id, "PROCESSING", None)]
 
 
 def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
@@ -237,6 +247,31 @@ def test_enqueue_failure_does_not_break_run_creation(monkeypatch):
         }
     ]
     assert stub.status_calls == [(result["settlement_run_id"], "FAILED", "boom")]
+
+
+def test_safety_enqueue_failure_records_failed_status(monkeypatch):
+    """집행자 enqueue 실패와 같은 패턴 — 안전 확인은 조언일 뿐이라 enqueue가
+    실패해도 정산 실행은 정상 생성되고, agent_drafts.SAFETY에는 FAILED를 남긴다."""
+    claims = [_claim("clm_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    stub, _, audit_calls = _wire(monkeypatch, claims=claims, receipts=receipts)
+    monkeypatch.setattr(
+        routes,
+        "enqueue_safety_report",
+        lambda run_id, snapshot: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    assert result["status"] == "DRAFT"
+    assert stub.safety_status_calls == [(result["settlement_run_id"], "FAILED", "boom")]
+    assert {
+        "actor": "api/src/settlements",
+        "action": "SAFETY_ENQUEUE_FAILED",
+        "run_id": result["settlement_run_id"],
+        "reason": "boom",
+        "after": {"settlement_run_id": result["settlement_run_id"]},
+    } in audit_calls
 
 
 def test_audit_log_failure_does_not_mask_response(monkeypatch):
@@ -314,7 +349,7 @@ def test_get_run_returns_none_analysis_when_no_draft_written_yet(monkeypatch):
 
 
 def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
-    draft = {
+    executor_draft = {
         "payload": {
             "anomalies": ["같은 가맹점·같은 금액 2건"],
             "summary_text": "중복 의심 1건",
@@ -323,19 +358,29 @@ def test_get_run_includes_analysis_when_draft_exists(monkeypatch):
         },
         "created_at": "2026-08-21T00:00:00Z",
     }
+    safety_draft = {
+        "payload": {"risk_report": "한도 근접 항목 없음"},
+        "created_at": "2026-08-21T00:00:01Z",
+    }
+    drafts_by_task_id = {"EXECUTOR:run_1": executor_draft, "SAFETY:run_1": safety_draft}
     captured_task_id = []
-    _wire_get(monkeypatch, draft=draft)
+    _wire_get(monkeypatch)
     monkeypatch.setattr(
         routes,
         "get_agent_draft",
-        lambda task_id: captured_task_id.append(task_id) or draft,
+        lambda task_id: captured_task_id.append(task_id) or drafts_by_task_id[task_id],
     )
 
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
-    # enqueue.py의 task_id 네임스페이스와 정확히 같은 값으로 조회해야 한다 —
-    # 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
-    assert captured_task_id == ["EXECUTOR:run_1"]
+    # enqueue.py/safety_enqueue.py의 task_id 네임스페이스와 정확히 같은 값으로
+    # 조회해야 한다 — 다르면 존재하는 draft를 못 찾고 항상 None이 나온다.
+    assert captured_task_id == ["EXECUTOR:run_1", "SAFETY:run_1"]
+    assert result["safety_report"] == {
+        "status": "DONE",
+        "risk_report": "한도 근접 항목 없음",
+        "created_at": "2026-08-21T00:00:01Z",
+    }
     assert result["executor_analysis"] == {
         "status": "DONE",
         "anomalies": ["같은 가맹점·같은 금액 2건"],
@@ -368,6 +413,38 @@ def test_get_run_reports_failed_status_when_enqueue_never_started_analysis(monke
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["executor_analysis"]["status"] == "FAILED"
+
+
+def test_get_run_reports_processing_safety_status_before_agent_writes_final_draft(monkeypatch):
+    """set_safety_report_status(routes.py)가 정산 실행 생성 시점에 미리 써둔
+    placeholder — 안전 확인 에이전트가 아직 submit_risk_report를 안 부른 상태다."""
+    drafts_by_task_id = {
+        "EXECUTOR:run_1": None,
+        "SAFETY:run_1": {"payload": {"status": "PROCESSING"}, "created_at": "2026-08-21T00:00:00Z"},
+    }
+    _wire_get(monkeypatch)
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: drafts_by_task_id[task_id])
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["safety_report"]["status"] == "PROCESSING"
+    assert result["safety_report"]["risk_report"] is None
+
+
+def test_get_run_reports_failed_safety_status_when_enqueue_never_started_report(monkeypatch):
+    drafts_by_task_id = {
+        "EXECUTOR:run_1": None,
+        "SAFETY:run_1": {
+            "payload": {"status": "FAILED", "reason": "boom"},
+            "created_at": "2026-08-21T00:00:00Z",
+        },
+    }
+    _wire_get(monkeypatch)
+    monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: drafts_by_task_id[task_id])
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["safety_report"]["status"] == "FAILED"
 
 
 def test_get_run_analysis_defaults_english_fields_for_old_drafts(monkeypatch):
