@@ -16,8 +16,16 @@ import os
 
 from google import genai
 from google.genai import errors as genai_errors
+from google.genai import types
 
 _logger = logging.getLogger(__name__)
+
+# 번역은 조언성 부가 기능이라 실패를 조용히 흡수하는데, hang은 예외가 아니라서
+# try/except로 못 잡는다 — 명시 타임아웃 없이는 Gemma가 응답을 안 줄 때
+# Cloud Run 요청 타임아웃(300s)까지 그대로 끌려가 /agents/drafts 전체가 504로
+# 죽는다(draft 자체가 안 써짐). httpx 타임아웃은 예외로 떨어지므로 아래
+# genai_errors/Exception 캐치에서 그대로 흡수된다.
+_TIMEOUT_MS = 15_000
 
 _PROMPT_TEMPLATE = """\
 아래 <lines> 블록의 각 줄은 한국어 문장이다. 줄 순서를 그대로 유지해
@@ -40,6 +48,7 @@ def _build_client() -> genai.Client:
         vertexai=True,
         project=os.environ["GCP_PROJECT"],
         location=os.environ["VERTEX_LOCATION"],
+        http_options=types.HttpOptions(timeout=_TIMEOUT_MS),
     )
 
 
