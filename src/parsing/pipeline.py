@@ -3,19 +3,25 @@
 **순서가 계약이다.** PII 마스킹은 Firestore 쓰기 *직전*에 오고, 원문은 객체
 저장소에만 남는다 (schema-contract.md §2).
 
-**파싱이 쓸 수 있는 status는 PARSED와 FAILED뿐이다.** NEEDS_REQUERY는 청구자
-에이전트가 청구 확정 과정에서 내리는 판단이라(§2), 코드가 대신 쓰면 감사 로그에서
-판정 주체를 잃는다. 금액을 못 읽었거나 confidence가 낮은 건 상태가 아니라
+**파싱 본체(_parse)가 update_receipt/commit_parsed_with_claim으로 직접 쓸 수 있는
+status는 PARSED와 FAILED뿐이다.** NEEDS_REQUERY는 원래 청구자 에이전트가 청구
+확정 과정에서 내리는 판단이라(§2), 코드가 대신 쓰면 감사 로그에서 판정 주체를
+잃는다 — **단, 거래일자 미검출은 예외다.** 이건 LLM 판단이 필요 없는 결정론적
+규칙이라 청구자 에이전트를 거치지 않고 apply_claimant_verdict를 직접 호출해
+NEEDS_REQUERY로 확정한다(RECEIPT_DATE_MISSING_REQUERY 감사 로그가 판정 주체를
+남긴다). 금액을 못 읽었거나 confidence가 낮은 건 상태가 아니라
 account_category_code = UNCLASSIFIED로 표현된다 (§5).
 """
 
 from datetime import UTC, datetime
 
+from ..guards.agent_drafts import write_agent_draft_document
 from ..guards.audit import record_audit_log
 from ..ingest.claims import ClaimNotCreatable, build_claim
 from ..ingest.drafts import DraftVerdict
 from ..ingest.enqueue import enqueue_remind
 from ..ingest.store import apply_claimant_verdict
+from ..schemas.enums import ReminderReason
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
 from .masking import mask_pii
@@ -252,15 +258,28 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     # claim으로 만들지 않고, 큐에 올리기 전에 재촬영 요청만 보내도록 옮긴다.
     if not signals.transaction_date_present:
         try:
+            verdict = DraftVerdict(
+                needs_requery=True,
+                is_business=None,
+                requery_message="영수증에서 거래일자가 보이지 않습니다. 날짜가 나오도록 다시 찍어 보내주세요.",
+                reason="transaction_date 미검출 — 코드 결정론적 재요청(청구자 에이전트 미호출)",
+            )
+            # ingest/routes.py._requery_message는 DM 문안을 agent_drafts에서만
+            # 읽는다 — 청구자 에이전트를 안 부르는 이 경로도 여기에 문서를 남겨야
+            # 재촉 루프가 실제로 DM을 보낸다(청구자 에이전트가 쓰는 것과 같은
+            # task_id 컨벤션: parsing/enqueue.py의 f"CLAIMANT:{receipt_id}").
+            write_agent_draft_document(
+                agent="CLAIMANT",
+                target_type="RECEIPT",
+                target_id=receipt_id,
+                task_id=f"CLAIMANT:{receipt_id}",
+                payload=verdict.model_dump(),
+            )
             result, claim_request_id = apply_claimant_verdict(
                 receipt_id,
-                DraftVerdict(
-                    needs_requery=True,
-                    is_business=None,
-                    requery_message="영수증에서 거래일자가 보이지 않습니다. 날짜가 나오도록 다시 찍어 보내주세요.",
-                    reason="transaction_date 미검출 — 코드 결정론적 재요청(청구자 에이전트 미호출)",
-                ),
+                verdict,
                 now=now,
+                reason=ReminderReason.DATE_MISSING.value,
             )
             record_audit_log(
                 actor=_ACTOR,

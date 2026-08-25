@@ -71,6 +71,28 @@ def wired(monkeypatch, tmp_path):
         pipeline, "enqueue_claimant_review", lambda rid, *, receipt: state["enqueued"].append(rid)
     )
 
+    state["verdicts"] = []
+    state["reminders"] = []
+    state["agent_drafts"] = []
+
+    def fake_apply_claimant_verdict(receipt_id, verdict, *, now, reason=None):
+        state["verdicts"].append((receipt_id, verdict, reason))
+        return "REQUERY", "crq_test"
+
+    monkeypatch.setattr(pipeline, "apply_claimant_verdict", fake_apply_claimant_verdict)
+    monkeypatch.setattr(
+        pipeline,
+        "write_agent_draft_document",
+        lambda **kwargs: state["agent_drafts"].append(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "enqueue_remind",
+        lambda claim_request_id, *, delay_seconds: state["reminders"].append(
+            (claim_request_id, delay_seconds)
+        ),
+    )
+
     state["claims"] = []
     state["commits"] = []
 
@@ -251,8 +273,11 @@ def test_unreadable_fields_still_parse(monkeypatch, wired):
 
 
 def test_pipeline_never_writes_needs_requery(monkeypatch, wired):
-    """§2 — NEEDS_REQUERY의 판정 주체는 청구자 에이전트다. 코드가 쓰면
-    감사 로그에서 판정 주체를 잃는다."""
+    """§2 — _parse가 update_receipt/commit_parsed_with_claim으로 직접 쓰는
+    status는 NEEDS_REQUERY를 포함하지 않는다. (거래일자 미검출은 예외 경로로
+    apply_claimant_verdict를 통해 별도 전이한다 — 아래 거래일자 미검출 스위트.)
+    이 테스트가 쓰는 케이스들은 모두 transaction_date가 있어 그 경로를 타지
+    않는다."""
     for parser in (
         RecordingParser(result=_clean_result(merchant_name=None, amount_text=None, currency=None)),
         RecordingParser(error=PermanentParseError("unreadable")),
@@ -263,6 +288,84 @@ def test_pipeline_never_writes_needs_requery(monkeypatch, wired):
 
     written = {updates["status"] for _, updates in wired["updates"]}
     assert written <= {"PARSED", "FAILED"}, f"파싱이 쓰면 안 되는 상태를 썼다: {written}"
+
+
+# --- ★ 거래일자 미검출 — 청구자 에이전트를 거치지 않는 결정론적 재요청 ---
+
+
+def test_missing_transaction_date_skips_claimant_agent(monkeypatch, wired):
+    """transaction_date=None이면 청구자 에이전트(LLM)를 아예 부르지 않고
+    apply_claimant_verdict로 바로 재요청을 확정한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert wired["enqueued"] == []
+    assert len(wired["verdicts"]) == 1
+
+
+def test_missing_transaction_date_writes_agent_draft_so_dm_can_be_sent(monkeypatch, wired):
+    """회귀 방지: ingest/routes.py._requery_message는 DM 문안을
+    agent_drafts/CLAIMANT:{receipt_id}에서만 읽는다. 이 문서를 안 쓰면
+    apply_claimant_verdict·enqueue_remind가 다 성공해도 재촉 루프가
+    requery_message를 못 찾아 "no_message"로 조용히 끝나 DM이 안 나간다
+    (실제 E2E에서 재현된 버그)."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+    pipeline.parse_receipt("rct_1")
+
+    assert len(wired["agent_drafts"]) == 1
+    draft_call = wired["agent_drafts"][0]
+    assert draft_call["agent"] == "CLAIMANT"
+    assert draft_call["target_type"] == "RECEIPT"
+    assert draft_call["target_id"] == "rct_1"
+    assert draft_call["task_id"] == "CLAIMANT:rct_1"
+    assert draft_call["payload"]["needs_requery"] is True
+    assert "거래일자" in draft_call["payload"]["requery_message"]
+
+
+def test_missing_transaction_date_verdict_content(monkeypatch, wired):
+    """재요청 verdict는 needs_requery=True에 날짜 관련 문안, reason은
+    DATE_MISSING이어야 한다 — AMOUNT_MISMATCH로 잘못 찍히던 기존 버그 회귀 방지."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+    pipeline.parse_receipt("rct_1")
+
+    _, verdict, reason = wired["verdicts"][0]
+    assert verdict.needs_requery is True
+    assert "거래일자" in verdict.requery_message
+    assert reason == "DATE_MISSING"
+
+
+def test_missing_transaction_date_wakes_reminder_loop_immediately(monkeypatch, wired):
+    """재촉 루프가 최초 DM을 곧바로 보내도록 delay 0으로 깨운다 —
+    ingest/routes.py task_apply_claimant_draft와 같은 패턴."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+    pipeline.parse_receipt("rct_1")
+
+    assert wired["reminders"] == [("crq_test", 0)]
+
+
+def test_missing_transaction_date_failure_is_audited_and_swallowed(monkeypatch, wired):
+    """apply_claimant_verdict가 실패해도 파싱 자체는 PARSED로 끝난다 — 여기서
+    던지면 재시도가 Gemini 호출을 다시 태운다."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("firestore transaction failed")
+
+    monkeypatch.setattr(pipeline, "apply_claimant_verdict", boom)
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+    actions = [entry.get("action") for entry in wired["audit"]]
+    assert "RECEIPT_DATE_MISSING_REQUERY_FAILED" in actions
+    assert wired["reminders"] == []
+
+
+def test_present_transaction_date_still_uses_claimant_agent(monkeypatch, wired):
+    """날짜가 있으면 기존 경로(청구자 에이전트 review 큐잉) 그대로 — 회귀 방지."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    pipeline.parse_receipt("rct_1")
+
+    assert wired["enqueued"] == ["rct_1"]
+    assert wired["verdicts"] == []
 
 
 def test_permanent_failure_writes_failed(monkeypatch, wired):

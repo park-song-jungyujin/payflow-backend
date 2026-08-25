@@ -125,7 +125,9 @@ def test_fixture_claimant_draft_transitions_receipt_and_claim(fake, fixture_path
     assert len(fake.data["claim_requests"]) == 1
     request = next(iter(fake.data["claim_requests"].values()))
     assert request["status"] == "PENDING"
-    assert request["reason"] == "AMOUNT_MISMATCH"
+    # 호출부(task_apply_claimant_draft)가 reason을 명시하지 않으므로 청구자
+    # 에이전트 일반 재요청 기본값이 찍힌다 (ingest/store.py apply_claimant_verdict).
+    assert request["reason"] == "CLAIMANT_REVIEW_FAILED"
     assert request["receipt_id"] == receipt_id
     assert request["expires_at"] == NOW + timedelta(seconds=86400)
 

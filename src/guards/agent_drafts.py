@@ -25,6 +25,32 @@ _VALID_AGENTS = {"CLAIMANT", "EXECUTOR", "SAFETY"}
 _VALID_TARGET_TYPES = {"RECEIPT", "SETTLEMENT_RUN"}
 
 
+def write_agent_draft_document(
+    *, agent: str, target_type: str, target_id: str, task_id: str, payload: dict
+) -> dict:
+    """`agent_drafts` 문서를 실제로 쓴다. `/agents/drafts`(에이전트 전용, OIDC
+    필요)와 코드가 결정론적으로 재요청을 확정하는 경로(예: parsing/pipeline.py의
+    거래일자 미검출)가 공유한다 — `ingest/routes.py._requery_message`가 DM 문안을
+    항상 이 컬렉션에서만 읽으므로, 청구자 에이전트를 거치지 않는 재요청도 여기에
+    문서를 남겨야 DM이 나간다.
+
+    감사 로그·`/tasks/apply-claimant-draft` enqueue는 호출부 책임이다 — 코드
+    호출부는 actor_type=AGENT가 아니고, apply_claimant_verdict도 직접 부르므로
+    같은 draft를 또 apply하는 task를 enqueue할 이유가 없다."""
+    payload = _with_translated_fields(agent, payload)
+    draft = {
+        "draft_id": f"drf_{task_id}",
+        "agent": agent,
+        "target_type": target_type,
+        "target_id": target_id,
+        "task_id": task_id,
+        "payload": payload,
+        "created_at": datetime.now(UTC),
+    }
+    get_client().collection("agent_drafts").document(task_id).set(draft)
+    return draft
+
+
 def _with_translated_fields(agent: str, payload: dict) -> dict:
     """schema-contract.md §9 — 에이전트는 한국어만 쓴다. web 대시보드(EXECUTOR)·
     Slack DM(CLAIMANT)이 보여줄 영어는 여기서 Gemma로 번역해 채운다. 번역
@@ -69,20 +95,11 @@ def write_agent_draft(body: dict, authorization: str = Header(default="")):
     if not target_id or not task_id or payload is None:
         raise HTTPException(status_code=400, detail="target_id, task_id, payload required")
 
-    payload = _with_translated_fields(agent, payload)
-
     # schema-contract.md §2 — task_id가 멱등키다. 문서 ID로 재사용해 Cloud Tasks
     # 재시도가 새 draft를 쌓지 않고 같은 draft를 덮어쓰게 한다.
-    draft = {
-        "draft_id": f"drf_{task_id}",
-        "agent": agent,
-        "target_type": target_type,
-        "target_id": target_id,
-        "task_id": task_id,
-        "payload": payload,
-        "created_at": datetime.now(UTC),
-    }
-    get_client().collection("agent_drafts").document(task_id).set(draft)
+    draft = write_agent_draft_document(
+        agent=agent, target_type=target_type, target_id=target_id, task_id=task_id, payload=payload
+    )
 
     # schema-contract.md §9 — 안전 확인 에이전트의 risk_report는 audit_logs.reason에
     # 그대로 저장된다. 조언일 뿐이라 게이트 판단에는 쓰지 않는다.

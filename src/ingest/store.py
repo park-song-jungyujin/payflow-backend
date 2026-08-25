@@ -26,6 +26,7 @@ from ..guards.audit import record_audit_log
 from ..ingest.drafts import DraftVerdict
 from ..ingest.reminders import ReminderAction, decide
 from ..payouts.store import get_client
+from ..schemas.enums import ReminderReason
 
 DEDUP_COLLECTION = "receipt_dedup_keys"
 
@@ -227,10 +228,20 @@ def create_receipt_if_absent(
 
 
 def apply_claimant_verdict(
-    receipt_id: str, verdict: DraftVerdict, *, now: datetime
+    receipt_id: str,
+    verdict: DraftVerdict,
+    *,
+    now: datetime,
+    reason: str = ReminderReason.CLAIMANT_REVIEW_FAILED.value,
 ) -> tuple[str, str | None]:
     """청구자 에이전트의 draft 판정을 receipts.status·claims.status·claim_requests
     생성에 **한 트랜잭션**으로 반영한다.
+
+    `reason`은 schema-contract.md §2 claim_requests.reason이다 — 왜 재요청을
+    보내는지 분기 근거로, 호출부가 실제 원인을 안다면 명시해야 한다(예:
+    parsing/pipeline.py의 거래일자 미검출은 DATE_MISSING). 기본값
+    CLAIMANT_REVIEW_FAILED는 청구자 에이전트(LLM)가 판정한 일반 케이스용이다 —
+    실제 금액 불일치가 아닌데 AMOUNT_MISMATCH를 찍던 기존 버그를 고친다.
 
     `(result, claim_request_id)`를 돌려준다. result는 `"REQUERY"` / `"APPLIED"` /
     `"SKIPPED"`이고, `claim_request_id`는 REQUERY로 새 claim_request를 만들었을
@@ -311,7 +322,7 @@ def apply_claimant_verdict(
                     "org_id": org_id,
                     "recipient_id": recipient_id,
                     "receipt_id": receipt_id,
-                    "reason": "AMOUNT_MISMATCH",
+                    "reason": reason,
                     "slack_dm_ts": None,
                     "reminded_at": None,
                     "expires_at": now + timedelta(seconds=CLAIM_REQUEST_TTL_SECONDS),

@@ -165,7 +165,10 @@ def test_needs_requery_transitions_receipt_and_claim_and_creates_request(fake):
     # 호출부가 이 id로 재촉 루프를 깨운다 — 방금 만든 문서를 가리켜야 한다.
     assert claim_request_id == request["claim_request_id"]
     assert request["status"] == "PENDING"
-    assert request["reason"] == "AMOUNT_MISMATCH"
+    # 호출부가 reason을 명시하지 않으면 기본값(청구자 에이전트의 일반 재요청
+    # 판정)이 찍힌다 — 실제 금액 불일치가 아닌데 AMOUNT_MISMATCH를 찍던
+    # 기존 버그를 고쳤다.
+    assert request["reason"] == "CLAIMANT_REVIEW_FAILED"
     assert request["receipt_id"] == "rct_1"
     assert request["expires_at"] == NOW + timedelta(seconds=86400)
 
