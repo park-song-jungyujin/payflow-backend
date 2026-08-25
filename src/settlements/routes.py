@@ -27,17 +27,19 @@ from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
 from ..payouts.store import (
     create_settlement_run,
+    get_claim,
     get_claims_for_run,
     get_recipient,
     get_settlement_run,
     link_claims_to_run,
     list_settled_claims,
     list_settlement_runs,
+    update_claim,
 )
 from ..schemas.models import SettlementFilter
 from .enqueue import enqueue_executor_analyze, executor_draft_task_id
 from .export import RunNotFound, build_settlement_export
-from .store import get_agent_draft, get_receipts, set_executor_analysis_status
+from .store import get_agent_draft, get_receipts, set_executor_analysis_status, update_receipt_items
 from .verification import verify_candidates
 
 router = APIRouter()
@@ -274,6 +276,53 @@ def get_settlement_run_route(run_id: str, authorization: str = Header(default=""
     public["executor_analysis"] = _executor_analysis(run_id)
     public["claims"] = _run_claims(run_id)
     return public
+
+
+@router.patch("/settlements/runs/{run_id}/claims/{claim_id}/items/{item_index}")
+def set_claim_item_excluded_route(
+    run_id: str,
+    claim_id: str,
+    item_index: int,
+    body: dict,
+    authorization: str = Header(default=""),
+):
+    """청구 반려 — 집행자가 물품 단위로 체크를 해제하면 그 물품 가격을 claim.amount_minor에서
+    뺀다. DRAFT 상태에서만 허용한다 — 승인 이후엔 approval_amount_hash가 이미 금액을
+    고정하므로 여기서 바꾸면 승인·집행 사이 금액이 달라진다(money-safety.md)."""
+    session = _session_from_header(authorization)
+    run = get_settlement_run(run_id)
+    if run is None or run.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    excluded = body.get("excluded")
+    if not isinstance(excluded, bool):
+        raise HTTPException(status_code=400, detail="excluded must be a boolean")
+
+    claim = get_claim(claim_id)
+    if claim is None or claim.get("settlement_run_id") != run_id or claim.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown claim_id: {claim_id}")
+
+    receipt = get_receipts({claim["receipt_id"]}).get(claim["receipt_id"])
+    items = list((receipt or {}).get("items") or [])
+    if item_index < 0 or item_index >= len(items):
+        raise HTTPException(status_code=404, detail=f"unknown item_index: {item_index}")
+
+    items[item_index] = {**items[item_index], "excluded": excluded}
+    update_receipt_items(claim["receipt_id"], items)
+
+    # 기준값은 항상 receipt.parsed_amount_minor다(§3 절대 규칙 — 숫자는 코드가
+    # 만든다) — claim.amount_minor를 누적 감산하면 토글을 반복할 때 오차가 쌓인다.
+    base_amount_minor = receipt.get("parsed_amount_minor") or 0
+    excluded_total = sum(item.get("amount_minor") or 0 for item in items if item.get("excluded"))
+    new_amount_minor = max(base_amount_minor - excluded_total, 0)
+    update_claim(claim_id, {"amount_minor": new_amount_minor, "updated_at": datetime.now(UTC)})
+
+    return {"claim_id": claim_id, "amount_minor": new_amount_minor, "items": items}
 
 
 @router.get("/settlements/runs/{run_id}/export")

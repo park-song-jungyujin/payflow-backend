@@ -34,6 +34,13 @@ def get_receipts(receipt_ids: set[str]) -> dict[str, dict]:
     return result
 
 
+def update_receipt_items(receipt_id: str, items: list[dict]) -> None:
+    """청구 반려(물품 제외) — items 배열 전체를 덮어쓴다. Firestore는 배열 원소
+    단위 update를 지원하지 않아 read-modify-write로 처리한다(link_claims_to_run과
+    같은 TEMP 패턴, 진짜 CAS 트랜잭션 아님)."""
+    get_client().collection("receipts").document(receipt_id).update({"items": items})
+
+
 def save_verification_result(receipt_id: str, *, passed: bool, signals: VerificationSignals) -> None:
     """통과든 실패든 verified_at을 찍는다 — "검증을 이미 시도했다"는 캐시 플래그이지
     "통과했다"는 뜻이 아니다. 실패 시에만 status가 VERIFICATION_FAILED로 바뀐다."""

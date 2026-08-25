@@ -466,3 +466,142 @@ def test_get_run_claims_empty_when_none_linked(monkeypatch):
     result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
 
     assert result["claims"] == []
+
+
+# --- PATCH /settlements/runs/{run_id}/claims/{claim_id}/items/{item_index} —
+# 청구 반려(물품 단위 제외). claim.amount_minor는 항상 receipt.parsed_amount_minor
+# 기준으로 다시 계산한다 — 누적 감산이 아니다(반복 토글 오차 방지). ---
+
+
+def _wire_item_toggle(monkeypatch, *, run=None, claim=None, receipt=None):
+    """update_receipt_items 호출을 receipt에 다시 반영해 반복 토글(같은 요청 안에서
+    두 번 부르는 테스트)에서도 실제 Firestore처럼 이전 write가 다음 read에 보이게 한다."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_claim", lambda claim_id: claim)
+    monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: {"rct_1": receipt} if receipt else {})
+    update_receipt_calls = []
+    update_claim_calls = []
+
+    def fake_update_receipt_items(receipt_id, items):
+        update_receipt_calls.append((receipt_id, items))
+        if receipt is not None:
+            receipt["items"] = items
+
+    monkeypatch.setattr(routes, "update_receipt_items", fake_update_receipt_items)
+    monkeypatch.setattr(
+        routes, "update_claim", lambda claim_id, updates: update_claim_calls.append((claim_id, updates))
+    )
+    return update_receipt_calls, update_claim_calls
+
+
+def _linked_claim(**overrides):
+    claim = {
+        "claim_id": "clm_1",
+        "org_id": "org_1",
+        "recipient_id": "rcp_1",
+        "receipt_id": "rct_1",
+        "settlement_run_id": "run_1",
+        "amount_minor": 10000,
+        "currency": "KRW",
+    }
+    claim.update(overrides)
+    return claim
+
+
+def test_exclude_item_subtracts_its_price_from_claim_amount(monkeypatch):
+    receipt = {
+        "parsed_amount_minor": 10000,
+        "items": [{"name": "아메리카노", "amount_minor": 4500}, {"name": "케이크", "amount_minor": 5500}],
+    }
+    update_receipt_calls, update_claim_calls = _wire_item_toggle(
+        monkeypatch, claim=_linked_claim(), receipt=receipt
+    )
+
+    result = routes.set_claim_item_excluded_route(
+        "run_1", "clm_1", 0, {"excluded": True}, authorization="Bearer t"
+    )
+
+    assert result["amount_minor"] == 5500
+    assert update_claim_calls == [("clm_1", {"amount_minor": 5500, "updated_at": update_claim_calls[0][1]["updated_at"]})]
+    assert update_receipt_calls[0][1][0]["excluded"] is True
+
+
+def test_reincluding_item_restores_the_full_amount(monkeypatch):
+    """누적 감산이 아니라 매번 parsed_amount_minor 기준으로 다시 계산한다 —
+    제외했다 되돌리면 원래 금액으로 정확히 복원돼야 한다."""
+    receipt = {
+        "parsed_amount_minor": 10000,
+        "items": [{"name": "아메리카노", "amount_minor": 4500, "excluded": True}, {"name": "케이크", "amount_minor": 5500}],
+    }
+    _, update_claim_calls = _wire_item_toggle(monkeypatch, claim=_linked_claim(amount_minor=5500), receipt=receipt)
+
+    result = routes.set_claim_item_excluded_route(
+        "run_1", "clm_1", 0, {"excluded": False}, authorization="Bearer t"
+    )
+
+    assert result["amount_minor"] == 10000
+    assert update_claim_calls[0][1]["amount_minor"] == 10000
+
+
+def test_excluding_all_items_floors_amount_at_zero_not_negative(monkeypatch):
+    """항목별 amount_minor 합이 parsed_amount_minor보다 클 수 있다(OCR 오독 등) —
+    음수로 내려가지 않는다."""
+    receipt = {
+        "parsed_amount_minor": 10000,
+        "items": [{"name": "a", "amount_minor": 6000}, {"name": "b", "amount_minor": 6000}],
+    }
+    _, update_claim_calls = _wire_item_toggle(monkeypatch, claim=_linked_claim(), receipt=receipt)
+
+    routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": True}, authorization="Bearer t")
+    result = routes.set_claim_item_excluded_route("run_1", "clm_1", 1, {"excluded": True}, authorization="Bearer t")
+
+    assert result["amount_minor"] == 0
+
+
+def test_item_toggle_rejected_when_run_not_draft(monkeypatch):
+    _wire_item_toggle(monkeypatch, run=_run_doc(status="APPROVED"), claim=_linked_claim(), receipt={})
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+
+
+def test_item_toggle_rejected_for_other_orgs_run(monkeypatch):
+    _wire_item_toggle(monkeypatch, run=_run_doc(org_id="org_2"), claim=_linked_claim(), receipt={})
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_item_toggle_rejected_when_claim_not_linked_to_run(monkeypatch):
+    _wire_item_toggle(
+        monkeypatch, claim=_linked_claim(settlement_run_id="run_other"), receipt={"items": [{"name": "a", "amount_minor": 100}]}
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_item_toggle_rejected_for_unknown_item_index(monkeypatch):
+    receipt = {"parsed_amount_minor": 10000, "items": [{"name": "a", "amount_minor": 4500}]}
+    _wire_item_toggle(monkeypatch, claim=_linked_claim(), receipt=receipt)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_item_excluded_route("run_1", "clm_1", 5, {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_item_toggle_rejected_when_excluded_field_not_boolean(monkeypatch):
+    receipt = {"parsed_amount_minor": 10000, "items": [{"name": "a", "amount_minor": 4500}]}
+    _wire_item_toggle(monkeypatch, claim=_linked_claim(), receipt=receipt)
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_item_excluded_route("run_1", "clm_1", 0, {"excluded": "yes"}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 400
