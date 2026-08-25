@@ -13,6 +13,9 @@ from datetime import UTC, datetime
 
 from ..guards.audit import record_audit_log
 from ..ingest.claims import ClaimNotCreatable, build_claim
+from ..ingest.drafts import DraftVerdict
+from ..ingest.enqueue import enqueue_remind
+from ..ingest.store import apply_claimant_verdict
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
 from .masking import mask_pii
@@ -235,6 +238,48 @@ def _parse(receipt_id: str, receipt: dict) -> str:
             )
         except Exception:
             pass
+
+    # 거래일자 미검출은 청구자 에이전트(LLM)의 판단을 거칠 이유가 없는
+    # 결정론적 규칙이다 — agent/claimant/agent.py의 needs_requery 조건 (b)와
+    # 같은 규칙이지만, LLM 호출 성공 여부·판정 확률에 기대지 않고 여기서
+    # 코드로 바로 확정한다. apply_claimant_verdict는 청구자 draft 적용 경로
+    # (ingest/routes.py task_apply_claimant_draft)와 동일해서, 이 receipt는
+    # 청구자 에이전트를 아예 부르지 않는다.
+    #
+    # TODO: 지금은 파싱(PARSED 확정) 이후에나 걸러진다 — 큐 인입(RECEIVED)
+    # 시점엔 아직 이미지를 못 봐 걸러낼 수 없다(3초 ack 제약, ingest/routes.py
+    # 참조). 데모 이후: 결정론적 사전 필터가 가능해지면 이 receipt를 애초에
+    # claim으로 만들지 않고, 큐에 올리기 전에 재촬영 요청만 보내도록 옮긴다.
+    if not signals.transaction_date_present:
+        try:
+            result, claim_request_id = apply_claimant_verdict(
+                receipt_id,
+                DraftVerdict(
+                    needs_requery=True,
+                    is_business=None,
+                    requery_message="영수증에서 거래일자가 보이지 않습니다. 날짜가 나오도록 다시 찍어 보내주세요.",
+                    reason="transaction_date 미검출 — 코드 결정론적 재요청(청구자 에이전트 미호출)",
+                ),
+                now=now,
+            )
+            record_audit_log(
+                actor=_ACTOR,
+                action="RECEIPT_DATE_MISSING_REQUERY",
+                after={"receipt_id": receipt_id, "result": result},
+            )
+            if result == "REQUERY" and claim_request_id:
+                enqueue_remind(claim_request_id, delay_seconds=0)
+        except Exception as e:
+            try:
+                record_audit_log(
+                    actor=_ACTOR,
+                    action="RECEIPT_DATE_MISSING_REQUERY_FAILED",
+                    reason=mask_pii(str(e)),
+                    after={"receipt_id": receipt_id},
+                )
+            except Exception:
+                pass
+        return "PARSED"
 
     # PARSED일 때만 청구자 에이전트를 부른다. FAILED는 재촉 루프 몫이다.
     #
