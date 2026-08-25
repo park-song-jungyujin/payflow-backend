@@ -4,6 +4,7 @@ locals {
     "aiplatform.googleapis.com",
     "firestore.googleapis.com",
     "cloudtasks.googleapis.com",
+    "cloudscheduler.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
     "iam.googleapis.com",

@@ -156,6 +156,12 @@ variable "reconcile_delay_seconds" {
   description = "payouts/tasks_queue.py enqueue_reconcile()이 /tasks/reconcile을 예약하는 지연 시간. 샌드박스에서 PayPal이 배치를 처리할 시간을 준다."
 }
 
+variable "sweep_reconcile_schedule" {
+  type        = string
+  default     = "*/5 * * * *"
+  description = "cloud_scheduler.tf가 /tasks/sweep-reconcile을 부르는 주기. /tasks/reconcile 자체 재예약 체인이 끊긴 EXECUTING run을 잡아내는 안전망 주기다."
+}
+
 variable "claim_request_ttl_seconds" {
   type        = number
   default     = 86400

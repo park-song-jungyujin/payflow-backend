@@ -505,6 +505,45 @@
         }
       }
     },
+    "/tasks/sweep-reconcile": {
+      "post": {
+        "summary": "Task Sweep Reconcile",
+        "description": "Cloud Scheduler가 주기적으로 부르는 안전망. status=EXECUTING인 run을 전부 훑어\nreconcile()을 직접 돌린다 — /tasks/reconcile의 자체 재예약 체인이 끊긴 run(예:\nenqueue_reconcile 실패, Cloud Tasks 유실)도 다음 스윕 주기 안에는 잡힌다. run\n하나가 실패해도 나머지 스윕을 막지 않는다.",
+        "operationId": "task_sweep_reconcile_tasks_sweep_reconcile_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/agents/drafts": {
       "post": {
         "summary": "Write Agent Draft",
