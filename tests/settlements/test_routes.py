@@ -216,6 +216,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
             "items": [],
             "excluded": False,
             "rejected_reason": None,
+            "short_id": "clm_1",
         }
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
