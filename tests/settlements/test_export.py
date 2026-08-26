@@ -58,10 +58,45 @@ def test_excluded_claim_is_listed_but_not_counted_in_total(monkeypatch):
     clm_1_row = next(r for r in rows if r[0] == "clm_1")
     clm_2_row = next(r for r in rows if r[0] == "clm_2")
     assert clm_1_row[9] == "SETTLED"
-    assert clm_2_row[9] == "CONFIRMED (반려됨)"
+    assert clm_2_row[9] == "CONFIRMED (Rejected)"
 
-    total_row = next(r for r in rows if r[5] and r[5].startswith("합계"))
+    total_row = next(r for r in rows if r[5] and r[5].startswith("Total"))
     assert total_row[8] == 10000  # clm_2(9000)는 합계에서 빠진다
+
+
+def test_merchant_name_prefers_english_translation_and_category_is_english(monkeypatch):
+    """해커톤 제출 언어 요건 — 엑셀 전체가 영어다. merchant_name_en이 있으면
+    그걸 쓰고(가맹점명 한국어 원본 폴백은 번역 실패 시에만), 계정과목명도
+    CATEGORY_DISPLAY_EN을 쓴다."""
+    monkeypatch.setattr(
+        export,
+        "get_claims_for_run",
+        lambda run_id: [_claim("clm_1", account_category_code="TRAVEL")],
+    )
+    monkeypatch.setattr(
+        export,
+        "_get_receipt",
+        lambda receipt_id: {"merchant_name": "스타벅스", "merchant_name_en": "Starbucks"},
+    )
+
+    rows = _rows(export.build_settlement_export("run_1"))
+
+    clm_1_row = next(r for r in rows if r[0] == "clm_1")
+    assert clm_1_row[3] == "Starbucks"
+    assert clm_1_row[5] == "Travel"
+
+
+def test_merchant_name_falls_back_to_korean_when_not_translated(monkeypatch):
+    monkeypatch.setattr(
+        export, "get_claims_for_run", lambda run_id: [_claim("clm_1")]
+    )
+    monkeypatch.setattr(
+        export, "_get_receipt", lambda receipt_id: {"merchant_name": "스타벅스"}
+    )
+
+    rows = _rows(export.build_settlement_export("run_1"))
+
+    assert next(r for r in rows if r[0] == "clm_1")[3] == "스타벅스"
 
 
 def test_all_claims_excluded_produces_no_total_row(monkeypatch):
@@ -74,4 +109,4 @@ def test_all_claims_excluded_produces_no_total_row(monkeypatch):
 
     rows = _rows(export.build_settlement_export("run_1"))
 
-    assert not any(r[5] and r[5].startswith("합계") for r in rows)
+    assert not any(r[5] and r[5].startswith("Total") for r in rows)

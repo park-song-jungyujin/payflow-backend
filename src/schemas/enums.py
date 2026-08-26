@@ -23,6 +23,17 @@ CATEGORY_DISPLAY: dict[AccountCategory, str] = {
     AccountCategory.UNCLASSIFIED: "미분류",
 }
 
+# payflow-frontend/src/lib/accountCategory.ts의 en 라벨과 값을 맞춘다.
+CATEGORY_DISPLAY_EN: dict[AccountCategory, str] = {
+    AccountCategory.PAYMENT_FEE: "Payment Fee",
+    AccountCategory.EMPLOYEE_BENEFIT: "Employee Benefit",
+    AccountCategory.TRAVEL: "Travel",
+    AccountCategory.SUPPLIES: "Supplies",
+    AccountCategory.ADVERTISING: "Advertising",
+    AccountCategory.RENT: "Rent",
+    AccountCategory.UNCLASSIFIED: "Unclassified",
+}
+
 
 class CategorySource(StrEnum):
     LLM_PARSE = "LLM_PARSE"
