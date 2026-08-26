@@ -44,6 +44,7 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
     receipts = {
         "rct_1": {
             "merchant_name": "스타벅스",
+            "merchant_name_en": "Starbucks",
             "transaction_date": date(2026, 8, 10),
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
@@ -73,6 +74,7 @@ def test_list_unsettled_claims_returns_summaries_with_requester_name(monkeypatch
                 "currency": "KRW",
                 "account_category_code": "TRAVEL",
                 "merchant_name": "스타벅스",
+                "merchant_name_en": "Starbucks",
                 "transaction_date": "2026-08-10",
                 "recipient_name": "박수현",
                 "items": [{"name": "아메리카노", "amount_minor": 4500}],
@@ -631,6 +633,7 @@ def test_get_run_includes_claim_details(monkeypatch):
     receipts = {
         "rct_1": {
             "merchant_name": "스타벅스",
+            "merchant_name_en": "Starbucks",
             "transaction_date": date(2026, 8, 10),
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
         }
@@ -648,6 +651,7 @@ def test_get_run_includes_claim_details(monkeypatch):
             "currency": "KRW",
             "account_category_code": "TRAVEL",
             "merchant_name": "스타벅스",
+            "merchant_name_en": "Starbucks",
             "transaction_date": "2026-08-10",
             "recipient_name": "유진",
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
@@ -655,6 +659,18 @@ def test_get_run_includes_claim_details(monkeypatch):
             "rejected_reason": None,
         }
     ]
+
+
+def test_get_run_claim_merchant_name_en_is_none_for_untranslated_receipts(monkeypatch):
+    """번역 실패했거나 이 필드가 생기기 전에 파싱된 영수증 — web은 원문
+    가맹점명으로 폴백한다(frontend lib/receiptText.ts merchantDisplay)."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "transaction_date": date(2026, 8, 10)}}
+    _wire_get(monkeypatch, claims=claims, receipts=receipts)
+
+    result = routes.get_settlement_run_route("run_1", authorization="Bearer t")
+
+    assert result["claims"][0]["merchant_name_en"] is None
 
 
 def test_get_run_claim_items_defaults_to_empty_list_when_receipt_has_none(monkeypatch):

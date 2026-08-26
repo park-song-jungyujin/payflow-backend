@@ -114,6 +114,19 @@ def _install_parser(monkeypatch, parser):
     return parser
 
 
+def _install_translator(monkeypatch, state, result):
+    """Gemma 번역 경계를 가짜로 바꾸고 호출 인자를 state["translated"]에 남긴다.
+    result가 None이면 번역 실패(translate.py는 예외 대신 None을 돌려준다)."""
+    state["translated"] = []
+
+    def fake_translate_lines(texts, *, target_language="English"):
+        state["translated"].append((list(texts), target_language))
+        return result
+
+    monkeypatch.setattr(pipeline, "translate_lines", fake_translate_lines)
+    return state
+
+
 def _clean_result(**overrides) -> ParsedReceipt:
     kwargs = {
         "merchant_name": "스타벅스 강남점 02-1234-5678",
@@ -155,23 +168,118 @@ def test_items_converted_to_minor_and_masked(monkeypatch, wired):
         ]
     )
     _install_parser(monkeypatch, RecordingParser(result=result))
+    _install_translator(
+        monkeypatch, wired, ["Starbucks Gangnam [PHONE]", "Americano [PHONE]", "Shipping fee"]
+    )
 
     assert pipeline.parse_receipt("rct_1") == "PARSED"
 
     _, updates = wired["updates"][-1]
     assert updates["items"] == [
-        {"name": "아메리카노 [PHONE]", "amount_minor": 4500},
-        {"name": "배송비", "amount_minor": None},
+        {"name": "아메리카노 [PHONE]", "name_en": "Americano [PHONE]", "amount_minor": 4500},
+        {"name": "배송비", "name_en": "Shipping fee", "amount_minor": None},
     ]
 
 
 def test_empty_items_defaults_to_empty_list(monkeypatch, wired):
     _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    _install_translator(monkeypatch, wired, ["Starbucks Gangnam [PHONE]"])
 
     assert pipeline.parse_receipt("rct_1") == "PARSED"
 
     _, updates = wired["updates"][-1]
     assert updates["items"] == []
+
+
+# --- 품목명 영어 번역 (schema-contract.md §2 — web 대시보드 en 로케일 표시용) ---
+
+def test_merchant_and_item_names_translated_in_one_gemma_call_after_masking(monkeypatch, wired):
+    """Gemma에 넘어가는 건 마스킹된 이름이다 — 원문 PII가 외부 호출로 새면
+    "마스킹은 Firestore 쓰기 직전"(§2)이 무의미해진다. merchant_name_en·name_en도
+    같은 이유로 마스킹된 원문의 번역이어야 원문과 짝이 맞는다.
+
+    가맹점명과 품목명은 **한 번의 호출**로 묶는다 — 따로 부르면 최대 15초짜리
+    대기가 파싱 태스크에 두 번 순차로 붙는다. 가맹점명이 항상 첫 줄이다.
+    """
+    result = _clean_result(
+        items=[ParsedReceiptItem(name="아메리카노 010-1234-5678", amount_text="4,500")]
+    )
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    _install_translator(monkeypatch, wired, ["Starbucks Gangnam [PHONE]", "Americano [PHONE]"])
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert wired["translated"] == [(["스타벅스 강남점 [PHONE]", "아메리카노 [PHONE]"], "English")]
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name"] == "스타벅스 강남점 [PHONE]"
+    assert updates["merchant_name_en"] == "Starbucks Gangnam [PHONE]"
+
+
+def test_translation_failure_leaves_originals_only(monkeypatch, wired):
+    """번역은 조언성 부가 기능이다(guards/translate.py) — 실패해도 파싱을 막지
+    않는다. name_en은 키 자체를 빼서 이 필드 추가 전 영수증과 같은 모양으로
+    남기고, merchant_name_en은 None이다. web은 둘 다 원문으로 폴백한다.
+    """
+    result = _clean_result(items=[ParsedReceiptItem(name="G)콜드브루", amount_text="4,500")])
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    _install_translator(monkeypatch, wired, None)
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    _, updates = wired["updates"][-1]
+    assert updates["items"] == [{"name": "G)콜드브루", "amount_minor": 4500}]
+    assert updates["merchant_name"] == "스타벅스 강남점 [PHONE]"
+    assert updates["merchant_name_en"] is None
+
+
+def test_no_gemma_call_when_nothing_to_translate(monkeypatch, wired):
+    """가맹점명도 품목도 못 읽은 영수증에는 Gemma를 아예 부르지 않는다 — 빈
+    호출이 파싱 태스크에 그대로 지연으로 붙는다.
+    """
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(merchant_name=None)))
+    _install_translator(monkeypatch, wired, [])
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert wired["translated"] == []
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name_en"] is None
+
+
+def test_merchant_translated_even_when_receipt_has_no_items(monkeypatch, wired):
+    """품목 분해가 아예 없는 영수증이 흔하다 — 그래도 가맹점명은 번역한다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result()))
+    _install_translator(monkeypatch, wired, ["Starbucks Gangnam [PHONE]"])
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    assert wired["translated"] == [(["스타벅스 강남점 [PHONE]"], "English")]
+    _, updates = wired["updates"][-1]
+    assert updates["merchant_name_en"] == "Starbucks Gangnam [PHONE]"
+
+
+def test_translation_length_mismatch_leaves_originals_only(monkeypatch, wired):
+    """translate_lines는 길이를 보장하지만(어긋나면 None) 방어적으로 한 번 더
+    확인한다 — 어긋난 채 zip하면 가맹점명 번역이 품목으로 한 칸 밀려 조용히
+    틀린 화면이 된다.
+    """
+    result = _clean_result(
+        items=[
+            ParsedReceiptItem(name="아메리카노", amount_text="4,500"),
+            ParsedReceiptItem(name="배송비", amount_text=None),
+        ]
+    )
+    _install_parser(monkeypatch, RecordingParser(result=result))
+    _install_translator(monkeypatch, wired, ["Starbucks Gangnam", "Americano"])
+
+    assert pipeline.parse_receipt("rct_1") == "PARSED"
+
+    _, updates = wired["updates"][-1]
+    assert updates["items"] == [
+        {"name": "아메리카노", "amount_minor": 4500},
+        {"name": "배송비", "amount_minor": None},
+    ]
+    assert updates["merchant_name_en"] is None
 
 
 def test_transaction_date_is_stored_as_yyyy_mm_dd_string(monkeypatch, wired):
