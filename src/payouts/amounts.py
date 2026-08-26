@@ -13,12 +13,18 @@ from .store import get_claims_for_run
 
 
 def per_recipient_amounts(run: dict) -> dict[str, int]:
-    """run에 걸린 claims를 recipient_id별로 base_currency 환산해 합산한다."""
+    """run에 걸린 claims를 recipient_id별로 base_currency 환산해 합산한다.
+
+    excluded(청구 전체 반려, settlements/routes.py._apply_claim_exclusion)된
+    claim은 뺀다 — 이 함수가 실제 PayPal 송금액을 만드는 지점이라, 여기서
+    빠뜨리면 반려는 화면에만 표시되고 돈은 그대로 나간다."""
     base_currency = os.environ["PAYOUT_CURRENCY"]
     fx_rates = run.get("fx_rates") or {}
 
     totals: dict[str, int] = {}
     for claim in get_claims_for_run(run["settlement_run_id"]):
+        if claim.get("excluded"):
+            continue
         currency = claim["currency"]
         if currency == base_currency:
             converted = claim["amount_minor"]

@@ -138,6 +138,78 @@ def test_empty_claims_returns_422_and_does_not_issue_token(monkeypatch):
     assert exc.value.status_code == 422
 
 
+def test_linked_claims_summing_to_zero_is_approved_not_blocked(monkeypatch):
+    """claim은 걸려있는데 물품 전부 반려 등으로 합계가 0원인 경우는 "클레임이
+    아예 없는 run"과 다르다 — 승인 자체는 통과해야 한다. 실제 PayPal 호출을
+    건너뛰는 건 payouts/routes.py.request_payout 몫이다."""
+    run = _run()
+    _wire_store(monkeypatch, run)
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda run_id: [
+            {"claim_id": "clm_1", "recipient_id": "rcp_1", "amount_minor": 0, "currency": "USD"}
+        ],
+    )
+
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
+
+    assert result["status"] == "APPROVED"
+    assert result["total_amount_minor"] == 0
+    assert "approval_token" in result
+
+
+def test_excluded_claim_amount_is_not_counted_in_total(monkeypatch):
+    """청구 전체 반려(settlements/routes.py._apply_claim_exclusion)된 claim은
+    claim_count에는 잡히되(linked claim은 맞으니까) 합계에서는 빠져야 한다 —
+    안 그러면 반려는 화면에만 표시되고 승인 총액엔 그대로 남는다."""
+    run = _run()
+    _wire_store(monkeypatch, run)
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda run_id: [
+            {"claim_id": "clm_1", "recipient_id": "rcp_1", "amount_minor": 1000, "currency": "USD"},
+            {
+                "claim_id": "clm_2",
+                "recipient_id": "rcp_1",
+                "amount_minor": 9000,
+                "currency": "USD",
+                "excluded": True,
+            },
+        ],
+    )
+
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
+
+    assert result["status"] == "APPROVED"
+    assert result["total_amount_minor"] == 1000
+
+
+def test_all_claims_excluded_is_approved_with_zero_total_not_blocked(monkeypatch):
+    """claim은 있는데 전부 반려된 경우 — "claim이 아예 안 걸림"(422)과 다르다."""
+    run = _run()
+    _wire_store(monkeypatch, run)
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda run_id: [
+            {
+                "claim_id": "clm_1",
+                "recipient_id": "rcp_1",
+                "amount_minor": 1000,
+                "currency": "USD",
+                "excluded": True,
+            }
+        ],
+    )
+
+    result = routes.approve_settlement_run("run_1", authorization="Bearer t")
+
+    assert result["status"] == "APPROVED"
+    assert result["total_amount_minor"] == 0
+
+
 def test_fx_lookup_failure_returns_502(monkeypatch):
     run = _run()
     _wire_store(monkeypatch, run)

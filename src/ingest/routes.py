@@ -709,8 +709,9 @@ def _settlement_complete_text(
     reason은 집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴
     한국어 문장이면 그대로 옮긴다 — _requery_message와 같은 원칙으로 여기서
     대체 문장을 지어내지 않는다. 사람이 web에서 사유 없이 직접 체크를 해제한
-    항목은 reason이 없다 — 그땐 "왜 뺐는지 기록이 없다"를 정직하게 알리는
-    일반 문구로 대체한다(없는 사유를 지어내지 않는다).
+    항목은 reason이 없다 — 그땐 "집행자가 직접 반려했다"는 사실 자체를
+    알리는 문구로 대체한다(없는 사유를 지어내진 않되, 누가 뺐는지는 사실이므로
+    숨기지 않는다).
 
     영어 로케일이면 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로 번역한다 —
     reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면 그 예산을
@@ -718,7 +719,7 @@ def _settlement_complete_text(
     한국어 사유로 폴백한다(헤더만 영어) — 번역이 안 됐다고 사유 자체를 숨기지
     않는다.
     """
-    fallback_reason_ko = "담당자 검토에 의해 제외됨"
+    fallback_reason_ko = "이 항목이 집행자에 의해 반려되었습니다"
     lines_ko = [
         f"- {i.get('name') or '(이름 없음)'}: {i.get('reason') or fallback_reason_ko}"
         for i in rejected_items
@@ -780,6 +781,14 @@ def task_notify_settlement_complete(body: dict, authorization: str = Header(defa
                 continue
             rejected_by_recipient.setdefault(c["recipient_id"], []).append(
                 {"name": item.get("name"), "reason": item.get("rejected_reason")}
+            )
+        # claim 전체 반려(중복 청구·동일 영수증 재제출·미래 거래일 등,
+        # settlements/routes.py._apply_claim_exclusion) — 물품 하나가 아니라
+        # 영수증 전체가 빠진 경우라 가맹점명으로 어떤 청구인지 알려준다.
+        if c.get("excluded"):
+            merchant = receipt.get("merchant_name") or "가맹점 미상"
+            rejected_by_recipient.setdefault(c["recipient_id"], []).append(
+                {"name": f"{merchant} 청구 전체", "reason": c.get("rejected_reason")}
             )
 
     notified = 0

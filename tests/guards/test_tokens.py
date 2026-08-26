@@ -165,3 +165,30 @@ def test_reused_token_rejected_even_if_caller_passed_stale_run_dict(monkeypatch)
     with pytest.raises(GuardRejection) as exc:
         tokens.verify_and_burn_token("run_1", stale_run, RAW_TOKEN)
     assert "already used" in exc.value.detail
+
+
+def test_approval_amount_hash_excludes_claim_excluded_true(monkeypatch):
+    """청구 전체 반려(excluded=true) claim은 해시 계산에서 빠져야 한다 — 안 그러면
+    실제 지급액(payouts/amounts.py.per_recipient_amounts, 여기도 excluded를 뺀다)과
+    해시가 가리키는 금액이 어긋난다."""
+    monkeypatch.setenv("PAYOUT_CURRENCY", "USD")
+    included_claim = {"claim_id": "clm_1", "recipient_id": "rcp_1", "amount_minor": 1000, "currency": "USD"}
+    excluded_claim = {
+        "claim_id": "clm_2",
+        "recipient_id": "rcp_1",
+        "amount_minor": 9000,
+        "currency": "USD",
+        "excluded": True,
+    }
+
+    monkeypatch.setattr(tokens, "get_claims_for_run", lambda run_id: [included_claim, excluded_claim])
+    hash_with_excluded = tokens.approval_amount_hash({"settlement_run_id": "run_1", "fx_rates": {}})
+
+    monkeypatch.setattr(tokens, "get_claims_for_run", lambda run_id: [included_claim])
+    hash_without_excluded_claim_present = tokens.approval_amount_hash(
+        {"settlement_run_id": "run_1", "fx_rates": {}}
+    )
+
+    # excluded claim이 목록에 있든 없든(빠지든) 해시가 같아야 한다 — 반려된 claim은
+    # 실제 지급액에 아무 영향이 없다는 뜻이다.
+    assert hash_with_excluded == hash_without_excluded_claim_present

@@ -91,3 +91,37 @@ def test_monthly_cap_treats_missing_recipient_as_zero_paid(claims, monkeypatch):
         {"claim_id": "clm_1", "recipient_id": "rcp_ghost", "amount_minor": 400, "currency": "USD"}
     ]
     assert limits.check_caps(_run()) is None
+
+
+def test_excluded_claim_does_not_count_toward_item_cap(claims, monkeypatch):
+    """청구 전체 반려(excluded=true)된 claim은 실제로 안 나가는 돈이라 캡 검사에서
+    빠져야 한다 — 안 그러면 반려로 이미 안전해진 배치가 반려된 claim의 원래
+    금액 때문에 캡에 걸려 승인이 막힐 수 있다."""
+    monkeypatch.setenv("MAX_AMOUNT_PER_ITEM_MINOR", "100")
+    monkeypatch.setenv("PAYOUT_CURRENCY", "USD")
+    claims["claims"] = [
+        {
+            "claim_id": "clm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 999,
+            "currency": "USD",
+            "excluded": True,
+        }
+    ]
+    assert limits.check_caps(_run()) is None
+
+
+def test_excluded_claim_does_not_count_toward_monthly_cap(claims, monkeypatch):
+    monkeypatch.setenv("MAX_AMOUNT_MONTHLY_MINOR", "1000")
+    monkeypatch.setenv("PAYOUT_CURRENCY", "USD")
+    claims["claims"] = [
+        {
+            "claim_id": "clm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 999,
+            "currency": "USD",
+            "excluded": True,
+        }
+    ]
+    claims["recipients"]["rcp_1"] = {"monthly_paid_minor": 900}
+    assert limits.check_caps(_run()) is None

@@ -105,8 +105,39 @@ def test_both_agent_and_human_excluded_items_are_included(monkeypatch):
     assert result == {"status": "ok", "notified": 1}
     text = sent[0]["text"]
     assert "정산이 완료되었습니다" in text
-    assert "샴푸: 담당자 검토에 의해 제외됨" in text  # 사유 없음 → 일반 문구로 대체
+    assert "샴푸: 이 항목이 집행자에 의해 반려되었습니다" in text  # 사유 없음 → 집행자 직접 반려 사실 그대로 안내
     assert "케이크: 개인 간식으로 추정" in text
+
+
+def test_whole_claim_exclusion_is_reported_with_merchant_name(monkeypatch):
+    """청구 전체 반려(settlements/routes.py._apply_claim_exclusion, 중복 청구·동일
+    영수증 재제출·미래 거래일)도 통보에 포함된다 — 물품 하나가 아니라 영수증
+    전체가 빠진 경우라 가맹점명으로 어떤 청구인지 알려준다."""
+    claims = [{**_claim("clm_1", "rct_1"), "excluded": True, "rejected_reason": "미래 거래일"}]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "items": []}}
+    recipients = {"rcp_1": {"slack_user_id": "U_CLAIMANT"}}
+    sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
+
+    routes.task_notify_settlement_complete(
+        {"settlement_run_id": "run_1", "recipients": [_recipient_payload()]},
+        authorization="Bearer t",
+    )
+
+    assert "스타벅스 청구 전체: 미래 거래일" in sent[0]["text"]
+
+
+def test_whole_claim_exclusion_without_merchant_name_falls_back_to_generic_label(monkeypatch):
+    claims = [{**_claim("clm_1", "rct_1"), "excluded": True, "rejected_reason": "x"}]
+    receipts = {"rct_1": {"items": []}}
+    recipients = {"rcp_1": {"slack_user_id": "U_CLAIMANT"}}
+    sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
+
+    routes.task_notify_settlement_complete(
+        {"settlement_run_id": "run_1", "recipients": [_recipient_payload()]},
+        authorization="Bearer t",
+    )
+
+    assert "가맹점 미상 청구 전체: x" in sent[0]["text"]
 
 
 def test_groups_multiple_claims_of_same_recipient_into_one_dm(monkeypatch):

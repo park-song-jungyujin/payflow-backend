@@ -29,14 +29,22 @@ from .tokens import approval_amount_hash
 router = APIRouter()
 
 
-def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int]:
-    """schema-contract.md §4 — 항목별 환산 후 합산. 환율은 승인 시점에 조회해 고정한다."""
+def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int, int]:
+    """schema-contract.md §4 — 항목별 환산 후 합산. 환율은 승인 시점에 조회해 고정한다.
+    claim 수도 함께 돌려준다 — 호출부가 "claim이 아예 안 걸림"과 "claim은 있는데
+    합계가 0원(물품 전부 반려·claim 전체 반려 등)"을 구분해야 하기 때문이다.
+
+    excluded(청구 전체 반려, settlements/routes.py._apply_claim_exclusion)된
+    claim은 합계에서 뺀다 — claim_count에는 그대로 센다(반려된 것도 "링크된
+    claim"이긴 하다, 안 그러면 위 구분이 무너진다)."""
     base_currency = os.environ["PAYOUT_CURRENCY"]
     claims = get_claims_for_run(run["settlement_run_id"])
 
     rates: dict[str, Decimal] = {}
     total_amount_minor = 0
     for claim in claims:
+        if claim.get("excluded"):
+            continue
         currency = claim["currency"]
         if currency == base_currency:
             total_amount_minor += claim["amount_minor"]
@@ -53,7 +61,7 @@ def _lock_fx_and_total(run: dict) -> tuple[dict[str, str], int]:
             claim["amount_minor"], currency, base_currency, rates[pair]
         )
 
-    return {pair: str(rate) for pair, rate in rates.items()}, total_amount_minor
+    return {pair: str(rate) for pair, rate in rates.items()}, total_amount_minor, len(claims)
 
 
 @router.post("/settlements/runs/{run_id}/approve")
@@ -75,10 +83,12 @@ def approve_settlement_run(run_id: str, authorization: str = Header(default=""))
             detail=f"settlement_run status is {run['status']}, expected DRAFT or FAILED",
         )
 
-    fx_rates, total_amount_minor = _lock_fx_and_total(run)
-    if total_amount_minor <= 0:
+    fx_rates, total_amount_minor, claim_count = _lock_fx_and_total(run)
+    if claim_count == 0:
         # 클레임이 하나도 안 걸린 run(예: FAILED 재승인 시점에 이미 다른 곳으로
-        # 풀린 경우)을 조용히 0원으로 승인·토큰 발급하지 않는다.
+        # 풀린 경우)을 조용히 0원으로 승인·토큰 발급하지 않는다. claim은 있는데
+        # 합계만 0원(물품 전부 반려 등)인 경우는 막지 않는다 — /payouts가 PayPal을
+        # 부르지 않고 곧장 SETTLED로 종결한다(payouts/routes.py request_payout).
         raise HTTPException(
             status_code=422, detail=f"settlement_run {run_id} has no linked claims to approve"
         )
