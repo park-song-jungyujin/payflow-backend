@@ -22,7 +22,6 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from ..auth.store import get_or_create_default_org_id, get_slack_workspace_by_team
 from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
-from ..guards.translate import translate_lines
 from ..parsing.store import get_receipt
 from ..payouts.currency import CURRENCY_EXPONENT
 from ..payouts.store import get_claims_for_run, get_recipient
@@ -703,6 +702,11 @@ def _format_amount(amount_minor: int, currency: str) -> str:
     return f"{whole:,}.{remainder:0{exponent}d} {currency}"
 
 
+# 사람이 web에서 사유 없이 물품 체크를 해제한 경우의 대체 문구. 없는 사유를
+# 지어내지 않되, 누가 뺐는지는 사실이라 숨기지 않는다.
+_FALLBACK_REJECTION_REASON = "This item was rejected by the approver"
+
+
 def _settlement_complete_text(
     *, amount_display: str, rejected_items: list[dict]
 ) -> str:
@@ -710,32 +714,32 @@ def _settlement_complete_text(
     물품이 있으면 그 아래에 물품명·사유를 덧붙인다. Slack 봇 발송은 전부
     영어다(해커톤 제출 언어 요건).
 
-    reason은 집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴
-    한국어 문장이면 그대로 옮긴다 — _requery_message와 같은 원칙으로 여기서
-    대체 문장을 지어내지 않는다. 사람이 web에서 사유 없이 직접 체크를 해제한
-    항목은 reason이 없다 — 그땐 "집행자가 직접 반려했다"는 사실 자체를
-    알리는 문구로 대체한다(없는 사유를 지어내진 않되, 누가 뺐는지는 사실이므로
-    숨기지 않는다).
+    **여기엔 번역할 것이 남아 있지 않다.** 세 조각이 전부 이미 영어다:
+    물품명·가맹점명은 파싱 시점에 Gemma가 번역해 저장한 `name_en`·
+    `merchant_name_en`(parsing/pipeline.py._translate_receipt_names), 반려
+    사유는 집행자 에이전트가 영어로 쓴 값(payflow-agent executor/tools.py),
+    사유가 없을 때의 대체 문구는 아래 코드 상수다.
 
-    한국어 사유·대체 문구를 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로
-    번역한다 — reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면
-    그 예산을 갉아먹어 반려 자체가 실패할 위험이 있어 여기로 미뤘다. 번역
-    실패는 한국어 사유로 폴백한다(헤더만 영어) — 번역이 안 됐다고 사유 자체를
-    숨기지 않는다.
+    한때는 이 셋을 한국어로 두고 여기서 Gemma로 번역했다. 그 번역이 실패하면
+    조용히 한국어로 폴백하는데(실패를 흡수하는 게 translate.py의 설계다),
+    그러면 "- 자카페 쿠키: 이 항목이 집행자에 의해 반려되었습니다" 같은 줄이
+    영어 DM 한가운데 섞여 나갔다 — 재요청 DM에서와 같은 사고다.
+
+    사람이 web에서 사유 없이 직접 체크를 해제한 항목은 reason이 없다 — 그땐
+    "집행자가 직접 반려했다"는 사실 자체를 알리는 문구로 대체한다(없는 사유를
+    지어내진 않되, 누가 뺐는지는 사실이므로 숨기지 않는다).
+
+    `name_en`이 없는 영수증(번역 실패, 또는 그 필드가 생기기 전에 파싱된 것)은
+    호출부가 한국어 원문으로 폴백해 넘긴다 — 빈 칸보다 낫다.
     """
-    fallback_reason_ko = "이 항목이 집행자에 의해 반려되었습니다"
-    lines_ko = [
-        f"- {i.get('name') or '(이름 없음)'}: {i.get('reason') or fallback_reason_ko}"
-        for i in rejected_items
-    ]
-
     header = f"Your settlement of {amount_display} has been completed."
     if not rejected_items:
         return header
-    translated = translate_lines(
-        [f"{i.get('name') or ''}: {i.get('reason') or fallback_reason_ko}" for i in rejected_items]
+
+    body = "\n".join(
+        f"- {i.get('name') or '(unnamed item)'}: {i.get('reason') or _FALLBACK_REJECTION_REASON}"
+        for i in rejected_items
     )
-    body = "\n".join(f"- {t}" for t in translated) if translated is not None else "\n".join(lines_ko)
     return f"{header}\n\nThe following items were excluded from this settlement:\n{body}"
 
 
@@ -778,15 +782,24 @@ def task_notify_settlement_complete(body: dict, authorization: str = Header(defa
             if not item.get("excluded"):
                 continue
             rejected_by_recipient.setdefault(c["recipient_id"], []).append(
-                {"name": item.get("name"), "reason": item.get("rejected_reason")}
+                # 파싱 시점에 번역된 name_en을 우선 쓴다 — 없으면(번역 실패,
+                # 또는 그 필드 생기기 전 영수증) 원문으로 폴백한다.
+                {
+                    "name": item.get("name_en") or item.get("name"),
+                    "reason": item.get("rejected_reason"),
+                }
             )
         # claim 전체 반려(중복 청구·동일 영수증 재제출·미래 거래일 등,
         # settlements/routes.py._apply_claim_exclusion) — 물품 하나가 아니라
         # 영수증 전체가 빠진 경우라 가맹점명으로 어떤 청구인지 알려준다.
         if c.get("excluded"):
-            merchant = receipt.get("merchant_name") or "가맹점 미상"
+            merchant = (
+                receipt.get("merchant_name_en")
+                or receipt.get("merchant_name")
+                or "Unknown merchant"
+            )
             rejected_by_recipient.setdefault(c["recipient_id"], []).append(
-                {"name": f"{merchant} 청구 전체", "reason": c.get("rejected_reason")}
+                {"name": f"{merchant} (whole claim)", "reason": c.get("rejected_reason")}
             )
 
     notified = 0

@@ -12,6 +12,7 @@ TestClient 없이 핸들러를 직접 부르고 모듈 레벨 이름을 monkeypa
 import pytest
 from fastapi import HTTPException
 
+from src.guards import translate as translate_module
 from src.ingest import routes
 from src.ingest.slack_client import SlackSendPermanent, SlackSendTransient
 
@@ -35,9 +36,9 @@ def _wire(monkeypatch, *, claims, receipts, recipients=None, post_result="175550
     monkeypatch.setattr(routes, "get_recipient", lambda rid: (recipients or {}).get(rid))
     # 기본값은 "번역 불가"다 — 이 스위트 대부분은 번역 자체가 아니라 어떤 항목이
     # 통보에 포함되는지를 검증한다. 그 결과 한국어 사유 그대로 폴백된 텍스트를
-    # 비교한다(_settlement_complete_text의 번역 실패 폴백 경로). 번역 성공 경로는
-    # 아래 test_rejection_reasons_translated_via_gemma가 따로 검증한다.
-    monkeypatch.setattr(routes, "translate_lines", lambda lines: None)
+    # 이 경로는 Gemma를 부르지 않는다 — 물품명은 파싱 시점 번역(name_en),
+    # 사유는 집행자 에이전트가 영어로 쓴 값, 대체 문구는 코드 상수다.
+    # test_settlement_complete_never_calls_gemma가 그걸 지킨다.
 
     sent = []
 
@@ -89,13 +90,20 @@ def test_both_agent_and_human_excluded_items_are_included(monkeypatch):
     receipts = {
         "rct_1": {
             "items": [
-                {"name": "샴푸", "amount_minor": 8000, "excluded": True},  # 사람이 직접 제외, 사유 없음
+                # 사람이 직접 제외, 사유 없음
+                {
+                    "name": "샴푸",
+                    "name_en": "Shampoo",
+                    "amount_minor": 8000,
+                    "excluded": True,
+                },
                 {
                     "name": "케이크",
+                    "name_en": "Cake",
                     "amount_minor": 5500,
                     "excluded": True,
                     "rejected_by": "EXECUTOR",
-                    "rejected_reason": "개인 간식으로 추정",
+                    "rejected_reason": "Presumed personal snack",
                 },
             ]
         }
@@ -111,16 +119,20 @@ def test_both_agent_and_human_excluded_items_are_included(monkeypatch):
     assert result == {"status": "ok", "notified": 1}
     text = sent[0]["text"]
     assert "has been completed" in text
-    assert "샴푸: 이 항목이 집행자에 의해 반려되었습니다" in text  # 사유 없음 → 집행자 직접 반려 사실 그대로 안내(번역 실패 폴백)
-    assert "케이크: 개인 간식으로 추정" in text
+    # 사유 없음 → 집행자가 직접 반려했다는 사실 자체를 알린다(없는 사유를
+    # 지어내지 않는다). 물품명은 파싱 시점에 번역된 name_en을 쓴다.
+    assert "Shampoo: This item was rejected by the approver" in text
+    assert "Cake: Presumed personal snack" in text
 
 
 def test_whole_claim_exclusion_is_reported_with_merchant_name(monkeypatch):
     """청구 전체 반려(settlements/routes.py._apply_claim_exclusion, 중복 청구·동일
     영수증 재제출·미래 거래일)도 통보에 포함된다 — 물품 하나가 아니라 영수증
     전체가 빠진 경우라 가맹점명으로 어떤 청구인지 알려준다."""
-    claims = [{**_claim("clm_1", "rct_1"), "excluded": True, "rejected_reason": "미래 거래일"}]
-    receipts = {"rct_1": {"merchant_name": "스타벅스", "items": []}}
+    claims = [
+        {**_claim("clm_1", "rct_1"), "excluded": True, "rejected_reason": "Future transaction date"}
+    ]
+    receipts = {"rct_1": {"merchant_name": "스타벅스", "merchant_name_en": "Starbucks", "items": []}}
     recipients = {"rcp_1": {"slack_user_id": "U_CLAIMANT"}}
     sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
 
@@ -129,7 +141,7 @@ def test_whole_claim_exclusion_is_reported_with_merchant_name(monkeypatch):
         authorization="Bearer t",
     )
 
-    assert "스타벅스 청구 전체: 미래 거래일" in sent[0]["text"]
+    assert "Starbucks (whole claim): Future transaction date" in sent[0]["text"]
 
 
 def test_whole_claim_exclusion_without_merchant_name_falls_back_to_generic_label(monkeypatch):
@@ -143,7 +155,7 @@ def test_whole_claim_exclusion_without_merchant_name_falls_back_to_generic_label
         authorization="Bearer t",
     )
 
-    assert "가맹점 미상 청구 전체: x" in sent[0]["text"]
+    assert "Unknown merchant (whole claim): x" in sent[0]["text"]
 
 
 def test_groups_multiple_claims_of_same_recipient_into_one_dm(monkeypatch):
@@ -264,71 +276,50 @@ def test_permanent_slack_failure_does_not_raise_and_continues(monkeypatch):
     assert audit[-1]["action"] == "SETTLEMENT_COMPLETE_NOTICE_SEND_FAILED"
 
 
-def test_rejection_reasons_translated_via_gemma(monkeypatch):
+def test_settlement_complete_never_calls_gemma(monkeypatch):
+    """이 DM에는 번역할 것이 남아 있지 않다 — 물품명은 파싱 시점에 번역된
+    name_en, 사유는 집행자 에이전트가 영어로 쓴 값, 사유 없을 때의 대체 문구는
+    코드 상수다. 한때 여기서 Gemma를 불렀는데, 실패하면 조용히 한국어로
+    폴백해 "- 자카페 쿠키: 이 항목이 집행자에 의해 반려되었습니다" 같은 줄이
+    영어 DM 한가운데 섞여 나갔다."""
+    def boom(*args, **kwargs):
+        raise AssertionError("이 경로는 Gemma를 부르지 않는다")
+
+    # routes는 이제 translate_lines를 import조차 하지 않는다 — 원본 모듈을
+    # 패치해 이 요청 경로에서 Gemma가 불리면 즉시 터지게 한다.
+    monkeypatch.setattr(translate_module, "translate_lines", boom)
     claims = [_claim("clm_1", "rct_1")]
     receipts = {
         "rct_1": {
             "items": [
                 {
-                    "name": "케이크",
+                    "name": "자카페 쿠키",
+                    "name_en": "Jacafe Cookie",
+                    "amount_minor": 3000,
                     "excluded": True,
-                    "rejected_by": "EXECUTOR",
-                    "rejected_reason": "개인 간식으로 추정",
                 }
             ]
         }
     }
-    recipients = {"rcp_1": {"slack_user_id": "U_1"}}
+    recipients = {"rcp_1": {"slack_user_id": "U_CLAIMANT"}}
     sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
-    monkeypatch.setattr(
-        routes, "translate_lines", lambda lines: ["Cake: presumed personal snack"]
-    )
 
     routes.task_notify_settlement_complete(
         {"settlement_run_id": "run_1", "recipients": [_recipient_payload()]},
         authorization="Bearer t",
     )
 
-    text = sent[0]["text"]
-    assert "has been completed" in text
-    assert "Cake: presumed personal snack" in text
-    assert "케이크" not in text
+    assert "Jacafe Cookie: This item was rejected by the approver" in sent[0]["text"]
 
 
-def test_no_rejections_skips_translation_call(monkeypatch):
-    claims = [_claim("clm_1", "rct_1")]
-    receipts = {"rct_1": {"items": []}}
-    recipients = {"rcp_1": {"slack_user_id": "U_1"}}
-    sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
-
-    def boom(lines):
-        raise AssertionError("반려 물품이 없으면 translate_lines를 부를 이유가 없다")
-
-    monkeypatch.setattr(routes, "translate_lines", boom)
-
-    routes.task_notify_settlement_complete(
-        {"settlement_run_id": "run_1", "recipients": [_recipient_payload()]},
-        authorization="Bearer t",
-    )
-
-    assert "has been completed" in sent[0]["text"]
-
-
-def test_translation_failure_falls_back_to_korean_reason(monkeypatch):
+def test_item_without_name_en_falls_back_to_the_original_name(monkeypatch):
+    """번역이 실패했거나 name_en이 생기기 전에 파싱된 영수증 — 빈 칸보다
+    한국어 원문이 낫다. 새로 올라오는 영수증에는 name_en이 붙는다."""
     claims = [_claim("clm_1", "rct_1")]
     receipts = {
-        "rct_1": {
-            "items": [
-                {
-                    "name": "케이크",
-                    "excluded": True,
-                    "rejected_by": "EXECUTOR",
-                    "rejected_reason": "개인 간식으로 추정",
-                }
-            ]
-        }
+        "rct_1": {"items": [{"name": "자카페 쿠키", "amount_minor": 3000, "excluded": True}]}
     }
-    recipients = {"rcp_1": {"slack_user_id": "U_1"}}
+    recipients = {"rcp_1": {"slack_user_id": "U_CLAIMANT"}}
     sent, _ = _wire(monkeypatch, claims=claims, receipts=receipts, recipients=recipients)
 
     routes.task_notify_settlement_complete(
@@ -336,9 +327,7 @@ def test_translation_failure_falls_back_to_korean_reason(monkeypatch):
         authorization="Bearer t",
     )
 
-    text = sent[0]["text"]
-    assert "has been completed" in text  # 헤더는 항상 영어
-    assert "케이크: 개인 간식으로 추정" in text  # 번역 실패 시 한국어 사유 폴백
+    assert "자카페 쿠키: This item was rejected by the approver" in sent[0]["text"]
 
 
 def test_amount_display_formats_non_zero_exponent_currency():
