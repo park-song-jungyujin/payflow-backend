@@ -258,6 +258,38 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
     assert set(duplicate_groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
 
 
+def test_current_batch_claim_not_flagged_as_already_settled_against_itself(monkeypatch):
+    """회귀 테스트 — 실제로 있었던 버그: link_claims_to_run_cas가 이번 배치의
+    claim들을 CONFIRMED → IN_RUN으로 전이한 *뒤에* list_settled_claims(status
+    IN_RUN 또는 SETTLED 전부 반환)를 부르므로, 필터링 없이 그대로 쓰면 이번
+    배치 자기 자신이 "과거에 이미 정산된 claim" 목록에 다시 나타난다. 새로
+    올린 영수증인데도 자기 자신과 완전일치(같은 claim_id·같은
+    receipt_serial_number_hash)해 exact_duplicate_groups.already_settled_claim_ids에
+    자기 claim_id가 그대로 실리고, "이미 송금 완료된 영수증 재청구"로 오판·
+    자동 반려까지 이어졌다."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "receipt_serial_number_hash": "hash_abc",
+        }
+    }
+    # list_settled_claims가 실제로 이렇게 나온다 — link_claims_to_run_cas가
+    # 이미 이번 배치의 clm_1을 IN_RUN으로 바꿔놨기 때문에, "과거 claim" 목록에
+    # 이번 배치 자기 자신이 섞여서 돌아온다.
+    settled_claims = [_claim("clm_1", receipt_id="rct_1")]
+    _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts, settled_claims=settled_claims)
+    monkeypatch.setattr(
+        routes, "get_receipts", lambda receipt_ids: {rid: receipts["rct_1"] for rid in receipt_ids}
+    )
+
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    _, _, _, exact_duplicate_groups, _, _, _ = enqueue_calls[0]
+    assert exact_duplicate_groups == []
+
+
 def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
     """receipt가 없는 claim도(이론상 발생하지 않아야 하지만) 요약 생성이 죽지 않는다."""
     claims = [_claim("clm_1", receipt_id="rct_missing")]

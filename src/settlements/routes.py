@@ -214,7 +214,19 @@ def _enqueue_executor_analysis(
     # 이번 배치 후보끼리뿐 아니라 이미 IN_RUN·SETTLED로 넘어간 과거 claim과도
     # 대조한다 — 안 그러면 이미 송금 끝난 영수증이 다른 달 배치에 다시 청구돼도
     # 아무 것도 못 잡는다(list_confirmed_claims는 미배치 claim만 보므로).
-    settled_claims = list_settled_claims(org_id)
+    #
+    # **실제로 있었던 버그**: 이 호출 시점엔 이번 배치의 claims가 이미
+    # link_claims_to_run_cas로 CONFIRMED → IN_RUN 전이까지 끝난 뒤다(호출부
+    # create_settlement_run_route 참조). list_settled_claims는 status가
+    # IN_RUN인 claim도 포함하므로, 필터링 없이 그대로 쓰면 **이번 배치 자기
+    # 자신**이 "과거에 이미 정산된 claim" 목록에 다시 나타난다 — 새로 올린
+    # 영수증인데도 자기 자신과 완전일치(같은 claim_id·같은 receipt_serial_number_hash)해
+    # exact_duplicate_groups의 already_settled_claim_ids에 자기 claim_id가
+    # 그대로 실리고, "이미 송금 완료된 영수증 재청구"로 오판·자동 반려까지
+    # 이어졌다. 이번 배치 candidate에 있는 claim_id는 정의상 "과거 배치"가
+    # 아니므로 여기서 명시적으로 제외한다.
+    current_claim_ids = {c["claim_id"] for c in claims}
+    settled_claims = [c for c in list_settled_claims(org_id) if c["claim_id"] not in current_claim_ids]
     settled_receipts = get_receipts({c["receipt_id"] for c in settled_claims})
     exact_duplicate_groups = find_exact_duplicate_receipts(
         claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
