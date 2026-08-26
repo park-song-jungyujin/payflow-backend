@@ -2,7 +2,10 @@
 
 검증하는 건: 빈 입력은 호출을 생략하는지, 정상 응답을 그대로 돌려주는지,
 개수가 안 맞거나 파싱 실패면 None인지, 4xx/5xx/네트워크 실패가 전부
-None으로 흡수되는지(번역은 조언성 부가 기능이라 예외를 올리지 않는다)."""
+None으로 흡수되는지(번역은 조언성 부가 기능이라 예외를 올리지 않는다),
+그리고 실패했을 때 원인을 특정할 수 있는 진단 정보를 로그에 남기는지."""
+
+import logging
 
 import pytest
 from google.genai import errors as genai_errors
@@ -122,3 +125,51 @@ def test_unexpected_exception_returns_none_not_raises(monkeypatch):
     _mock(monkeypatch, FakeModels(error=RuntimeError("network down")))
 
     assert translate.translate_lines(["안녕"]) is None
+
+
+# --- 실패 진단 로그 ---
+#
+# 실패를 조용히 흡수하는 설계라(번역은 조언성 부가 기능) 로그가 유일한 단서다.
+# 응답 원문을 안 남기면 "malformed output"까지만 알 수 있고 실제 원인(코드펜스·
+# 객체 반환·프롤로그 등)은 영영 특정 못 한다 — 실제로 그래서 한 번 막혔다
+# (payflow-docs journal 2026-08-26 "Gemma 번역 기능 동작 여부 확인").
+
+
+def test_malformed_output_logs_the_raw_response(monkeypatch, caplog):
+    _mock(monkeypatch, FakeModels(FakeResponse(text="```json\n[\"hello\"]\n```")))
+
+    with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
+        assert translate.translate_lines(["안녕"]) is None
+
+    assert "```json" in caplog.text
+
+
+def test_count_mismatch_logs_the_raw_response(monkeypatch, caplog):
+    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello"]')))
+
+    with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
+        assert translate.translate_lines(["안녕", "세계"]) is None
+
+    assert '["hello"]' in caplog.text
+
+
+def test_empty_response_text_is_logged_as_such(monkeypatch, caplog):
+    """차단·빈 candidates면 response.text가 None이다 — 파싱 실패와 원인이
+    달라서 로그에서 구분돼야 한다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text=None)))
+
+    with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
+        assert translate.translate_lines(["안녕"]) is None
+
+    assert "empty response" in caplog.text
+
+
+def test_raw_response_is_truncated_in_the_log(monkeypatch, caplog):
+    """응답이 통째로 길면 로그가 넘친다 — 원인 특정에 필요한 앞부분만 남긴다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text="x" * 5000)))
+
+    with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
+        assert translate.translate_lines(["안녕"]) is None
+
+    assert len(caplog.text) < 2000
+    assert "..." in caplog.text
