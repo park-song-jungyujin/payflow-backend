@@ -103,6 +103,42 @@ def test_request_payout_missing_recipient_skips_reservation_without_crash(monkey
     assert reserved == []
 
 
+def test_request_payout_zero_total_settles_directly_without_calling_paypal(monkeypatch):
+    """물품 전부 반려 등으로 claim은 있는데 합계가 0원인 run — PayPal을 부를 이유가
+    없다. Cloud Tasks enqueue·월간 캡 예약 전부 건너뛰고 곧장 SETTLED로 종결한다."""
+    monkeypatch.setattr(
+        routes, "get_settlement_run", lambda rid: _run(status="APPROVED", total_amount_minor=0)
+    )
+    monkeypatch.setattr(routes, "verify_and_burn_token", lambda *a: {"status": "EXECUTING"})
+    monkeypatch.setattr(
+        routes,
+        "get_claims_for_run",
+        lambda rid: [{"claim_id": "clm_1"}, {"claim_id": "clm_2"}],
+    )
+    settled_claims = []
+    monkeypatch.setattr(
+        routes, "update_claim", lambda claim_id, updates: settled_claims.append((claim_id, updates))
+    )
+    updated_run = {}
+    monkeypatch.setattr(
+        routes, "update_settlement_run", lambda rid, updates: updated_run.update(updates)
+    )
+    audits = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audits.append(kw))
+
+    # 아래가 호출되면 실패 — PayPal·Cloud Tasks 경로를 아예 타면 안 된다.
+    monkeypatch.setattr(routes, "per_recipient_amounts", lambda run: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setattr(routes, "enqueue_execute_payout", lambda rid: (_ for _ in ()).throw(AssertionError))
+
+    result = routes.request_payout({"settlement_run_id": "run_1"}, x_approval_token="good")
+
+    assert result == {"settlement_run_id": "run_1", "status": "SETTLED"}
+    assert {c for c, _ in settled_claims} == {"clm_1", "clm_2"}
+    assert all(u["status"] == "SETTLED" for _, u in settled_claims)
+    assert updated_run["status"] == "SETTLED"
+    assert audits[-1]["action"] == "RUN_SETTLED"
+
+
 def test_request_payout_queue_not_configured_still_returns_200_with_note(monkeypatch):
     """Cloud Tasks 큐가 아직 없는 로컬/데모 환경에서도 승인 게이트는 이미 통과했으니
     500으로 죽이지 않고 note를 붙여 알린다."""

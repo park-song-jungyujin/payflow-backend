@@ -31,11 +31,13 @@ from .currency import UnsupportedPayoutCurrency, assert_supported_payout_currenc
 from .idempotency import build_payout_ids
 from .store import (
     find_run_id_by_payout_batch_id,
+    get_claims_for_run,
     get_recipient,
     get_settlement_run,
     increment_recipient_monthly,
     list_executing_settlement_runs,
     set_sender_items,
+    update_claim,
     update_settlement_run,
 )
 from .paypal_client import create_payout, get_payout_batch
@@ -65,6 +67,28 @@ def request_payout(
             reason=rejection.detail,
         )
         raise HTTPException(status_code=rejection.status_code, detail=rejection.detail)
+
+    if run["total_amount_minor"] == 0:
+        # 보낼 돈이 없다 — 물품 전부 반려 등으로 claim은 있는데 합계가 0원인
+        # run이다(guards/routes.py.approve_settlement_run 참조, claim이 아예 없는
+        # run은 승인 자체가 막힌다). 승인 토큰은 이미 검증·소각됐으니(위
+        # verify_and_burn_token) "승인 토큰 없이 송금 엔드포인트는 실행되지
+        # 않는다"는 절대 규칙은 그대로 지켜진다 — PayPal을 부를 이유가 없을
+        # 뿐이다. Cloud Tasks·PayPal을 아예 안 태우고 곧장 SETTLED로 종결한다.
+        now = datetime.now(UTC)
+        for claim in get_claims_for_run(run_id):
+            update_claim(
+                claim["claim_id"], {"status": "SETTLED", "settled_at": now, "updated_at": now}
+            )
+        update_settlement_run(run_id, {"status": "SETTLED", "updated_at": now})
+        record_audit_log(
+            actor="api/src/payouts",
+            action="RUN_SETTLED",
+            run_id=run_id,
+            reason="total_amount_minor == 0 — PayPal 미호출",
+            after={"status": "SETTLED"},
+        )
+        return {"settlement_run_id": run_id, "status": "SETTLED"}
 
     # schema-contract.md §7 — monthly_paid_minor 예약 가산. reconcile에서 SUCCESS가
     # 아닌 종결 상태로 확정되면 그만큼 뺀다. recipient별로 각자 몫만 예약한다.
