@@ -645,6 +645,57 @@
         }
       }
     },
+    "/tasks/translate-executor-draft": {
+      "post": {
+        "summary": "Task Translate Executor Draft",
+        "description": "_enqueue_executor_translation이 태운 백그라운드 번역 — Cloud Tasks만\n부른다(OIDC). Gemma 호출이 여기서 일어나므로 web 요청 경로엔 이 지연이\n안 보인다.\n\n번역 실패(Gemma 장애·malformed output)는 translate.py 원칙과 같다 —\n조언성 부가 기능이라 재시도해도 또 실패할 수 있고, 다음에 새로 분석이\n돌면(재시도 버튼) 그때 다시 시도된다. 여기서 500을 던져 Cloud Tasks가\n무한 재시도하게 만들 이유가 없어 항상 200을 돌려준다.",
+        "operationId": "task_translate_executor_draft_tasks_translate_executor_draft_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/settlements": {
       "get": {
         "summary": "List Settlements",

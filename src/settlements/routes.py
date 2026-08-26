@@ -115,13 +115,16 @@ def _executor_analysis(run_id: str) -> dict | None:
     payload = draft["payload"]
     return {
         "status": payload.get("status", "DONE"),
+        # anomalies/summary_text가 기본(영어)이다 — 집행자 에이전트가 직접
+        # 영어로 쓴다(해커톤 제출 언어 요건).
         "anomalies": payload.get("anomalies", []),
         "summary_text": payload.get("summary_text"),
-        # anomalies_en/summary_text_en은 executor-agent가 새로 채우는 필드다 —
+        # anomalies_ko/summary_text_ko는 guards/agent_drafts.py가 draft를
+        # 받는 시점에 Gemma로 번역해 채운다 — 번역 실패나(guards/translate.py)
         # 그 전에 쓰인 draft에는 없을 수 있어 기본값을 둔다(schema-contract.md
         # 필드 추가는 항상 nullable/기본값으로, 문서 백필 없이).
-        "anomalies_en": payload.get("anomalies_en", []),
-        "summary_text_en": payload.get("summary_text_en"),
+        "anomalies_ko": payload.get("anomalies_ko", []),
+        "summary_text_ko": payload.get("summary_text_ko"),
         # status=FAILED일 때 set_executor_analysis_status가 남긴 실패 사유.
         # 이걸 안 실어 보내면 web은 "분석을 시작하지 못했습니다"까지만 말할 수
         # 있고, 정작 원인(AGENT_SERVICE_URL 누락 등)은 Firestore를 직접 열어야
