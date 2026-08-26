@@ -24,14 +24,14 @@ def test_missing_agent_service_url_raises_explicitly(monkeypatch):
     monkeypatch.setenv("CLOUD_TASKS_QUEUE", "payflow-queue")
     monkeypatch.delenv("AGENT_SERVICE_URL", raising=False)
     with pytest.raises(QueueNotConfigured, match="AGENT_SERVICE_URL"):
-        enqueue_executor_analyze("run_1", [], [], [], "org_1")
+        enqueue_executor_analyze("run_1", [], [], [], [], "org_1")
 
 
 def test_missing_queue_raises_explicitly(monkeypatch):
     monkeypatch.setenv("AGENT_SERVICE_URL", "https://payflow-agent.test.invalid")
     monkeypatch.delenv("CLOUD_TASKS_QUEUE", raising=False)
     with pytest.raises(QueueNotConfigured):
-        enqueue_executor_analyze("run_1", [], [], [], "org_1")
+        enqueue_executor_analyze("run_1", [], [], [], [], "org_1")
 
 
 def test_builds_oidc_task_targeting_agent_service(monkeypatch):
@@ -52,7 +52,8 @@ def test_builds_oidc_task_targeting_agent_service(monkeypatch):
     claims = [{"claim_id": "clm_1"}]
     groups = [{"claim_ids": ["clm_1", "clm_2"]}]
     exact_groups = [{"claim_ids": ["clm_1", "clm_2"], "receipt_serial_number": "A1234"}]
-    enqueue_executor_analyze("run_1", claims, groups, exact_groups, "org_1")
+    future_dated = [{"claim_id": "clm_1", "transaction_date": "2099-01-01"}]
+    enqueue_executor_analyze("run_1", claims, groups, exact_groups, future_dated, "org_1")
 
     request = captured["task"]["http_request"]
     assert request["url"] == "https://payflow-agent.test.invalid/agents/executor/analyze"
@@ -64,6 +65,7 @@ def test_builds_oidc_task_targeting_agent_service(monkeypatch):
         "candidate_claims": claims,
         "duplicate_groups": groups,
         "exact_duplicate_groups": exact_groups,
+        "future_dated_claims": future_dated,
         "org_id": "org_1",
         "force_reanalyze": False,
     }

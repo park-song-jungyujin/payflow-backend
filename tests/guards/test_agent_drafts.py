@@ -185,14 +185,12 @@ def test_claimant_translation_failure_keeps_korean_draft(monkeypatch, _patch):
     assert stored["payload"]["requery_message"] == "영수증을 다시 보내주세요."
 
 
-def test_executor_summary_and_anomalies_get_translated_in_one_call(monkeypatch, _patch):
+def test_executor_payload_passes_through_without_calling_gemma(monkeypatch, _patch):
+    """executor/agent.py가 이제 summary_text_en·anomalies_en을 직접 써서 보낸다 —
+    이 라우트는 Gemma를 부르지 않고 payload를 그대로 통과시킨다(지연 단축,
+    guards/agent_drafts.py._with_translated_fields 참조)."""
     calls = []
-
-    def fake_translate(texts):
-        calls.append(texts)
-        return ["summary in english", "anomaly 1 in english", "anomaly 2 in english"]
-
-    monkeypatch.setattr(agent_drafts, "translate_lines", fake_translate)
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
 
     result = agent_drafts.write_agent_draft(
         _body(
@@ -203,33 +201,17 @@ def test_executor_summary_and_anomalies_get_translated_in_one_call(monkeypatch, 
             payload={
                 "summary_text": "요약",
                 "anomalies": ["이상징후 1", "이상징후 2"],
+                "summary_text_en": "summary in english",
+                "anomalies_en": ["anomaly 1 in english", "anomaly 2 in english"],
             },
         )
     )
 
     assert result["status"] == "ok"
-    # summary_text가 맨 앞, anomalies가 순서대로 뒤 — 한 번의 호출로 합쳐 보낸다.
-    assert calls == [["요약", "이상징후 1", "이상징후 2"]]
+    assert calls == []
     stored = _patch["client"].data["EXECUTOR:run_1"]
     assert stored["payload"]["summary_text_en"] == "summary in english"
     assert stored["payload"]["anomalies_en"] == ["anomaly 1 in english", "anomaly 2 in english"]
-
-
-def test_executor_empty_summary_skips_translation(monkeypatch, _patch):
-    calls = []
-    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
-
-    agent_drafts.write_agent_draft(
-        _body(
-            agent="EXECUTOR",
-            target_type="SETTLEMENT_RUN",
-            target_id="run_1",
-            task_id="EXECUTOR:run_1",
-            payload={"summary_text": "", "anomalies": []},
-        )
-    )
-
-    assert calls == []
 
 
 def test_safety_draft_is_never_translated(monkeypatch, _patch):

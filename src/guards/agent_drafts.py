@@ -52,21 +52,16 @@ def write_agent_draft_document(
 
 
 def _with_translated_fields(agent: str, payload: dict) -> dict:
-    """schema-contract.md §9 — 에이전트는 한국어만 쓴다. web 대시보드(EXECUTOR)·
-    Slack DM(CLAIMANT)이 보여줄 영어는 여기서 Gemma로 번역해 채운다. 번역
-    실패는 조용히 무시한다 — payload는 원본 그대로 반환하고, 읽는 쪽
-    (settlements/routes.py._executor_analysis, ingest/routes.py._requery_message)이
-    이미 en 필드 없음을 정상 상태로 다룬다."""
-    if agent == "EXECUTOR":
-        summary_text = payload.get("summary_text")
-        anomalies = payload.get("anomalies") or []
-        if not isinstance(summary_text, str) or not summary_text.strip():
-            return payload
-        translated = translate_lines([summary_text, *anomalies])
-        if translated is None:
-            return payload
-        return {**payload, "summary_text_en": translated[0], "anomalies_en": translated[1:]}
+    """schema-contract.md §9 — 에이전트는 한국어만 쓴다. Slack DM(CLAIMANT)이
+    보여줄 영어는 여기서 Gemma로 번역해 채운다. 번역 실패는 조용히 무시한다 —
+    payload는 원본 그대로 반환하고, 읽는 쪽(ingest/routes.py._requery_message)이
+    이미 en 필드 없음을 정상 상태로 다룬다.
 
+    EXECUTOR는 이 경로를 타지 않는다 — anomalies_en·summary_text_en을 별도
+    Gemma 호출로 여기서 채우면 submit_settlement_analysis 툴 호출 이후 요청이
+    끝나기 전에 최대 15초(translate.py _TIMEOUT_MS)가 더 순차로 붙는다. 대신
+    집행자 에이전트(executor/agent.py)가 한국어와 함께 영어도 같은 턴에서
+    바로 써서 payload에 담아 보낸다 — 이 함수는 그 값을 그대로 통과시킨다."""
     if agent == "CLAIMANT":
         requery_message = payload.get("requery_message")
         if not isinstance(requery_message, str) or not requery_message.strip():
