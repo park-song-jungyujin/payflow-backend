@@ -59,7 +59,7 @@ def requery_blocks(text: str, claim_request_id: str) -> list[dict]:
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "확인했어요"},
+                    "text": {"type": "plain_text", "text": "Got it"},
                     "action_id": CLAIM_REQUEST_ACTION_ID,
                     "value": claim_request_id,
                 }

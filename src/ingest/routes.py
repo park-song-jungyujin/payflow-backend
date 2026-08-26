@@ -37,7 +37,6 @@ from .slack_client import (
     SlackSendPermanent,
     SlackSendTransient,
     get_display_name,
-    get_user_locale,
     post_message,
     requery_blocks,
 )
@@ -136,8 +135,8 @@ async def slack_events(request: Request):
                 post_message(
                     channel=event["channel"],
                     text=(
-                        f"연결됐습니다! 앞으로 이 채널로 보내는 영수증이 자동으로 처리됩니다."
-                        f" (등록된 PayPal 이메일: {email})"
+                        f"Connected! Receipts sent to this channel from now on will be"
+                        f" processed automatically. (Registered PayPal email: {email})"
                     ),
                 )
             except SlackSendError:
@@ -154,7 +153,7 @@ async def slack_events(request: Request):
         try:
             post_message(
                 channel=event["channel"],
-                text="아직 연결되지 않은 계정이에요. PayPal 수취 이메일 주소를 이 채널에 답장해주시면 연결해드릴게요.",
+                text="This account isn't linked yet. Reply in this channel with your PayPal payout email address to link it.",
             )
         except SlackSendError:
             pass
@@ -411,7 +410,7 @@ def _audit_best_effort(**kwargs) -> None:
         )
 
 
-def _requery_message(receipt_id: str | None, recipient_id: str | None) -> str | None:
+def _requery_message(receipt_id: str | None) -> str | None:
     """DM 본문은 청구자 에이전트가 쓴 `requery_message`에서만 온다. 없으면 None —
     **코드가 대체 문장을 만들지 않는다.** 문안을 여기서 지어내면 "에이전트가 뭐라고
     했는지"의 기록이 사라지고, 사람은 에이전트가 판단한 적 없는 이유로 재요청을 받는다.
@@ -419,10 +418,10 @@ def _requery_message(receipt_id: str | None, recipient_id: str | None) -> str | 
     draft 읽기는 settlements/store.py의 get_agent_draft(agent_drafts의 유일한
     읽기)를 그대로 쓴다 — task_apply_claimant_draft와 같은 경로다.
 
-    영어 문안(requery_message_en)은 agent_drafts.py가 Gemma로 번역해 채운다
-    (payflow-agent는 한국어만 쓴다). 수취인 Slack 계정의 locale이 en으로
-    시작하면 그걸 쓰고, 없거나 조회 실패하면 한국어로 폴백한다 — 번역이
-    "안 됨"이 발송 자체를 막으면 안 된다."""
+    Slack 봇 발송은 전부 영어다(해커톤 제출 언어 요건) — 영어 문안
+    (requery_message_en)은 agent_drafts.py가 Gemma로 번역해 채운다(payflow-agent는
+    한국어만 쓴다). 항상 그걸 우선 쓰고, 번역이 안 돼 없으면 한국어로 폴백한다 —
+    번역 실패가 발송 자체를 막으면 안 된다."""
     if not receipt_id:
         return None
     draft = get_agent_draft(f"CLAIMANT:{receipt_id}")
@@ -434,13 +433,9 @@ def _requery_message(receipt_id: str | None, recipient_id: str | None) -> str | 
     if not isinstance(message, str) or not message.strip():
         return None
 
-    recipient = get_recipient(recipient_id) if recipient_id else None
-    slack_user_id = (recipient or {}).get("slack_user_id")
-    locale = get_user_locale(slack_user_id) if slack_user_id else None
-    if locale and locale.startswith("en"):
-        message_en = payload.get("requery_message_en")
-        if isinstance(message_en, str) and message_en.strip():
-            return message_en
+    message_en = payload.get("requery_message_en")
+    if isinstance(message_en, str) and message_en.strip():
+        return message_en
     return message
 
 
@@ -599,7 +594,7 @@ def task_remind(body: dict, authorization: str = Header(default="")):
 
         receipt_id = claim_request.get("receipt_id")
 
-        message = _requery_message(receipt_id, claim_request.get("recipient_id"))
+        message = _requery_message(receipt_id)
         if message is None:
             # 문안이 없으면 보내지 않는다. 재시도해도 draft는 그대로다.
             # 만료 태스크를 **감사 로그보다 먼저** 건다 — 감사 싱크가 죽어서
@@ -701,10 +696,11 @@ def _format_amount(amount_minor: int, currency: str) -> str:
 
 
 def _settlement_complete_text(
-    *, amount_display: str, rejected_items: list[dict], locale: str | None
+    *, amount_display: str, rejected_items: list[dict]
 ) -> str:
     """정산 완료 DM 본문 — "정산이 완료됐다"가 메인이고, 이번 run에서 제외된
-    물품이 있으면 그 아래에 물품명·사유를 덧붙인다.
+    물품이 있으면 그 아래에 물품명·사유를 덧붙인다. Slack 봇 발송은 전부
+    영어다(해커톤 제출 언어 요건).
 
     reason은 집행자 에이전트(executor/tools.py flag_personal_use_items)가 쓴
     한국어 문장이면 그대로 옮긴다 — _requery_message와 같은 원칙으로 여기서
@@ -713,11 +709,11 @@ def _settlement_complete_text(
     알리는 문구로 대체한다(없는 사유를 지어내진 않되, 누가 뺐는지는 사실이므로
     숨기지 않는다).
 
-    영어 로케일이면 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로 번역한다 —
-    reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면 그 예산을
-    갉아먹어 반려 자체가 실패할 위험이 있어 여기로 미뤘다. 번역 실패는
-    한국어 사유로 폴백한다(헤더만 영어) — 번역이 안 됐다고 사유 자체를 숨기지
-    않는다.
+    한국어 사유·대체 문구를 이 시점(Cloud Tasks가 부르는 태스크)에 Gemma로
+    번역한다 — reject-items 요청(agent → api, 10초 타임아웃) 안에서 번역하면
+    그 예산을 갉아먹어 반려 자체가 실패할 위험이 있어 여기로 미뤘다. 번역
+    실패는 한국어 사유로 폴백한다(헤더만 영어) — 번역이 안 됐다고 사유 자체를
+    숨기지 않는다.
     """
     fallback_reason_ko = "이 항목이 집행자에 의해 반려되었습니다"
     lines_ko = [
@@ -725,20 +721,14 @@ def _settlement_complete_text(
         for i in rejected_items
     ]
 
-    if locale and locale.startswith("en"):
-        header = f"Your settlement of {amount_display} has been completed."
-        if not rejected_items:
-            return header
-        translated = translate_lines(
-            [f"{i.get('name') or ''}: {i.get('reason') or fallback_reason_ko}" for i in rejected_items]
-        )
-        body = "\n".join(f"- {t}" for t in translated) if translated is not None else "\n".join(lines_ko)
-        return f"{header}\n\nThe following items were excluded from this settlement:\n{body}"
-
-    header = f"{amount_display} 정산이 완료되었습니다."
+    header = f"Your settlement of {amount_display} has been completed."
     if not rejected_items:
         return header
-    return f"{header}\n\n다음 항목은 이번 정산에서 제외됐습니다:\n" + "\n".join(lines_ko)
+    translated = translate_lines(
+        [f"{i.get('name') or ''}: {i.get('reason') or fallback_reason_ko}" for i in rejected_items]
+    )
+    body = "\n".join(f"- {t}" for t in translated) if translated is not None else "\n".join(lines_ko)
+    return f"{header}\n\nThe following items were excluded from this settlement:\n{body}"
 
 
 @router.post("/tasks/notify-settlement-complete")
@@ -806,12 +796,9 @@ def task_notify_settlement_complete(body: dict, authorization: str = Header(defa
             )
             continue
 
-        locale = get_user_locale(slack_user_id)
         amount_display = _format_amount(r.get("amount_minor"), r.get("currency"))
         rejected_items = rejected_by_recipient.get(recipient_id, [])
-        text = _settlement_complete_text(
-            amount_display=amount_display, rejected_items=rejected_items, locale=locale
-        )
+        text = _settlement_complete_text(amount_display=amount_display, rejected_items=rejected_items)
 
         try:
             post_message(channel=slack_user_id, text=text)
