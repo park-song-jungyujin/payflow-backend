@@ -32,8 +32,8 @@ router = APIRouter()
 _ACTOR = "api/src/auth"
 
 _ONBOARDING_DM_TEXT = (
-    "Payflow가 이 워크스페이스에 설치됐어요! 지출 정산을 받으려면 PayPal 수취"
-    " 이메일 주소를 이 DM에 답장해주세요."
+    "Payflow has been installed in this workspace! To receive expense settlements,"
+    " reply to this DM with your PayPal payout email address."
 )
 
 

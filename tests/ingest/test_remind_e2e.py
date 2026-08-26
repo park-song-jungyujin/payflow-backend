@@ -181,10 +181,6 @@ def env(monkeypatch):
     # settlements store) — fixture 문서를 그대로 돌려주는 스텁으로 둔다.
     monkeypatch.setattr(routes, "get_receipt", lambda _id: RECEIPTS.get(_id))
     monkeypatch.setattr(routes, "get_recipient", lambda _id: RECIPIENTS.get(_id))
-    # 이 스위트는 requery_message_en 선택 로직(locale 기반)을 다루지 않는다 —
-    # 항상 한국어로 폴백하게 고정한다. 그 로직 자체는 별도 스위트가 검증한다.
-    monkeypatch.setattr(routes, "get_user_locale", lambda _id: None)
-
     def fake_get_agent_draft(task_id):
         # routes._requery_message가 조립하는 키는 `CLAIMANT:{receipt_id}`다.
         # 아무 task_id에나 payload를 돌려주면 그 조립이 검증되지 않는다.
@@ -358,9 +354,8 @@ def test_requery_message_is_read_with_the_claimant_task_id(env):
     assert env["draft_task_ids"] == [f"CLAIMANT:{CLAIM_REQUEST_05['receipt_id']}"]
 
 
-def test_english_locale_recipient_gets_translated_message(env, monkeypatch):
-    """수취인 Slack 계정 locale이 en이고 requery_message_en이 있으면 그걸 보낸다."""
-    monkeypatch.setattr(routes, "get_user_locale", lambda _id: "en-US")
+def test_translated_message_preferred_when_available(env, monkeypatch):
+    """requery_message_en이 있으면 항상 그걸 보낸다 — Slack 봇 발송은 전부 영어다."""
     monkeypatch.setattr(
         routes,
         "get_agent_draft",
@@ -380,31 +375,9 @@ def test_english_locale_recipient_gets_translated_message(env, monkeypatch):
     assert env["sent"][0]["text"] == "Please resend the receipt."
 
 
-def test_english_locale_without_translation_falls_back_to_korean(env, monkeypatch):
-    """번역이 없으면(Gemma 실패 등) locale이 en이어도 한국어로라도 보낸다 —
-    번역 실패가 발송 자체를 막으면 안 된다."""
-    monkeypatch.setattr(routes, "get_user_locale", lambda _id: "en-US")
-    client = env["client"]
-    _seed_pending(client)
-
-    _remind()
-
-    assert env["sent"][0]["text"] == REQUERY_MESSAGE
-
-
-def test_korean_locale_ignores_english_translation(env, monkeypatch):
-    monkeypatch.setattr(routes, "get_user_locale", lambda _id: "ko-KR")
-    monkeypatch.setattr(
-        routes,
-        "get_agent_draft",
-        lambda task_id: {
-            "payload": {
-                "needs_requery": True,
-                "requery_message": REQUERY_MESSAGE,
-                "requery_message_en": "Please resend the receipt.",
-            }
-        },
-    )
+def test_without_translation_falls_back_to_korean(env):
+    """번역이 없으면(Gemma 실패 등) 한국어로라도 보낸다 — 번역 실패가 발송
+    자체를 막으면 안 된다(fixture 05의 draft에는 requery_message_en이 없다)."""
     client = env["client"]
     _seed_pending(client)
 
