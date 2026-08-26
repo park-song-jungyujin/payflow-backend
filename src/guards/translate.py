@@ -35,6 +35,17 @@ _TIMEOUT_MS = 15_000
 # 거의 항상 앞부분에서 드러나고, 통째로 남기면 번역할 줄이 많을 때 로그가 넘친다.
 _RAW_LOG_LIMIT = 500
 
+# 한 번에 보내는 줄 수. Gemma는 줄이 늘수록 "입력과 같은 개수의 배열"을 덜
+# 지킨다(관측된 실패 유형 둘 중 하나가 줄 수 불일치였다 — payflow-docs
+# journal 2026-08-26). translate_lines는 전부 아니면 전무라, 한 줄만 어긋나도
+# 그 요청의 번역이 통째로 사라진다.
+#
+# 5는 호출 수와 줄 수 정확도를 맞바꾼 값이다 — 품목 5개 이하 영수증(대부분)과
+# 이상징후 몇 건짜리 정산 실행은 지금처럼 한 번에 끝나고, 그보다 큰 입력만
+# 나눠 부른다. 정확한 임계값을 실측한 게 아니라 "작을수록 안전하다"는 방향만
+# 반영한 값이다.
+_CHUNK_SIZE = 5
+
 _PROMPT_TEMPLATE = """\
 아래 <lines> 블록의 각 줄을 원문 언어와 관계없이 자연스러운 {target_language}로
 번역하라. 줄 순서를 그대로 유지한다. 번역이지 요약이 아니다 — 내용을 더하거나
@@ -72,10 +83,49 @@ def translate_lines(texts: list[str], *, target_language: str = "English") -> li
 
     texts가 빈 리스트면 빈 리스트를 그대로 돌려준다 — 호출 자체를 생략해
     불필요한 Gemma 호출을 안 한다.
+
+    **_CHUNK_SIZE줄씩 나눠 부른다.** 한 번에 다 보내면 줄이 많을수록 Gemma가
+    줄 수를 안 맞춰서 그 요청의 번역이 통째로 사라졌다 — 품목이 많은 영수증은
+    가맹점명 번역까지 같이 잃고, 청구 건이 여럿인 정산 실행은 이상징후 한국어
+    번역이 아예 안 붙었다. 청크가 실패하면 그 청크만 줄 단위로 다시 부른다 —
+    한 줄짜리 호출이 가장 안정적인 형태다.
+
+    **부분 번역은 돌려주지 않는다.** 줄 단위 재시도까지 실패하면 None이다 —
+    번역된 줄과 원문이 섞인 목록을 돌려주면 호출부가 한 화면에 두 언어를
+    섞어 그린다. 호출부는 전부 "None이면 원문 폴백"으로 되어 있다.
+
+    호출부는 전부 Cloud Tasks가 부르는 비동기 경로(파싱 태스크, 집행자 번역
+    태스크)라 호출 수가 늘어도 사용자 요청 경로에 지연이 붙지 않는다.
     """
     if not texts:
         return []
 
+    out: list[str] = []
+    for start in range(0, len(texts), _CHUNK_SIZE):
+        chunk = texts[start : start + _CHUNK_SIZE]
+        translated = _translate_chunk(chunk, target_language)
+
+        if translated is None and len(chunk) > 1:
+            # 청크 단위로 실패했다 — 어느 줄이 문제인지 모르니 전부 한 줄씩
+            # 다시 부른다. 한 줄짜리는 이미 가장 안정적인 형태라 여기서 또
+            # 실패하면 재시도할 다른 모양이 없다.
+            retried: list[str] = []
+            for line in chunk:
+                one = _translate_chunk([line], target_language)
+                if one is None:
+                    return None
+                retried.extend(one)
+            translated = retried
+
+        if translated is None:
+            return None
+        out.extend(translated)
+
+    return out
+
+
+def _translate_chunk(texts: list[str], target_language: str) -> list[str] | None:
+    """Gemma를 한 번 불러 texts와 같은 개수의 번역을 받는다. 실패하면 None."""
     try:
         client = _build_client()
         # response_schema는 안 쓴다 — Gemma는 Gemini와 달리 Vertex의 구조화

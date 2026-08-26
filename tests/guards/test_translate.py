@@ -30,6 +30,19 @@ class FakeModels:
         return self._response
 
 
+class ScriptedModels:
+    """호출 순서대로 준비된 응답을 돌려준다 — 청크 분할·줄 단위 재시도처럼
+    Gemma를 여러 번 부르는 경로를 검증할 때 쓴다."""
+
+    def __init__(self, texts):
+        self._texts = list(texts)
+        self.calls = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeResponse(text=self._texts[len(self.calls) - 1])
+
+
 class FakeClient:
     def __init__(self, models):
         self.models = models
@@ -83,8 +96,10 @@ def test_target_language_is_embedded_in_prompt(monkeypatch):
     assert "English" not in models.calls[0]["contents"]
 
 
-def test_count_mismatch_returns_none(monkeypatch):
-    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello"]')))
+def test_count_mismatch_returns_none_when_line_retry_also_fails(monkeypatch):
+    """줄 수가 어긋나면 줄 단위로 다시 부르고, 거기서도 실패하면 None이다."""
+    models = ScriptedModels(['["hello"]', "nope", "nope"])
+    _mock(monkeypatch, models)
 
     assert translate.translate_lines(["안녕", "세계"]) is None
 
@@ -145,7 +160,8 @@ def test_malformed_output_logs_the_raw_response(monkeypatch, caplog):
 
 
 def test_count_mismatch_logs_the_raw_response(monkeypatch, caplog):
-    _mock(monkeypatch, FakeModels(FakeResponse(text='["hello"]')))
+    models = ScriptedModels(['["hello"]', "nope", "nope"])
+    _mock(monkeypatch, models)
 
     with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
         assert translate.translate_lines(["안녕", "세계"]) is None
@@ -231,11 +247,14 @@ def test_bare_string_is_accepted_when_exactly_one_line_was_requested(monkeypatch
     assert translate.translate_lines(["안녕"]) == ["hello"]
 
 
-def test_bare_string_is_rejected_when_multiple_lines_were_requested(monkeypatch):
-    """여러 줄을 보냈는데 문자열 하나가 오면 어느 줄인지 알 수 없다 — 실패다."""
-    _mock(monkeypatch, FakeModels(FakeResponse(text='"hello"')))
+def test_bare_string_answering_a_multi_line_request_triggers_line_retry(monkeypatch):
+    """여러 줄을 보냈는데 문자열 하나가 오면 어느 줄인지 알 수 없다 — 그
+    응답을 쓰지 않고 줄 단위로 다시 묻는다."""
+    models = ScriptedModels(['"hello"', '"hello"', '"world"'])
+    _mock(monkeypatch, models)
 
-    assert translate.translate_lines(["안녕", "세계"]) is None
+    assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
+    assert len(models.calls) == 3
 
 
 def test_fenced_object_is_also_unwrapped(monkeypatch):
@@ -251,3 +270,82 @@ def test_unquoted_prose_is_rejected_even_for_a_single_line(monkeypatch):
     _mock(monkeypatch, FakeModels(FakeResponse(text="I cannot translate that.")))
 
     assert translate.translate_lines(["안녕"]) is None
+
+
+# --- 줄이 많을 때 (청크 분할) ---
+#
+# Gemma는 줄 수가 늘수록 "입력과 같은 개수의 배열"을 덜 지킨다(payflow-docs
+# journal 2026-08-26 — 관측된 실패 유형 둘 중 하나가 줄 수 불일치였다).
+# translate_lines는 전부 아니면 전무라, 한 줄만 어긋나도 그 요청의 번역이
+# 통째로 사라진다 — 품목이 많은 영수증은 가맹점명까지 번역을 잃고, 청구 건이
+# 여럿인 정산 실행은 이상징후 한국어 번역이 통째로 안 붙는다.
+#
+# 그래서 큰 입력은 작은 청크로 나눠 부른다. 청크가 실패하면 그 청크만 줄
+# 단위로 다시 부른다 — 한 줄짜리 호출이 가장 안정적인 형태다.
+
+
+def test_small_input_is_still_a_single_call(monkeypatch):
+    """청크 크기 이하면 호출 수가 늘지 않는다 — 흔한 경우의 지연을 안 건드린다."""
+    models = ScriptedModels(['["1", "2", "3", "4", "5"]'])
+    _mock(monkeypatch, models)
+
+    assert translate.translate_lines(["a", "b", "c", "d", "e"]) == ["1", "2", "3", "4", "5"]
+    assert len(models.calls) == 1
+
+
+def test_large_input_is_split_into_chunks_and_concatenated_in_order(monkeypatch):
+    models = ScriptedModels(['["1", "2", "3", "4", "5"]', '["6", "7"]'])
+    _mock(monkeypatch, models)
+
+    result = translate.translate_lines(["a", "b", "c", "d", "e", "f", "g"])
+
+    assert result == ["1", "2", "3", "4", "5", "6", "7"]
+    assert len(models.calls) == 2
+    # 두 번째 호출에는 남은 두 줄만 실려야 한다 — 청크가 겹치면 순서가 깨진다.
+    assert "f" in models.calls[1]["contents"] and "a" not in models.calls[1]["contents"]
+
+
+def test_failed_chunk_is_retried_line_by_line(monkeypatch):
+    """청크가 줄 수 불일치로 실패해도 그 청크만 줄 단위로 다시 부른다 —
+    한 줄이 어긋났다고 나머지 번역까지 버리지 않는다."""
+    models = ScriptedModels(
+        [
+            '["1", "2"]',  # 5줄 청크인데 2개만 왔다 → 실패
+            '"1"',
+            '"2"',
+            '"3"',
+            '"4"',
+            '"5"',
+        ]
+    )
+    _mock(monkeypatch, models)
+
+    assert translate.translate_lines(["a", "b", "c", "d", "e"]) == ["1", "2", "3", "4", "5"]
+    assert len(models.calls) == 6
+
+
+def test_line_level_retry_failure_gives_up_on_the_whole_batch(monkeypatch):
+    """줄 단위로도 실패하면 None이다 — 일부만 번역된 목록을 돌려주면 호출부가
+    한국어와 영어가 섞인 화면을 만든다."""
+    models = ScriptedModels(['["1", "2"]', '"1"', "그건 번역 못 하겠습니다"])
+    _mock(monkeypatch, models)
+
+    assert translate.translate_lines(["a", "b", "c", "d", "e"]) is None
+
+
+def test_single_line_failure_is_not_retried(monkeypatch):
+    """한 줄짜리는 이미 가장 안정적인 형태다 — 같은 호출을 한 번 더 할 이유가 없다."""
+    models = ScriptedModels(["I cannot translate that."])
+    _mock(monkeypatch, models)
+
+    assert translate.translate_lines(["a"]) is None
+    assert len(models.calls) == 1
+
+
+def test_target_language_is_kept_across_chunks(monkeypatch):
+    models = ScriptedModels(['["1", "2", "3", "4", "5"]', '["6"]'])
+    _mock(monkeypatch, models)
+
+    translate.translate_lines(["a", "b", "c", "d", "e", "f"], target_language="Korean")
+
+    assert all("Korean" in c["contents"] for c in models.calls)
