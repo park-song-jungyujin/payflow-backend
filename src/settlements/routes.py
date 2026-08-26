@@ -192,6 +192,39 @@ def list_unsettled_claims(authorization: str = Header(default="")):
     return {"claims": claims}
 
 
+def _agent_items(receipt: dict) -> list[dict]:
+    """집행자 에이전트 프롬프트에 실을 품목 목록. 영수증 items를 날것으로
+    보내지 않고 필요한 세 필드만 추린다(§6 나가는 필드 최소화 = 인젝션 표면 축소).
+
+    **날것으로 보내면 name_en이 같이 끌려간다** — 품목마다 같은 이름이 두 언어로
+    실려 프롬프트가 부풀고, 청구 건이 여럿인 정산 실행일수록 분석이 그만큼
+    느려진다. name_en은 web·Slack 표시용으로 넣은 필드지 에이전트가 쓰는 값이
+    아니다(merchant_name_en을 _claim_summary에 안 넣은 것과 같은 이유인데,
+    items는 통째로 넘기는 바람에 그 원칙이 새고 있었다).
+
+    이름은 **영어를 우선** 쓴다 — 집행자는 이상징후와 반려 사유를 영어로 쓰므로
+    (payflow-agent executor/agent.py), 영어 이름을 줘야 그 문장에 품목명이
+    한국어로 섞이지 않는다. 번역이 없으면(실패했거나 그 필드가 생기기 전에
+    파싱된 영수증) 원문으로 폴백한다 — 이름을 빼면 무엇을 반려할지 판단할
+    근거 자체가 사라진다.
+
+    excluded는 남긴다 — 프롬프트가 "이미 반려한 물품을 다시 반려하지 말라"는
+    판단에 쓴다. rejected_reason·rejected_by는 프롬프트가 읽지 않는다.
+
+    **순서와 개수를 그대로 유지한다.** flag_personal_use_items·reject-items가
+    item_index(위치)로 물품을 가리키므로, 여기서 항목을 빼거나 순서를 바꾸면
+    엉뚱한 물품이 반려된다.
+    """
+    return [
+        {
+            "name": item.get("name_en") or item.get("name"),
+            "amount_minor": item.get("amount_minor"),
+            "excluded": item.get("excluded", False),
+        }
+        for item in receipt.get("items") or []
+    ]
+
+
 def _enqueue_executor_analysis(
     run_id: str, claims: list[dict], receipts: dict, org_id: str, force_reanalyze: bool = False
 ) -> None:
@@ -215,7 +248,7 @@ def _enqueue_executor_analysis(
     claim_summaries = [
         {
             **_claim_summary(c, receipts),
-            "items": (receipts.get(c["receipt_id"]) or {}).get("items", []),
+            "items": _agent_items(receipts.get(c["receipt_id"]) or {}),
             "excluded": c.get("excluded", False),
             "rejected_reason": c.get("rejected_reason"),
             "short_id": c["claim_id"][-8:],

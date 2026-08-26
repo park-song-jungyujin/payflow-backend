@@ -243,7 +243,89 @@ def test_create_run_claim_summaries_include_items_for_reject_automation(monkeypa
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     _, claim_summaries, _, _, _, _, _ = enqueue_calls[0]
-    assert claim_summaries[0]["items"] == [{"name": "아메리카노", "amount_minor": 4500}]
+    assert claim_summaries[0]["items"] == [
+        {"name": "아메리카노", "amount_minor": 4500, "excluded": False}
+    ]
+
+
+def test_agent_items_carry_the_english_name_not_both_languages(monkeypatch):
+    """영수증 items를 날것으로 실어 보내면 name_en이 같이 끌려가 프롬프트가
+    품목마다 두 언어로 부풀고, 그만큼 분석이 느려진다 — §6 "나가는 필드
+    최소화"이자 인젝션 표면 축소다. 집행자는 영어로 서술하므로 영어 이름
+    하나만 있으면 된다."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [
+                {
+                    "name": "아메리카노",
+                    "name_en": "Americano",
+                    "amount_minor": 4500,
+                    "excluded": True,
+                    "rejected_reason": "personal use",
+                    "rejected_by": "EXECUTOR",
+                }
+            ],
+        }
+    }
+    _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
+
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    _, claim_summaries, _, _, _, _, _ = enqueue_calls[0]
+    # excluded는 남긴다 — 프롬프트가 "이미 반려한 물품을 다시 반려하지 말라"는
+    # 판단에 쓴다. rejected_reason·rejected_by는 프롬프트가 안 읽는다.
+    assert claim_summaries[0]["items"] == [
+        {"name": "Americano", "amount_minor": 4500, "excluded": True}
+    ]
+
+
+def test_agent_items_fall_back_to_the_original_name_without_a_translation(monkeypatch):
+    """번역이 실패했거나 name_en이 생기기 전에 파싱된 영수증 — 이름을 빼면
+    집행자가 어떤 물품인지 판단할 근거를 잃는다."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [{"name": "아메리카노", "amount_minor": 4500}],
+        }
+    }
+    _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
+
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    _, claim_summaries, _, _, _, _, _ = enqueue_calls[0]
+    assert claim_summaries[0]["items"][0]["name"] == "아메리카노"
+
+
+def test_agent_item_order_is_preserved_so_item_index_still_matches(monkeypatch):
+    """flag_personal_use_items·reject-items는 item_index(위치)로 물품을 가리킨다 —
+    여기서 순서가 바뀌거나 항목이 빠지면 엉뚱한 물품이 반려된다."""
+    claims = [_claim("clm_1", receipt_id="rct_1")]
+    receipts = {
+        "rct_1": {
+            "merchant_name": "스타벅스",
+            "transaction_date": date(2026, 8, 10),
+            "items": [
+                {"name": "아메리카노", "name_en": "Americano", "amount_minor": 4500},
+                {"name": "샴푸", "amount_minor": 8000},
+                {"name": "배송비", "name_en": "Shipping fee", "amount_minor": None},
+            ],
+        }
+    }
+    _, enqueue_calls, _ = _wire(monkeypatch, claims=claims, receipts=receipts)
+
+    routes.create_settlement_run_route(body={}, authorization="Bearer t")
+
+    _, claim_summaries, _, _, _, _, _ = enqueue_calls[0]
+    assert [i["name"] for i in claim_summaries[0]["items"]] == [
+        "Americano",
+        "샴푸",
+        "Shipping fee",
+    ]
 
 
 def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
