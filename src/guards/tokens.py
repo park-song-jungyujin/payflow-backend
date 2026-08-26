@@ -17,6 +17,8 @@ from .limits import check_caps
 
 
 def approval_amount_hash(run: dict) -> str:
+    # excluded(청구 전체 반려) claim은 뺀다 — 실제로 지급될 금액(payouts/amounts.py
+    # per_recipient_amounts)과 이 해시가 가리키는 금액이 어긋나면 안 된다.
     items = [
         {
             "recipient_id": c["recipient_id"],
@@ -24,6 +26,7 @@ def approval_amount_hash(run: dict) -> str:
             "currency": c["currency"],
         }
         for c in sorted(get_claims_for_run(run["settlement_run_id"]), key=lambda c: c["recipient_id"])
+        if not c.get("excluded")
     ]
     payload = {
         "settlement_run_id": run["settlement_run_id"],

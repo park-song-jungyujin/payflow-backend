@@ -117,6 +117,13 @@ def reconcile(run_id: str) -> dict:
 
     if all_success:
         for claim in claims:
+            # excluded(청구 전체 반려) claim은 애초에 per_recipient_amounts에서
+            # 빠져 이 sender_item 합계에 안 들어갔다 — 돈이 안 나갔으니 SETTLED로
+            # 바꾸면 안 된다. "recipient 결과 없음" 케이스와 같은 처리(else 절
+            # CONFIRMED 되돌리기)를 그대로 쓴다.
+            if claim.get("excluded"):
+                update_claim(claim["claim_id"], {"status": "CONFIRMED", "updated_at": _now()})
+                continue
             update_claim(
                 claim["claim_id"], {"status": "SETTLED", "settled_at": _now(), "updated_at": _now()}
             )
@@ -124,7 +131,7 @@ def reconcile(run_id: str) -> dict:
     else:
         success_recipients = {i["recipient_id"] for i in items if i["status"] == "SUCCESS"}
         for claim in claims:
-            if claim["recipient_id"] in success_recipients:
+            if not claim.get("excluded") and claim["recipient_id"] in success_recipients:
                 update_claim(
                     claim["claim_id"],
                     {"status": "SETTLED", "settled_at": _now(), "updated_at": _now()},

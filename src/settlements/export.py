@@ -68,6 +68,11 @@ def build_settlement_export(run_id: str) -> bytes:
         amount_minor = claim["amount_minor"]
         category_code = claim["account_category_code"]
 
+        # excluded(청구 전체 반려, settlements/routes.py._apply_claim_exclusion)된
+        # claim은 amount_minor를 그대로 갖고 있다(줄이지 않는다 — 되돌릴 때 복원할
+        # 값이 있어야 하므로). 세무사용 합계에는 실제로 안 나간 돈이니 넣지 않는다 —
+        # 행 자체는 감사 추적용으로 그대로 남기고 상태만 표시한다.
+        status_display = f"{claim['status']} (반려됨)" if claim.get("excluded") else claim["status"]
         ws.append(
             [
                 claim["claim_id"],
@@ -79,10 +84,11 @@ def build_settlement_export(run_id: str) -> bytes:
                 currency,
                 _amount_display(amount_minor, currency),
                 amount_minor,
-                claim["status"],
+                status_display,
             ]
         )
-        total_by_currency[currency] = total_by_currency.get(currency, 0) + amount_minor
+        if not claim.get("excluded"):
+            total_by_currency[currency] = total_by_currency.get(currency, 0) + amount_minor
 
     for currency, minor_sum in sorted(total_by_currency.items()):
         ws.append(

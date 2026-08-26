@@ -1002,6 +1002,126 @@
         }
       }
     },
+    "/settlements/runs/{run_id}/claims/{claim_id}": {
+      "patch": {
+        "summary": "Set Claim Excluded Route",
+        "description": "청구 전체 반려 — 집행자(사람)가 claim 단위로 체크를 해제하면 이번 배치\n합계에서 그 claim 전체를 뺀다. set_claim_item_excluded_route와 같은 제약\n(DRAFT에서만).",
+        "operationId": "set_claim_excluded_route_settlements_runs__run_id__claims__claim_id__patch",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "claim_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Claim Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agents/executor/reject-claims": {
+      "post": {
+        "summary": "Reject Claims Route",
+        "description": "청구 반려 자동화(claim 전체) — 집행자 에이전트가 중복 청구·동일 영수증\n재제출·미래 거래일로 이미 서술한 claim을 통째로 이번 배치에서 제외한다\n(executor/tools.py flag_suspicious_claims). reject_claim_items_route와 같은\n이유로 승인 전까지는 사람이 되돌릴 수 있는 잠정 상태다.",
+        "operationId": "reject_claims_route_agents_executor_reject_claims_post",
+        "parameters": [
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/settlements/runs/{run_id}/export": {
       "get": {
         "summary": "Export Settlement Run",

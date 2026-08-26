@@ -234,6 +234,71 @@ def test_notify_enqueue_failure_does_not_break_reconcile(store, monkeypatch):
     assert store.audit_log[-1]["action"] == "SETTLEMENT_COMPLETE_NOTIFY_ENQUEUE_FAILED"
 
 
+def test_all_success_excluded_claim_reverts_to_confirmed_not_settled(store, monkeypatch):
+    """청구 전체 반려(excluded=true, settlements/routes.py._apply_claim_exclusion)된
+    claim은 애초에 per_recipient_amounts에서 빠져 이 sender_item 합계에 안 들어갔다
+    — 돈이 안 나갔으니 recipient가 성공해도 SETTLED가 되면 안 된다."""
+    store.runs["run_1"] = _run(payout_batch_id="batch_1")
+    store.sender_items["run_1"] = [
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "currency": "KRW",
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        }
+    ]
+    store.claims["clm_1"] = _claim("clm_1", "run_1")
+    store.claims["clm_2"] = {**_claim("clm_2", "run_1"), "excluded": True}
+    _wire_payout_batch(monkeypatch, [{"payout_item_id": "itm_1", "transaction_status": "SUCCESS"}])
+
+    result = reconcile.reconcile("run_1")
+
+    assert result["status"] == "SETTLED"
+    assert store.claims["clm_1"]["status"] == "SETTLED"
+    assert store.claims["clm_2"]["status"] == "CONFIRMED"
+    assert "settled_at" not in store.claims["clm_2"]
+
+
+def test_partial_failure_excluded_claim_of_successful_recipient_stays_confirmed(store, monkeypatch):
+    """부분 실패 분기에서도 마찬가지 — recipient가 SUCCESS라도 그 recipient의
+    excluded claim은 SETTLED로 바뀌면 안 된다."""
+    store.runs["run_1"] = _run(payout_batch_id="batch_1", total_amount_minor=1000)
+    store.sender_items["run_1"] = [
+        {
+            "payout_item_id": "itm_1",
+            "recipient_id": "rcp_1",
+            "amount_minor": 1000,
+            "currency": "KRW",
+            "paypal_transaction_status": "SUCCESS",
+            "status": "PENDING",
+        },
+        {
+            "payout_item_id": "itm_2",
+            "recipient_id": "rcp_2",
+            "amount_minor": 500,
+            "currency": "KRW",
+            "paypal_transaction_status": "FAILED",
+            "status": "PENDING",
+        },
+    ]
+    store.claims["clm_1"] = {**_claim("clm_1", "run_1", recipient_id="rcp_1"), "excluded": True}
+    store.claims["clm_2"] = _claim("clm_2", "run_1", recipient_id="rcp_2")
+    store.recipients["rcp_2"] = {"monthly_paid_minor": 500}
+    _wire_payout_batch(
+        monkeypatch,
+        [
+            {"payout_item_id": "itm_1", "transaction_status": "SUCCESS"},
+            {"payout_item_id": "itm_2", "transaction_status": "FAILED"},
+        ],
+    )
+
+    reconcile.reconcile("run_1")
+
+    assert store.claims["clm_1"]["status"] == "CONFIRMED"
+
+
 def test_failed_item_reverts_claim_to_confirmed_but_keeps_run_id(store, monkeypatch):
     store.runs["run_1"] = _run(payout_batch_id="batch_1")
     store.sender_items["run_1"] = [

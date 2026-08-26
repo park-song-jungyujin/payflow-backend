@@ -193,9 +193,18 @@ def _enqueue_executor_analysis(run_id: str, claims: list[dict], receipts: dict, 
 
     items는 _claim_summary(§6 최소화 대상)에는 없다 — 청구 반려 자동화(집행자가
     개인적 사용 의심 물품을 골라내는 것)에 필요해 여기서만 얹는다. list_unsettled_claims·
-    _run_claims가 web 전용으로 따로 얹는 것과 같은 패턴이다."""
+    _run_claims가 web 전용으로 따로 얹는 것과 같은 패턴이다.
+
+    excluded·rejected_reason(claim 전체 반려 상태)도 같은 이유로 얹는다 — 재시도
+    호출에서 이미 반려한 claim을 에이전트가 다시 중복·미래 거래일로 서술·재반려
+    시도하지 않도록(INSTRUCTION이 이걸 근거로 판단한다)."""
     claim_summaries = [
-        {**_claim_summary(c, receipts), "items": (receipts.get(c["receipt_id"]) or {}).get("items", [])}
+        {
+            **_claim_summary(c, receipts),
+            "items": (receipts.get(c["receipt_id"]) or {}).get("items", []),
+            "excluded": c.get("excluded", False),
+            "rejected_reason": c.get("rejected_reason"),
+        }
         for c in claims
     ]
     duplicate_groups = find_duplicate_groups(claims, receipts)
@@ -352,6 +361,10 @@ def _run_claims(run_id: str) -> list[dict]:
         # (list_unsettled_claims도 같은 이유로 web 전용 — 빠지면 web이
         # claim.items.length를 undefined에서 읽어 500이 난다.)
         summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        # claim 전체 반려 상태 — 물품 체크박스와 같은 자리에 claim 행 자체의
+        # 체크박스로 그린다(web).
+        summary["excluded"] = c.get("excluded", False)
+        summary["rejected_reason"] = c.get("rejected_reason")
         summaries.append(summary)
     return summaries
 
@@ -543,6 +556,113 @@ def reject_claim_items_route(body: dict, authorization: str = Header(default="")
                 "amount_minor": outcome["amount_minor"],
             }
         )
+
+    return {"results": results}
+
+
+def _apply_claim_exclusion(run: dict, claim_id: str, excluded: bool, reason: str | None = None) -> dict:
+    """청구 전체 반려 — _apply_item_exclusion과 같은 자리, 대상 단위만 다르다
+    (물품 한 줄이 아니라 claim 전체). 중복 청구·동일 영수증 재제출·미래 거래일처럼
+    claim 자체가 의심스러운 경우를 위한 것 — 이 세 유형은 품목 단위로 쪼갤 근거가
+    없다(영수증에 품목 분해가 아예 없는 경우도 있다).
+
+    claim.amount_minor는 건드리지 않는다 — _apply_item_exclusion과 달리 이건
+    "얼마를 뺄지"가 아니라 "이 claim을 이번 배치 합계에 넣을지" 문제라, 원래 금액을
+    그대로 보존해야 사람이 되돌릴 때(excluded=False) 복원할 값이 남는다. 실제로
+    빼는 일은 합계를 만드는 쪽(guards/routes.py._lock_fx_and_total)이
+    claim.excluded를 보고 건너뛰는 것으로 한다."""
+    claim = get_claim(claim_id)
+    if claim is None or claim.get("settlement_run_id") != run["settlement_run_id"] or claim.get(
+        "org_id"
+    ) != run.get("org_id"):
+        raise HTTPException(status_code=404, detail=f"unknown claim_id: {claim_id}")
+
+    updates = {"excluded": excluded, "updated_at": datetime.now(UTC)}
+    if excluded and reason:
+        updates["rejected_reason"] = reason
+        updates["rejected_by"] = "EXECUTOR"
+    else:
+        updates["rejected_reason"] = None
+        updates["rejected_by"] = None
+    update_claim(claim_id, updates)
+
+    return {"claim_id": claim_id, "excluded": excluded}
+
+
+@router.patch("/settlements/runs/{run_id}/claims/{claim_id}")
+def set_claim_excluded_route(
+    run_id: str,
+    claim_id: str,
+    body: dict,
+    authorization: str = Header(default=""),
+):
+    """청구 전체 반려 — 집행자(사람)가 claim 단위로 체크를 해제하면 이번 배치
+    합계에서 그 claim 전체를 뺀다. set_claim_item_excluded_route와 같은 제약
+    (DRAFT에서만)."""
+    session = _session_from_header(authorization)
+    run = get_settlement_run(run_id)
+    if run is None or run.get("org_id") != session["org_id"]:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    excluded = body.get("excluded")
+    if not isinstance(excluded, bool):
+        raise HTTPException(status_code=400, detail="excluded must be a boolean")
+
+    return _apply_claim_exclusion(run, claim_id, excluded)
+
+
+@router.post("/agents/executor/reject-claims")
+def reject_claims_route(body: dict, authorization: str = Header(default="")):
+    """청구 반려 자동화(claim 전체) — 집행자 에이전트가 중복 청구·동일 영수증
+    재제출·미래 거래일로 이미 서술한 claim을 통째로 이번 배치에서 제외한다
+    (executor/tools.py flag_suspicious_claims). reject_claim_items_route와 같은
+    이유로 승인 전까지는 사람이 되돌릴 수 있는 잠정 상태다."""
+    verify_oidc(authorization)
+
+    run_id = body.get("settlement_run_id")
+    rejections = body.get("rejections")
+    if not run_id or not rejections:
+        raise HTTPException(status_code=400, detail="settlement_run_id, rejections required")
+
+    run = get_settlement_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
+    if run["status"] != "DRAFT":
+        raise HTTPException(
+            status_code=409,
+            detail=f"settlement_run status is {run['status']}, expected DRAFT",
+        )
+
+    results = []
+    for r in rejections:
+        claim_id = r.get("claim_id")
+        reason = r.get("reason")
+        if not claim_id or not reason:
+            results.append(
+                {"claim_id": claim_id, "status": "error", "detail": "claim_id, reason required"}
+            )
+            continue
+        try:
+            outcome = _apply_claim_exclusion(run, claim_id, excluded=True, reason=reason)
+        except HTTPException as e:
+            results.append({"claim_id": claim_id, "status": "error", "detail": e.detail})
+            continue
+
+        record_audit_log(
+            org_id=run.get("org_id"),
+            actor="agent/executor",
+            actor_type="AGENT",
+            action="CLAIM_REJECTED",
+            run_id=run_id,
+            reason=reason,
+            after={"claim_id": claim_id},
+        )
+        results.append({"claim_id": claim_id, "status": "ok", "excluded": outcome["excluded"]})
 
     return {"results": results}
 

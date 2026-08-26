@@ -197,6 +197,8 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
             "merchant_name": "스타벅스",
             "transaction_date": "2026-08-10",
             "items": [],
+            "excluded": False,
+            "rejected_reason": None,
         }
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
@@ -599,6 +601,8 @@ def test_get_run_includes_claim_details(monkeypatch):
             "transaction_date": "2026-08-10",
             "recipient_name": "유진",
             "items": [{"name": "아메리카노", "amount_minor": 4500}],
+            "excluded": False,
+            "rejected_reason": None,
         }
     ]
 
@@ -934,6 +938,200 @@ def test_reject_items_calls_verify_oidc_not_session(monkeypatch):
     )
 
     assert oidc_calls == ["Bearer agent-oidc-token"]
+
+
+# --- PATCH /settlements/runs/{run}/claims/{claim} — 청구 전체 반려(사람). POST
+# /agents/executor/reject-claims — 같은 것을 집행자 에이전트가 자동으로(중복
+# 청구·동일 영수증 재제출·미래 거래일). 둘 다 _apply_claim_exclusion을 공유한다. ---
+
+
+def _wire_claim_toggle(monkeypatch, *, run=None, claim=None):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: run if run is not None else _run_doc())
+    monkeypatch.setattr(routes, "get_claim", lambda claim_id: claim)
+    update_claim_calls = []
+    monkeypatch.setattr(
+        routes, "update_claim", lambda claim_id, updates: update_claim_calls.append((claim_id, updates))
+    )
+    return update_claim_calls
+
+
+def test_exclude_claim_sets_excluded_flag_without_touching_amount(monkeypatch):
+    update_claim_calls = _wire_claim_toggle(monkeypatch, claim=_linked_claim())
+
+    result = routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": True}, authorization="Bearer t")
+
+    assert result == {"claim_id": "clm_1", "excluded": True}
+    assert len(update_claim_calls) == 1
+    claim_id, updates = update_claim_calls[0]
+    assert claim_id == "clm_1"
+    assert updates["excluded"] is True
+    assert "amount_minor" not in updates  # claim.amount_minor는 원래 값 그대로 보존된다
+
+
+def test_reincluding_claim_clears_excluded_flag(monkeypatch):
+    update_claim_calls = _wire_claim_toggle(
+        monkeypatch, claim=_linked_claim(excluded=True, rejected_reason="x", rejected_by="EXECUTOR")
+    )
+
+    routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": False}, authorization="Bearer t")
+
+    _, updates = update_claim_calls[0]
+    assert updates["excluded"] is False
+    assert updates["rejected_reason"] is None
+    assert updates["rejected_by"] is None
+
+
+def test_claim_toggle_rejected_when_run_not_draft(monkeypatch):
+    _wire_claim_toggle(monkeypatch, run=_run_doc(status="APPROVED"), claim=_linked_claim())
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 409
+
+
+def test_claim_toggle_rejected_for_other_orgs_run(monkeypatch):
+    _wire_claim_toggle(monkeypatch, run=_run_doc(org_id="org_2"), claim=_linked_claim())
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_claim_toggle_rejected_when_claim_not_linked_to_run(monkeypatch):
+    _wire_claim_toggle(monkeypatch, claim=_linked_claim(settlement_run_id="run_other"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": True}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 404
+
+
+def test_claim_toggle_rejected_when_excluded_field_not_boolean(monkeypatch):
+    _wire_claim_toggle(monkeypatch, claim=_linked_claim())
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.set_claim_excluded_route("run_1", "clm_1", {"excluded": "yes"}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 400
+
+
+def _wire_reject_claims(monkeypatch, *, run=None, claim=None):
+    update_claim_calls = _wire_claim_toggle(monkeypatch, run=run, claim=claim)
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+    audit_calls = []
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit_calls.append(kw))
+    return update_claim_calls, audit_calls
+
+
+def test_reject_claims_excludes_and_records_reason_and_audit_log(monkeypatch):
+    update_claim_calls, audit_calls = _wire_reject_claims(monkeypatch, claim=_linked_claim())
+
+    result = routes.reject_claims_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [{"claim_id": "clm_1", "reason": "동일 영수증 재제출 의심"}],
+        },
+        authorization="Bearer agent-oidc-token",
+    )
+
+    assert result == {"results": [{"claim_id": "clm_1", "status": "ok", "excluded": True}]}
+    _, updates = update_claim_calls[0]
+    assert updates["excluded"] is True
+    assert updates["rejected_reason"] == "동일 영수증 재제출 의심"
+    assert updates["rejected_by"] == "EXECUTOR"
+    assert audit_calls == [
+        {
+            "org_id": "org_1",
+            "actor": "agent/executor",
+            "actor_type": "AGENT",
+            "action": "CLAIM_REJECTED",
+            "run_id": "run_1",
+            "reason": "동일 영수증 재제출 의심",
+            "after": {"claim_id": "clm_1"},
+        }
+    ]
+
+
+def test_reject_claims_partial_failure_does_not_block_the_rest_of_the_batch(monkeypatch):
+    """claim_id 하나가 잘못됐어도(존재하지 않음 등) 나머지 배치는 계속 처리한다 —
+    reject_claim_items_route와 같은 부분 실패 허용 정책."""
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: _run_doc())
+    claims_by_id = {"clm_1": _linked_claim()}
+    monkeypatch.setattr(routes, "get_claim", lambda claim_id: claims_by_id.get(claim_id))
+    update_claim_calls = []
+    monkeypatch.setattr(
+        routes, "update_claim", lambda claim_id, updates: update_claim_calls.append((claim_id, updates))
+    )
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+    monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
+
+    result = routes.reject_claims_route(
+        {
+            "settlement_run_id": "run_1",
+            "rejections": [
+                {"claim_id": "clm_1", "reason": "x"},
+                {"claim_id": "clm_missing", "reason": "y"},
+            ],
+        },
+        authorization="Bearer agent-oidc-token",
+    )
+
+    assert result["results"][0] == {"claim_id": "clm_1", "status": "ok", "excluded": True}
+    assert result["results"][1]["status"] == "error"
+    assert len(update_claim_calls) == 1  # clm_missing은 update_claim이 아예 안 불린다
+
+
+def test_reject_claims_missing_claim_id_or_reason_reported_as_error(monkeypatch):
+    update_claim_calls, _ = _wire_reject_claims(monkeypatch, claim=_linked_claim())
+
+    result = routes.reject_claims_route(
+        {"settlement_run_id": "run_1", "rejections": [{"claim_id": "clm_1"}]},
+        authorization="Bearer agent-oidc-token",
+    )
+
+    assert result["results"] == [
+        {"claim_id": "clm_1", "status": "error", "detail": "claim_id, reason required"}
+    ]
+    assert update_claim_calls == []
+
+
+def test_reject_claims_rejected_when_run_not_draft(monkeypatch):
+    _wire_reject_claims(monkeypatch, run=_run_doc(status="APPROVED"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claims_route(
+            {"settlement_run_id": "run_1", "rejections": [{"claim_id": "clm_1", "reason": "x"}]},
+            authorization="Bearer agent-oidc-token",
+        )
+
+    assert exc_info.value.status_code == 409
+
+
+def test_reject_claims_requires_settlement_run_id_and_rejections(monkeypatch):
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claims_route({"settlement_run_id": "run_1"}, authorization="Bearer t")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_reject_claims_unknown_run_is_404(monkeypatch):
+    monkeypatch.setattr(routes, "get_settlement_run", lambda run_id: None)
+    monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
+
+    with pytest.raises(HTTPException) as exc_info:
+        routes.reject_claims_route(
+            {
+                "settlement_run_id": "run_missing",
+                "rejections": [{"claim_id": "clm_1", "reason": "x"}],
+            },
+            authorization="Bearer t",
+        )
+
+    assert exc_info.value.status_code == 404
 
 
 def _wire_retry(monkeypatch, *, run=None, claims=None, receipts=None, enqueue_error=None):

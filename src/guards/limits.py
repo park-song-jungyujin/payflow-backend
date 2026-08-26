@@ -31,7 +31,10 @@ def check_caps(run: dict) -> str | None:
     승인 시점에 고정한 환율이라고 가정한다(approve_settlement_run이 check_caps보다
     먼저 계산해서 넣어준다).
     """
-    claims = get_claims_for_run(run["settlement_run_id"])
+    # excluded(청구 전체 반려) claim은 실제로 안 나가는 돈이라 캡 검사에서 뺀다 —
+    # 안 그러면 반려로 이미 안전해진 배치가 반려된 claim의 원래 금액 때문에
+    # 캡에 걸려 승인이 막힐 수 있다.
+    claims = [c for c in get_claims_for_run(run["settlement_run_id"]) if not c.get("excluded")]
     base_currency = os.environ["PAYOUT_CURRENCY"]
     fx_rates = run.get("fx_rates") or {}
 
