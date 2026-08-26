@@ -418,10 +418,18 @@ def _requery_message(receipt_id: str | None) -> str | None:
     draft 읽기는 settlements/store.py의 get_agent_draft(agent_drafts의 유일한
     읽기)를 그대로 쓴다 — task_apply_claimant_draft와 같은 경로다.
 
-    Slack 봇 발송은 전부 영어다(해커톤 제출 언어 요건) — 영어 문안
-    (requery_message_en)은 agent_drafts.py가 Gemma로 번역해 채운다(payflow-agent는
-    한국어만 쓴다). 항상 그걸 우선 쓰고, 번역이 안 돼 없으면 한국어로 폴백한다 —
-    번역 실패가 발송 자체를 막으면 안 된다."""
+    Slack 봇 발송은 전부 영어다(해커톤 제출 언어 요건). **`requery_message`
+    자체가 이미 영어다** — 청구자 에이전트(payflow-agent claimant/agent.py)와
+    거래일자 미검출 경로(parsing/pipeline.py)가 처음부터 영어로 쓴다. 한때는
+    한국어로 쓰고 api가 Gemma로 번역해 `requery_message_en`을 채웠는데, 그
+    번역이 간헐적으로 실패하면 조용히 한국어로 폴백해 같은 문구가 어떤
+    영수증에는 영어로, 어떤 영수증에는 한국어로 도착했다.
+
+    `requery_message_en`을 여전히 먼저 보는 건 **그 전환 전에 이미 Firestore에
+    쓰인 draft** 때문이다 — 그 문서들은 `requery_message`가 한국어고 `_en`에
+    번역이 들어 있다. 새 draft에는 `_en`이 아예 없고, 그럼 영어인 원본을
+    그대로 쓴다. 새로 만들어지지 않는 필드라 언젠가 지울 수 있지만, 남은
+    문서가 정리되기 전에 지우면 그 영수증들만 한국어로 되돌아간다."""
     if not receipt_id:
         return None
     draft = get_agent_draft(f"CLAIMANT:{receipt_id}")
