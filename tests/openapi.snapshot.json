@@ -1099,9 +1099,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Body"
+                "$ref": "#/components/schemas/RejectItemsBody"
               }
             }
           }
@@ -1219,9 +1217,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "additionalProperties": true,
-                "title": "Body"
+                "$ref": "#/components/schemas/RejectClaimsBody"
               }
             }
           }
@@ -1589,6 +1585,24 @@
   },
   "components": {
     "schemas": {
+      "ClaimRejection": {
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "title": "Claim Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "claim_id",
+          "reason"
+        ],
+        "title": "ClaimRejection"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1601,6 +1615,71 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "ItemRejection": {
+        "properties": {
+          "claim_id": {
+            "type": "string",
+            "title": "Claim Id"
+          },
+          "item_index": {
+            "type": "integer",
+            "title": "Item Index"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "claim_id",
+          "item_index",
+          "reason"
+        ],
+        "title": "ItemRejection"
+      },
+      "RejectClaimsBody": {
+        "properties": {
+          "settlement_run_id": {
+            "type": "string",
+            "title": "Settlement Run Id"
+          },
+          "rejections": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimRejection"
+            },
+            "type": "array",
+            "title": "Rejections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "settlement_run_id",
+          "rejections"
+        ],
+        "title": "RejectClaimsBody"
+      },
+      "RejectItemsBody": {
+        "properties": {
+          "settlement_run_id": {
+            "type": "string",
+            "title": "Settlement Run Id"
+          },
+          "rejections": {
+            "items": {
+              "$ref": "#/components/schemas/ItemRejection"
+            },
+            "type": "array",
+            "title": "Rejections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "settlement_run_id",
+          "rejections"
+        ],
+        "title": "RejectItemsBody"
       },
       "ValidationError": {
         "properties": {

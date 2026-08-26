@@ -16,6 +16,7 @@ from io import BytesIO
 
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from ulid import ULID
 
 from ..auth.session import verify_session
@@ -583,8 +584,19 @@ def exclude_claim_from_run_route(
     return {"claim_id": claim_id, "excluded": True}
 
 
+class ItemRejection(BaseModel):
+    claim_id: str
+    item_index: int
+    reason: str
+
+
+class RejectItemsBody(BaseModel):
+    settlement_run_id: str
+    rejections: list[ItemRejection]
+
+
 @router.post("/agents/executor/reject-items")
-def reject_claim_items_route(body: dict, authorization: str = Header(default="")):
+def reject_claim_items_route(body: RejectItemsBody, authorization: str = Header(default="")):
     """청구 반려 자동화 — 집행자 에이전트가 이상징후 분석을 마친 뒤 개인적 사용이
     의심되는 물품을 한 번에 제외한다(executor/tools.py flag_personal_use_items).
     사람이 web에서 체크박스로 직접 하는 것과 최종 효과(_apply_item_exclusion)는
@@ -596,11 +608,10 @@ def reject_claim_items_route(body: dict, authorization: str = Header(default="")
     인증 방식(agent_invoker_api)."""
     verify_oidc(authorization)
 
-    run_id = body.get("settlement_run_id")
-    rejections = body.get("rejections")
-    if not run_id or not rejections:
+    if not body.rejections:
         raise HTTPException(status_code=400, detail="settlement_run_id, rejections required")
 
+    run_id = body.settlement_run_id
     run = get_settlement_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
@@ -611,11 +622,11 @@ def reject_claim_items_route(body: dict, authorization: str = Header(default="")
         )
 
     results = []
-    for r in rejections:
-        claim_id = r.get("claim_id")
-        item_index = r.get("item_index")
-        reason = r.get("reason")
-        if not claim_id or not isinstance(item_index, int) or not reason:
+    for r in body.rejections:
+        claim_id = r.claim_id
+        item_index = r.item_index
+        reason = r.reason
+        if not claim_id or not reason:
             results.append(
                 {
                     "claim_id": claim_id,
@@ -710,19 +721,28 @@ def set_claim_excluded_route(
     return _apply_claim_exclusion(run, claim_id, excluded)
 
 
+class ClaimRejection(BaseModel):
+    claim_id: str
+    reason: str
+
+
+class RejectClaimsBody(BaseModel):
+    settlement_run_id: str
+    rejections: list[ClaimRejection]
+
+
 @router.post("/agents/executor/reject-claims")
-def reject_claims_route(body: dict, authorization: str = Header(default="")):
+def reject_claims_route(body: RejectClaimsBody, authorization: str = Header(default="")):
     """청구 반려 자동화(claim 전체) — 집행자 에이전트가 중복 청구·동일 영수증
     재제출·미래 거래일로 이미 서술한 claim을 통째로 이번 배치에서 제외한다
     (executor/tools.py flag_suspicious_claims). reject_claim_items_route와 같은
     이유로 승인 전까지는 사람이 되돌릴 수 있는 잠정 상태다."""
     verify_oidc(authorization)
 
-    run_id = body.get("settlement_run_id")
-    rejections = body.get("rejections")
-    if not run_id or not rejections:
+    if not body.rejections:
         raise HTTPException(status_code=400, detail="settlement_run_id, rejections required")
 
+    run_id = body.settlement_run_id
     run = get_settlement_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown settlement_run_id: {run_id}")
@@ -733,9 +753,9 @@ def reject_claims_route(body: dict, authorization: str = Header(default="")):
         )
 
     results = []
-    for r in rejections:
-        claim_id = r.get("claim_id")
-        reason = r.get("reason")
+    for r in body.rejections:
+        claim_id = r.claim_id
+        reason = r.reason
         if not claim_id or not reason:
             results.append(
                 {"claim_id": claim_id, "status": "error", "detail": "claim_id, reason required"}

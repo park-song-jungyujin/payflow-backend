@@ -949,10 +949,10 @@ def test_reject_items_excludes_and_records_reason_and_audit_log(monkeypatch):
     )
 
     result = routes.reject_claim_items_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "개인 음료로 추정"}],
-        },
+        routes.RejectItemsBody(
+            settlement_run_id="run_1",
+            rejections=[{"claim_id": "clm_1", "item_index": 0, "reason": "개인 음료로 추정"}],
+        ),
         authorization="Bearer t",
     )
 
@@ -986,13 +986,13 @@ def test_reject_items_partial_failure_does_not_block_the_rest_of_the_batch(monke
     )
 
     result = routes.reject_claim_items_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [
+        routes.RejectItemsBody(
+            settlement_run_id="run_1",
+            rejections=[
                 {"claim_id": "clm_1", "item_index": 99, "reason": "존재하지 않는 인덱스"},
                 {"claim_id": "clm_1", "item_index": 0, "reason": "개인 음료로 추정"},
             ],
-        },
+        ),
         authorization="Bearer t",
     )
 
@@ -1012,10 +1012,10 @@ def test_reject_items_missing_claim_id_or_reason_reported_as_error(monkeypatch):
     _wire_reject_items(monkeypatch, claim=_linked_claim(), receipt=receipt)
 
     result = routes.reject_claim_items_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": ""}],
-        },
+        routes.RejectItemsBody(
+            settlement_run_id="run_1",
+            rejections=[{"claim_id": "clm_1", "item_index": 0, "reason": ""}],
+        ),
         authorization="Bearer t",
     )
 
@@ -1034,10 +1034,10 @@ def test_reject_items_rejected_when_run_not_draft(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         routes.reject_claim_items_route(
-            {
-                "settlement_run_id": "run_1",
-                "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
-            },
+            routes.RejectItemsBody(
+                settlement_run_id="run_1",
+                rejections=[{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+            ),
             authorization="Bearer t",
         )
 
@@ -1048,7 +1048,10 @@ def test_reject_items_requires_settlement_run_id_and_rejections(monkeypatch):
     monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
 
     with pytest.raises(HTTPException) as exc_info:
-        routes.reject_claim_items_route({}, authorization="Bearer t")
+        routes.reject_claim_items_route(
+            routes.RejectItemsBody(settlement_run_id="run_1", rejections=[]),
+            authorization="Bearer t",
+        )
 
     assert exc_info.value.status_code == 400
 
@@ -1059,10 +1062,10 @@ def test_reject_items_unknown_run_is_404(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         routes.reject_claim_items_route(
-            {
-                "settlement_run_id": "run_missing",
-                "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
-            },
+            routes.RejectItemsBody(
+                settlement_run_id="run_missing",
+                rejections=[{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+            ),
             authorization="Bearer t",
         )
 
@@ -1079,10 +1082,10 @@ def test_reject_items_calls_verify_oidc_not_session(monkeypatch):
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
 
     routes.reject_claim_items_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
-        },
+        routes.RejectItemsBody(
+            settlement_run_id="run_1",
+            rejections=[{"claim_id": "clm_1", "item_index": 0, "reason": "x"}],
+        ),
         authorization="Bearer agent-oidc-token",
     )
 
@@ -1178,10 +1181,10 @@ def test_reject_claims_excludes_and_records_reason_and_audit_log(monkeypatch):
     update_claim_calls, audit_calls = _wire_reject_claims(monkeypatch, claim=_linked_claim())
 
     result = routes.reject_claims_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [{"claim_id": "clm_1", "reason": "동일 영수증 재제출 의심"}],
-        },
+        routes.RejectClaimsBody(
+            settlement_run_id="run_1",
+            rejections=[{"claim_id": "clm_1", "reason": "동일 영수증 재제출 의심"}],
+        ),
         authorization="Bearer agent-oidc-token",
     )
 
@@ -1217,13 +1220,13 @@ def test_reject_claims_partial_failure_does_not_block_the_rest_of_the_batch(monk
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: None)
 
     result = routes.reject_claims_route(
-        {
-            "settlement_run_id": "run_1",
-            "rejections": [
+        routes.RejectClaimsBody(
+            settlement_run_id="run_1",
+            rejections=[
                 {"claim_id": "clm_1", "reason": "x"},
                 {"claim_id": "clm_missing", "reason": "y"},
             ],
-        },
+        ),
         authorization="Bearer agent-oidc-token",
     )
 
@@ -1236,7 +1239,9 @@ def test_reject_claims_missing_claim_id_or_reason_reported_as_error(monkeypatch)
     update_claim_calls, _ = _wire_reject_claims(monkeypatch, claim=_linked_claim())
 
     result = routes.reject_claims_route(
-        {"settlement_run_id": "run_1", "rejections": [{"claim_id": "clm_1"}]},
+        routes.RejectClaimsBody(
+            settlement_run_id="run_1", rejections=[{"claim_id": "clm_1", "reason": ""}]
+        ),
         authorization="Bearer agent-oidc-token",
     )
 
@@ -1251,7 +1256,9 @@ def test_reject_claims_rejected_when_run_not_draft(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         routes.reject_claims_route(
-            {"settlement_run_id": "run_1", "rejections": [{"claim_id": "clm_1", "reason": "x"}]},
+            routes.RejectClaimsBody(
+                settlement_run_id="run_1", rejections=[{"claim_id": "clm_1", "reason": "x"}]
+            ),
             authorization="Bearer agent-oidc-token",
         )
 
@@ -1262,7 +1269,10 @@ def test_reject_claims_requires_settlement_run_id_and_rejections(monkeypatch):
     monkeypatch.setattr(routes, "verify_oidc", lambda auth: {})
 
     with pytest.raises(HTTPException) as exc_info:
-        routes.reject_claims_route({"settlement_run_id": "run_1"}, authorization="Bearer t")
+        routes.reject_claims_route(
+            routes.RejectClaimsBody(settlement_run_id="run_1", rejections=[]),
+            authorization="Bearer t",
+        )
 
     assert exc_info.value.status_code == 400
 
@@ -1273,10 +1283,10 @@ def test_reject_claims_unknown_run_is_404(monkeypatch):
 
     with pytest.raises(HTTPException) as exc_info:
         routes.reject_claims_route(
-            {
-                "settlement_run_id": "run_missing",
-                "rejections": [{"claim_id": "clm_1", "reason": "x"}],
-            },
+            routes.RejectClaimsBody(
+                settlement_run_id="run_missing",
+                rejections=[{"claim_id": "clm_1", "reason": "x"}],
+            ),
             authorization="Bearer t",
         )
 
