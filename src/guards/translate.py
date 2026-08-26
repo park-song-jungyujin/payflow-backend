@@ -4,6 +4,10 @@
 세션·툴루프 오버헤드만 는다. agent_drafts.py(POST /agents/drafts)의 유일한
 호출 지점에서만 쓴다 — payflow-agent는 이 모듈의 존재를 모른다.
 
+Gemma 응답은 형식이 호출마다 흔들린다(코드펜스·객체 래핑·산문 프롤로그).
+_extract_translations가 그걸 흡수한다 — 배열만 뽑아낼 수 있으면 뽑아 쓰고,
+못 뽑을 때만 실패로 둔다.
+
 번역은 조언성 부가 기능이다. 실패해도 원본 한국어 draft 쓰기를 막지 않는다 —
 None을 반환할 뿐 예외를 던지지 않는다(parsing과 다르게 Transient/Permanent를
 구분할 이유가 없다 — 여기는 재시도 큐가 없고, 다음 draft 갱신 때 다시 시도되는
@@ -99,18 +103,85 @@ def translate_lines(texts: list[str], *, target_language: str = "English") -> li
         _logger.warning("gemma translate_lines got an empty response for %d lines", len(texts))
         return None
 
-    try:
-        translations = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as e:
-        _log_malformed(texts, raw, str(e))
-        return None
-
-    if not isinstance(translations, list) or len(translations) != len(texts) or not all(
-        isinstance(t, str) for t in translations
-    ):
+    translations = _extract_translations(raw, len(texts))
+    if translations is None:
         _log_malformed(texts, raw, f"expected a JSON array of {len(texts)} strings")
         return None
     return translations
+
+
+def _extract_translations(raw: str, expected: int) -> list[str] | None:
+    """응답 원문에서 문자열 `expected`개짜리 배열을 뽑아낸다. 못 뽑으면 None.
+
+    **Gemma는 형식 지시를 호출마다 다르게 지킨다.** Vertex의 구조화 출력
+    (response_schema)을 아예 안 지켜서 프롬프트로만 형식을 지시하는데, 그
+    지시도 매번 지켜지지는 않는다 — 같은 문구가 어떤 호출에선 영어로, 어떤
+    호출에선 한국어로 Slack에 도착하던(=번역이 간헐적으로만 성공하던) 원인이
+    이것이다. json.loads를 원문에 그대로 걸면 아래 형태가 전부 실패한다.
+
+    관측·보고된 형태를 순서대로 벗겨낸다:
+    1. 마크다운 코드펜스(```json … ``` / ``` … ```) — 가장 흔하다.
+    2. 배열 앞뒤의 산문("Here is the translation:" 같은 프롤로그·에필로그).
+    3. 배열을 객체로 한 번 감싼 형태({"translations": [...]}) — 키 이름은
+       호출마다 다르므로 **리스트 값이 정확히 하나일 때만** 그걸 쓴다. 리스트가
+       둘 이상이면 어느 쪽이 번역인지 고를 근거가 없어 실패로 둔다(찍지 않는다).
+    4. 한 줄만 요청했을 때 배열로 감싸지 않고 문자열만 준 형태 — 재요청
+       DM(requery_message)이 정확히 이 경로다. 줄이 여러 개인데 문자열 하나가
+       오면 어느 줄인지 알 수 없으므로 실패다.
+
+    길이·타입 검사는 그대로다 — 개수가 어긋난 채 돌려주면 호출부가 엉뚱한
+    줄에 엉뚱한 번역을 붙인다.
+    """
+    text = _strip_code_fence(raw.strip())
+
+    parsed = _loads_or_none(text)
+    if parsed is None:
+        # 산문에 둘러싸인 배열 — 첫 '['부터 마지막 ']'까지 잘라 다시 시도한다.
+        start, end = text.find("["), text.rfind("]")
+        if start != -1 and end > start:
+            parsed = _loads_or_none(text[start : end + 1])
+
+    if isinstance(parsed, dict):
+        lists = [v for v in parsed.values() if isinstance(v, list)]
+        parsed = lists[0] if len(lists) == 1 else None
+
+    # 한 줄 요청에 한해 JSON 문자열 하나도 받아준다 — 배열로 감싸는 것만
+    # 빠뜨렸을 뿐 "JSON으로 출력하라"는 지시는 지킨 응답이다.
+    #
+    # **따옴표조차 없는 산문은 받지 않는다.** 그런 응답은 번역문인지 거절·
+    # 해명("I cannot translate that.")인지 구분할 근거가 없고, 잘못 받으면
+    # 모델의 거절 문구가 그대로 Slack DM 본문으로 나간다 — 한국어로 폴백하는
+    # 편이 낫다.
+    if expected == 1 and isinstance(parsed, str):
+        parsed = [parsed]
+
+    if not isinstance(parsed, list) or len(parsed) != expected:
+        return None
+    if not all(isinstance(t, str) for t in parsed):
+        return None
+    return parsed
+
+
+def _strip_code_fence(text: str) -> str:
+    """```json … ``` / ``` … ``` 로 감싼 응답에서 펜스를 벗긴다."""
+    if not text.startswith("```"):
+        return text
+    body = text[3:]
+    # 여는 펜스의 언어 태그(json 등)는 첫 줄 나머지다.
+    newline = body.find("\n")
+    if newline != -1:
+        body = body[newline + 1 :]
+    closing = body.rfind("```")
+    if closing != -1:
+        body = body[:closing]
+    return body.strip()
+
+
+def _loads_or_none(text: str):
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
 
 
 def _log_malformed(texts: list[str], raw: str, detail: str) -> None:

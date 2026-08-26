@@ -136,12 +136,12 @@ def test_unexpected_exception_returns_none_not_raises(monkeypatch):
 
 
 def test_malformed_output_logs_the_raw_response(monkeypatch, caplog):
-    _mock(monkeypatch, FakeModels(FakeResponse(text="```json\n[\"hello\"]\n```")))
+    _mock(monkeypatch, FakeModels(FakeResponse(text="I cannot translate that.")))
 
     with caplog.at_level(logging.WARNING, logger="src.guards.translate"):
         assert translate.translate_lines(["안녕"]) is None
 
-    assert "```json" in caplog.text
+    assert "I cannot translate that." in caplog.text
 
 
 def test_count_mismatch_logs_the_raw_response(monkeypatch, caplog):
@@ -173,3 +173,81 @@ def test_raw_response_is_truncated_in_the_log(monkeypatch, caplog):
 
     assert len(caplog.text) < 2000
     assert "..." in caplog.text
+
+
+# --- Gemma 출력 형식 흡수 ---
+#
+# Gemma는 Vertex의 구조화 출력(response_schema)을 지키지 않아 프롬프트로만
+# 형식을 지시하는데, 그 지시도 호출마다 흔들린다 — 같은 문구가 어떤 호출에선
+# 영어로, 어떤 호출에선 한국어로 도착하던(=번역이 간헐 실패하던) 원인이다.
+# 배열만 뽑아낼 수 있으면 뽑아 쓴다. 뽑을 수 없을 때만 None이다.
+
+
+def test_json_code_fence_is_stripped(monkeypatch):
+    """가장 흔한 형태 — 프롬프트로 코드펜스를 금지해도 자주 감싸서 준다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text='```json\n["hello", "world"]\n```')))
+
+    assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
+
+
+def test_bare_code_fence_is_stripped(monkeypatch):
+    _mock(monkeypatch, FakeModels(FakeResponse(text='```\n["hello"]\n```')))
+
+    assert translate.translate_lines(["안녕"]) == ["hello"]
+
+
+def test_prose_around_the_array_is_ignored(monkeypatch):
+    """"Here is the translation:" 같은 프롤로그·에필로그를 붙여 주는 경우."""
+    _mock(
+        monkeypatch,
+        FakeModels(FakeResponse(text='Here is the translation:\n["hello", "world"]\nHope this helps!')),
+    )
+
+    assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
+
+
+def test_array_wrapped_in_an_object_is_unwrapped(monkeypatch):
+    """배열 대신 객체로 감싸 주는 경우 — 키 이름은 호출마다 다르다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text='{"translations": ["hello", "world"]}')))
+
+    assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
+
+
+def test_object_with_two_lists_is_rejected(monkeypatch):
+    """어느 쪽이 번역인지 고를 근거가 없다 — 찍지 않고 실패로 둔다."""
+    _mock(
+        monkeypatch,
+        FakeModels(FakeResponse(text='{"source": ["안녕"], "translations": ["hello"]}')),
+    )
+
+    assert translate.translate_lines(["안녕"]) is None
+
+
+def test_bare_string_is_accepted_when_exactly_one_line_was_requested(monkeypatch):
+    """한 줄만 보내면 배열로 감싸지 않고 문자열만 주는 경우가 잦다 — 재요청
+    DM(requery_message)이 정확히 이 경로라 실사용에서 가장 자주 물린다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text='"hello"')))
+
+    assert translate.translate_lines(["안녕"]) == ["hello"]
+
+
+def test_bare_string_is_rejected_when_multiple_lines_were_requested(monkeypatch):
+    """여러 줄을 보냈는데 문자열 하나가 오면 어느 줄인지 알 수 없다 — 실패다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text='"hello"')))
+
+    assert translate.translate_lines(["안녕", "세계"]) is None
+
+
+def test_fenced_object_is_also_unwrapped(monkeypatch):
+    """코드펜스와 객체 래핑이 겹쳐 오는 경우."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text='```json\n{"lines": ["hello"]}\n```')))
+
+    assert translate.translate_lines(["안녕"]) == ["hello"]
+
+
+def test_unquoted_prose_is_rejected_even_for_a_single_line(monkeypatch):
+    """따옴표 없는 산문은 번역문인지 거절·해명인지 구분할 근거가 없다 — 받아
+    주면 모델의 거절 문구가 그대로 Slack DM 본문으로 나간다. 한국어 폴백이 낫다."""
+    _mock(monkeypatch, FakeModels(FakeResponse(text="I cannot translate that.")))
+
+    assert translate.translate_lines(["안녕"]) is None
