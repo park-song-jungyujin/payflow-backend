@@ -200,13 +200,21 @@ def _enqueue_executor_analysis(
 
     excluded·rejected_reason(claim 전체 반려 상태)도 같은 이유로 얹는다 — 재시도
     호출에서 이미 반려한 claim을 에이전트가 다시 중복·미래 거래일로 서술·재반려
-    시도하지 않도록(INSTRUCTION이 이걸 근거로 판단한다)."""
+    시도하지 않도록(INSTRUCTION이 이걸 근거로 판단한다).
+
+    short_id도 같은 이유로 여기서만 얹는다 — claim_id는 ULID라 사람이 읽는
+    텍스트(summary_text의 "Rejected items" 목록 등)에 그대로 쓰면 너무 길다.
+    LLM이 직접 문자열을 잘라내게 하면 글자 수를 잘못 셀 수 있으니(날짜 산술과
+    같은 이유로 코드가 결정론적으로 만든다), 코드가 미리 잘라 candidate_claims에
+    실어 보낸다 — web은 claim_id를 아예 안 보여주므로 이 값은 순수하게
+    사람이 여러 반려 항목을 구분해서 읽기 위한 짧은 참조용이다."""
     claim_summaries = [
         {
             **_claim_summary(c, receipts),
             "items": (receipts.get(c["receipt_id"]) or {}).get("items", []),
             "excluded": c.get("excluded", False),
             "rejected_reason": c.get("rejected_reason"),
+            "short_id": c["claim_id"][-8:],
         }
         for c in claims
     ]
