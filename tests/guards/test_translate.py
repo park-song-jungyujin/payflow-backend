@@ -57,6 +57,29 @@ def test_returns_translations_in_order(monkeypatch):
     assert translate.translate_lines(["안녕", "세계"]) == ["hello", "world"]
 
 
+def test_default_target_language_is_english_in_prompt(monkeypatch):
+    """target_language 인자 없이 부르는 기존 호출부(CLAIMANT)와 하위호환된다."""
+    models = FakeModels(FakeResponse(text='["hello"]'))
+    _mock(monkeypatch, models)
+
+    translate.translate_lines(["안녕"])
+
+    assert "English" in models.calls[0]["contents"]
+
+
+def test_target_language_is_embedded_in_prompt(monkeypatch):
+    """EXECUTOR가 영어 → 한국어로 뒤집어 부르는 경로 — target_language가
+    프롬프트에 그대로 들어가는지 확인한다."""
+    models = FakeModels(FakeResponse(text='["안녕"]'))
+    _mock(monkeypatch, models)
+
+    result = translate.translate_lines(["hello"], target_language="Korean")
+
+    assert result == ["안녕"]
+    assert "Korean" in models.calls[0]["contents"]
+    assert "English" not in models.calls[0]["contents"]
+
+
 def test_count_mismatch_returns_none(monkeypatch):
     _mock(monkeypatch, FakeModels(FakeResponse(text='["hello"]')))
 
