@@ -349,3 +349,63 @@ def test_target_language_is_kept_across_chunks(monkeypatch):
     translate.translate_lines(["a", "b", "c", "d", "e", "f"], target_language="Korean")
 
     assert all("Korean" in c["contents"] for c in models.calls)
+
+
+# --- 여러 줄짜리 원문 ---
+#
+# 집행자 summary_text는 반려가 있으면 여러 줄이다(payflow-agent
+# executor/agent.py — "Rejected items" 섹션을 반려마다 한 줄씩 적으라고 지시).
+# 프롬프트가 원문을 "1. ...\n2. ..." 로 이어붙이면 원소 안의 줄바꿈이 그
+# 줄 구조를 깨뜨린다 — 모델은 물리적 줄 수만큼 배열을 돌려주고, 개수가
+# 어긋나 번역이 통째로 버려진다. 반려가 없을 땐 summary_text가 한 줄이라
+# 성공하고, 반려가 생기는 순간부터 한국어가 영영 안 붙었다.
+#
+# 그래서 원문을 JSON 배열로 넘긴다 — 줄바꿈이 \n으로 이스케이프돼 원소
+# 경계가 모호해지지 않는다.
+
+
+def test_multiline_text_is_sent_as_escaped_json_not_raw_lines(monkeypatch):
+    models = ScriptedModels(['["번역"]'])
+    _mock(monkeypatch, models)
+
+    translate.translate_lines(["Summary.\n\nRejected items\n#AX5K4MF7: duplicate"])
+
+    contents = models.calls[0]["contents"]
+    # 원문의 줄바꿈이 프롬프트에 날것으로 들어가면 원소 경계가 무너진다.
+    assert "Rejected items\n#AX5K4MF7" not in contents
+    assert "\\n" in contents  # JSON 이스케이프된 형태로 들어간다
+
+
+def test_multiline_text_round_trips(monkeypatch):
+    models = ScriptedModels(['["요약.\\n\\n반려 내역\\n#AX5K4MF7: 중복"]'])
+    _mock(monkeypatch, models)
+
+    result = translate.translate_lines(["Summary.\n\nRejected items\n#AX5K4MF7: duplicate"])
+
+    assert result == ["요약.\n\n반려 내역\n#AX5K4MF7: 중복"]
+
+
+def test_multiline_text_mixed_with_single_line_items_keeps_order(monkeypatch):
+    """집행자 번역이 정확히 이 모양이다 — [여러 줄 summary_text, *한 줄 anomalies]."""
+    models = ScriptedModels(['["요약\\n둘째 줄", "이상징후 하나", "이상징후 둘"]'])
+    _mock(monkeypatch, models)
+
+    result = translate.translate_lines(
+        ["Summary\nsecond line", "anomaly one", "anomaly two"], target_language="Korean"
+    )
+
+    assert result == ["요약\n둘째 줄", "이상징후 하나", "이상징후 둘"]
+
+
+def test_input_is_not_numbered_so_the_model_cannot_echo_the_numbering(monkeypatch):
+    """원문에 "1. ", "2. "를 붙여 보내면 모델이 그 번호를 그대로 되돌려줘도
+    길이·타입 검사를 전부 통과한다 — "1. The total amount ..."가 조용히 DM으로
+    나간다. 번호를 아예 안 붙이면 그 경로가 사라진다."""
+    models = ScriptedModels(['["hello", "world"]'])
+    _mock(monkeypatch, models)
+
+    translate.translate_lines(["안녕", "세계"])
+
+    contents = models.calls[0]["contents"]
+    assert "1. 안녕" not in contents
+    assert "2. 세계" not in contents
