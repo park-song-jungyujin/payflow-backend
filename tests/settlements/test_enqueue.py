@@ -51,7 +51,7 @@ def test_builds_oidc_task_targeting_agent_service(monkeypatch):
 
     claims = [{"claim_id": "clm_1"}]
     groups = [{"claim_ids": ["clm_1", "clm_2"]}]
-    exact_groups = [{"claim_ids": ["clm_1", "clm_2"], "receipt_serial_number": "A1234"}]
+    exact_groups = [{"claim_ids": ["clm_1", "clm_2"], "receipt_serial_number_hash": "A1234"}]
     future_dated = [{"claim_id": "clm_1", "transaction_date": "2099-01-01"}]
     enqueue_executor_analyze("run_1", claims, groups, exact_groups, future_dated, "org_1")
 

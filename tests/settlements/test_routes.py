@@ -219,7 +219,7 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
         }
     ]
     assert duplicate_groups == []  # claim 1건뿐이라 중복 그룹이 안 생긴다
-    assert exact_duplicate_groups == []  # receipt_serial_number가 없으니 판정 대상도 없다
+    assert exact_duplicate_groups == []  # receipt_serial_number_hash가 없으니 판정 대상도 없다
     assert stub.status_calls == [(run_id, "PROCESSING", None)]
     assert stub.safety_status_calls == [(run_id, "PROCESSING", None)]
 

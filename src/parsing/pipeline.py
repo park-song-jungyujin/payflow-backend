@@ -24,7 +24,7 @@ from ..ingest.store import apply_claimant_verdict
 from ..schemas.enums import ReminderReason
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
-from .masking import mask_pii
+from .masking import hash_receipt_serial_number, mask_pii
 from .models import amount_to_minor
 from .parser import get_parser
 from .slack_files import PermanentParseError, download_slack_file
@@ -125,9 +125,12 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
         "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
         "transaction_time": parsed.transaction_time,
-        # ★ merchant_name과 같은 이유로 마스킹한다 — OCR이 읽은 자유 텍스트라
-        # 카드번호 등 마스킹 대상 패턴을 우연히 포함할 수 있다.
-        "receipt_serial_number": mask_pii(parsed.receipt_serial_number),
+        # ★ mask_pii를 쓰지 않는다 — 이 필드는 거의 항상 순수 숫자라 카드번호
+        # 패턴에 걸려 서로 다른 영수증의 고유번호가 전부 "[CARD]"로 뭉개지는
+        # 버그가 실제로 있었다(masking.py.hash_receipt_serial_number 참조).
+        # find_exact_duplicate_receipts가 유일성을 전제로 완전일치 판정을 하므로
+        # 해시로 바꿔 저장해 유일성은 지키고 원문은 남기지 않는다.
+        "receipt_serial_number_hash": hash_receipt_serial_number(parsed.receipt_serial_number),
         "items": items,
         "parsed_amount_minor": amount_minor,
         "currency": parsed.currency,

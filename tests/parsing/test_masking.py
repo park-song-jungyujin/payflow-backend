@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from src.parsing.masking import mask_pii
+from src.parsing.masking import hash_receipt_serial_number, mask_pii
 
 
 @pytest.mark.parametrize(
@@ -66,6 +66,35 @@ def test_masks_injection_fixture_raw_text():
     masked = mask_pii(sample)
     assert masked is not None
     assert "SYSTEM:" in masked  # 마스커는 지시문을 제거하지 않는다. 그건 게이트의 몫이다.
+
+
+def test_mask_pii_collapses_long_numeric_serials_to_the_same_literal():
+    """이 회귀 테스트가 지키는 버그: receipt_serial_number(카드 승인번호·거래고유
+    번호)에 mask_pii를 그대로 썼을 때, 서로 다른 두 번호가 카드번호 패턴
+    (13~19자리)에 걸려 똑같은 "[CARD]"로 뭉개졌다 — 이게 find_exact_duplicate_receipts의
+    유일성 전제를 깨서 무관한 영수증들을 완전일치 중복으로 오판하게 만든 원인이다.
+    hash_receipt_serial_number를 대신 쓰는 이유가 바로 이 결과다."""
+    assert mask_pii("2026082101001234") == mask_pii("2026082201009999") == "[CARD]"
+
+
+@pytest.mark.parametrize(
+    "a, b",
+    [
+        ("2026082101001234", "2026082201009999"),
+        ("1234567890123", "1234567890124"),
+    ],
+)
+def test_hash_receipt_serial_number_does_not_collide_for_different_inputs(a, b):
+    assert hash_receipt_serial_number(a) != hash_receipt_serial_number(b)
+
+
+def test_hash_receipt_serial_number_is_deterministic():
+    assert hash_receipt_serial_number("A1234") == hash_receipt_serial_number("A1234")
+
+
+def test_hash_receipt_serial_number_none_and_empty_pass_through_as_none():
+    assert hash_receipt_serial_number(None) is None
+    assert hash_receipt_serial_number("") is None
 
 
 def test_all_fixture_merchant_names_survive_masking():

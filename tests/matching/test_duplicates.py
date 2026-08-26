@@ -24,7 +24,10 @@ def _receipt(merchant_name="스타벅스", transaction_date="2026-08-10"):
 
 
 def _serial_receipt(serial="A1234567"):
-    return {"receipt_serial_number": serial}
+    """테스트에서는 미리 해시된 값 대신 임의의 불투명 문자열을 그대로 쓴다 —
+    find_exact_duplicate_receipts는 receipt_serial_number_hash를 동등 비교만
+    할 뿐 실제로 sha256인지는 신경 쓰지 않는다."""
+    return {"receipt_serial_number_hash": serial}
 
 
 def test_exact_match_groups_two_claims():
@@ -213,7 +216,7 @@ def test_matching_serial_and_amount_grouped():
 
     assert len(groups) == 1
     assert set(groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
-    assert groups[0]["receipt_serial_number"] == "A1234"
+    assert groups[0]["receipt_serial_number_hash"] == "A1234"
     assert groups[0]["amount_minor"] == 10000
 
 
@@ -267,6 +270,28 @@ def test_serial_group_of_one_not_returned():
     assert find_exact_duplicate_receipts(claims, receipts) == []
 
 
+def test_different_long_numeric_serials_are_not_falsely_grouped():
+    """회귀 테스트 — 실제로 있었던 버그: 순수 숫자 13~19자리 영수증 고유번호가
+    mask_pii의 카드번호 패턴에 걸려 전부 같은 "[CARD]"로 마스킹됐고, 이 함수가
+    그 마스킹된 값을 유일성 근거로 썼다. 같은 recipient·같은 금액의 무관한 두
+    영수증이 완전일치 중복(및 already_settled_claim_ids가 있으면 "이미 송금
+    완료된 영수증 재청구")으로 오판됐다. hash_receipt_serial_number로 실제
+    파이프라인이 저장하는 값을 그대로 재현해, 서로 다른 원문이 이제 서로 다른
+    값으로 남아 오판되지 않는지 확인한다."""
+    from src.parsing.masking import hash_receipt_serial_number
+
+    claims = [
+        _claim("clm_1", receipt_id="rct_1", amount_minor=4500, currency="KRW"),
+        _claim("clm_2", receipt_id="rct_2", amount_minor=4500, currency="KRW"),
+    ]
+    receipts = {
+        "rct_1": {"receipt_serial_number_hash": hash_receipt_serial_number("2026082101001234")},
+        "rct_2": {"receipt_serial_number_hash": hash_receipt_serial_number("2026082201009999")},
+    }
+
+    assert find_exact_duplicate_receipts(claims, receipts) == []
+
+
 def test_no_settled_args_yields_empty_already_settled_field():
     """settled_claims를 안 넘기면(기존 호출부와 하위호환) 기존처럼 후보끼리만
     비교하고, already_settled_claim_ids는 항상 빈 리스트다."""
@@ -296,7 +321,7 @@ def test_candidate_matches_settled_claim_is_flagged():
     assert len(groups) == 1
     assert groups[0]["claim_ids"] == ["clm_new"]
     assert groups[0]["already_settled_claim_ids"] == ["clm_old"]
-    assert groups[0]["receipt_serial_number"] == "A1234"
+    assert groups[0]["receipt_serial_number_hash"] == "A1234"
 
 
 def test_settled_only_pair_not_returned():
