@@ -187,6 +187,7 @@ def list_unsettled_claims(authorization: str = Header(default="")):
         # _run_claims와 같은 이유로 web 전용 필드다 — _claim_summary(에이전트
         # enqueue와 공유)에는 안 넣는다.
         summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        summary["merchant_name_en"] = (receipts.get(c["receipt_id"]) or {}).get("merchant_name_en")
         claims.append(summary)
     return {"claims": claims}
 
@@ -399,6 +400,11 @@ def _run_claims(run_id: str) -> list[dict]:
         # (list_unsettled_claims도 같은 이유로 web 전용 — 빠지면 web이
         # claim.items.length를 undefined에서 읽어 500이 난다.)
         summary["items"] = (receipts.get(c["receipt_id"]) or {}).get("items", [])
+        # 가맹점명의 영어 번역도 같은 이유로 web 전용이다 — 집행자 에이전트는
+        # 이미 영어로 서술하므로 이 필드가 필요 없고, §6 "인젝션 표면 축소"
+        # 원칙상 안 쓰는 필드는 안 보낸다. 번역 실패·구 영수증이면 None이고
+        # web이 원문으로 폴백한다.
+        summary["merchant_name_en"] = (receipts.get(c["receipt_id"]) or {}).get("merchant_name_en")
         # claim 전체 반려 상태 — 물품 체크박스와 같은 자리에 claim 행 자체의
         # 체크박스로 그린다(web).
         summary["excluded"] = c.get("excluded", False)

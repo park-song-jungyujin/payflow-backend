@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 from ..guards.agent_drafts import write_agent_draft_document
 from ..guards.audit import record_audit_log
+from ..guards.translate import translate_lines
 from ..ingest.claims import ClaimNotCreatable, build_claim
 from ..ingest.drafts import DraftVerdict
 from ..ingest.enqueue import enqueue_remind
@@ -25,13 +26,78 @@ from ..schemas.enums import ReminderReason
 from .categorize import build_parse_signals, route_category
 from .enqueue import enqueue_claimant_review
 from .masking import hash_receipt_serial_number, mask_pii
-from .models import amount_to_minor
+from .models import ParsedReceipt, amount_to_minor
 from .parser import get_parser
 from .slack_files import PermanentParseError, download_slack_file
 from .storage import get_object_store, image_key, raw_text_key
 from .store import ReceiptNotFound, commit_parsed_with_claim, get_receipt, update_receipt
 
 _ACTOR = "api/src/parsing"
+
+
+def _build_items(parsed: ParsedReceipt) -> list[dict]:
+    """영수증 품목을 Firestore에 저장할 모양으로 만든다 — 마스킹까지만 한다.
+    영어 번역(`name_en`)은 _translate_receipt_names가 얹는다.
+
+    숫자는 코드가 만든다(공통 CLAUDE.md 절대 규칙 3). 품목별 금액도 영수증
+    전체와 같은 함수·같은 currency로 변환한다 — 품목은 영수증 전체와 다른
+    통화를 쓸 수 없다.
+    """
+    return [
+        {
+            "name": mask_pii(item.name),
+            "amount_minor": amount_to_minor(item.amount_text, parsed.currency),
+        }
+        for item in parsed.items
+    ]
+
+
+def _translate_receipt_names(
+    merchant_name: str | None, items: list[dict]
+) -> tuple[str | None, list[dict]]:
+    """가맹점명·품목명의 영어 번역을 붙인다. (merchant_name_en, items) 반환.
+
+    web 대시보드는 `en` 로케일에서 이 번역을 보여주고, 그 아래 회색으로 원문을
+    같이 적는다(frontend lib/receiptText.ts). 영수증에서 읽은 이름은 원문이
+    한국어라, 집행자 서술·Slack 발송 문구를 영어로 통일한 뒤에도 여기만
+    "스타벅스 강남점"·"G)콜드브루"처럼 한국어로 남아 있었다.
+
+    **가맹점명과 품목명을 한 번의 Gemma 호출로 묶는다** — 따로 부르면 최대
+    15초(translate.py _TIMEOUT_MS)짜리 대기가 파싱 태스크에 두 번 순차로 붙는다.
+    가맹점명이 항상 첫 줄이고 품목명이 그 뒤를 원래 순서대로 잇는다.
+
+    **넘기는 건 마스킹 뒤의 이름이다** — 원문을 그대로 보내면 "PII 마스킹은
+    Firestore 쓰기 직전"(§2)이 외부 호출 하나로 우회된다. 번역도 마스킹된
+    원문의 번역이어야 원문과 짝이 맞는다.
+
+    번역 실패는 조용히 흡수한다(guards/translate.py — 번역은 조언성 부가
+    기능이라 파싱을 막지 않는다). `name_en`은 키 자체를 넣지 않아 이 필드가
+    생기기 전에 파싱된 영수증과 같은 모양으로 남기고, `merchant_name_en`은
+    None이다 — 읽는 쪽은 둘 다 원문으로 폴백한다(schema-contract.md — 필드
+    추가는 항상 nullable/기본값, 문서 백필 없이).
+
+    이 Gemma 호출은 Cloud Tasks가 부르는 파싱 태스크 안에서 일어나 사용자
+    요청 경로에는 지연이 붙지 않는다.
+    """
+    # 가맹점명도 품목도 못 읽은 영수증에는 호출 자체를 생략한다 — 빈 호출이
+    # 파싱 태스크에 그대로 지연으로 붙는다.
+    lines = ([merchant_name] if merchant_name else []) + [item["name"] for item in items]
+    if not lines:
+        return None, items
+
+    translated = translate_lines(lines)
+    # 길이는 translate_lines가 이미 보장하지만(어긋나면 None) 한 번 더 본다 —
+    # 어긋난 채 zip하면 가맹점명 번역이 품목으로 한 칸 밀려 조용히 틀린 화면이 된다.
+    if translated is None or len(translated) != len(lines):
+        return None, items
+
+    if merchant_name:
+        merchant_name_en, item_names_en = translated[0], translated[1:]
+    else:
+        merchant_name_en, item_names_en = None, translated
+    return merchant_name_en, [
+        {**item, "name_en": name_en} for item, name_en in zip(items, item_names_en)
+    ]
 
 
 def parse_receipt(receipt_id: str) -> str:
@@ -102,16 +168,12 @@ def _parse(receipt_id: str, receipt: dict) -> str:
         content_type="text/plain; charset=utf-8",
     )
 
-    # 숫자는 코드가 만든다 (공통 CLAUDE.md 절대 규칙 3). 품목별 금액도 같은
-    # 함수·같은 currency로 변환한다 — 품목은 영수증 전체와 다른 통화를 쓸 수 없다.
+    # 숫자는 코드가 만든다 (공통 CLAUDE.md 절대 규칙 3).
     amount_minor = amount_to_minor(parsed.amount_text, parsed.currency)
-    items = [
-        {
-            "name": mask_pii(item.name),
-            "amount_minor": amount_to_minor(item.amount_text, parsed.currency),
-        }
-        for item in parsed.items
-    ]
+    # ★ 마스킹은 여기서. Firestore로 나가는 자유 텍스트가 전부 여기를 지난다.
+    # 번역(_translate_receipt_names)은 마스킹 뒤 값만 본다 — 순서가 계약이다.
+    merchant_name = mask_pii(parsed.merchant_name)
+    merchant_name_en, items = _translate_receipt_names(merchant_name, _build_items(parsed))
     signals = build_parse_signals(parsed, amount_minor)
     category, source, confidence = route_category(parsed, signals)
 
@@ -119,8 +181,10 @@ def _parse(receipt_id: str, receipt: dict) -> str:
     updates = {
         "image_gcs_uri": image_uri,
         "raw_text_gcs_uri": raw_text_uri,
-        # ★ 마스킹은 여기서. Firestore로 나가는 유일한 자유 텍스트다.
-        "merchant_name": mask_pii(parsed.merchant_name),
+        "merchant_name": merchant_name,
+        # 가맹점명의 영어 번역. 번역 실패·미검출이면 None이고, web은 원문으로
+        # 폴백한다(frontend lib/receiptText.ts merchantDisplay).
+        "merchant_name_en": merchant_name_en,
         # §1 시각 예외 — transaction_date는 YYYY-MM-DD 문자열이다.
         # Timestamp로 저장하면 KST/UTC 경계에서 하루가 밀린다.
         "transaction_date": parsed.transaction_date.isoformat() if parsed.transaction_date else None,
