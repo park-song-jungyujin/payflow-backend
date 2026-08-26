@@ -227,51 +227,39 @@ def test_missing_authorization_returns_401(monkeypatch, _patch):
     assert exc.value.status_code == 401
 
 
-# --- Gemma 번역 배선 (동기) — CLAIMANT만 이 경로를 탄다 ---
+# --- Gemma 번역 배선 — draft 쓰기 경로에는 이제 아무 것도 없다 ---
+#
+# CLAIMANT의 requery_message는 청구자 에이전트가 처음부터 영어로 쓴다
+# (payflow-agent claimant/agent.py). 한때 여기서 Gemma로 번역해
+# requery_message_en을 채웠지만, 그 번역이 간헐적으로 실패하면 조용히 한국어로
+# 폴백해 같은 문구가 어떤 영수증에는 영어로, 어떤 영수증에는 한국어로 Slack에
+# 도착했다. EXECUTOR의 한국어 번역은 이 경로가 아니라 비동기 Cloud Task다
+# (_enqueue_executor_translation).
 
 
-def test_claimant_requery_message_gets_translated(monkeypatch, _patch):
+def test_claimant_draft_is_not_translated(monkeypatch, _patch):
+    """청구자 문안은 이미 영어다 — Gemma를 부르지 않고, _en 필드도 안 만든다.
+    번역을 한 번 더 태우면 실패할 기회만 생기고 draft 쓰기에 최대 15초가 붙는다."""
     monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
     calls = []
-    monkeypatch.setattr(
-        agent_drafts,
-        "translate_lines",
-        lambda texts: calls.append(texts) or ["Please resend the receipt."],
-    )
+    monkeypatch.setattr(agent_drafts, "translate_lines", lambda *a, **kw: calls.append(a) or [])
 
     agent_drafts.write_agent_draft(
-        _body(payload={"needs_requery": True, "requery_message": "영수증을 다시 보내주세요."})
+        _body(
+            payload={
+                "needs_requery": True,
+                "requery_message": "The receipt is unreadable. Please send it again.",
+            }
+        )
     )
-
-    assert calls == [["영수증을 다시 보내주세요."]]
-    stored = _patch["client"].data["CLAIMANT:rct_1"]
-    assert stored["payload"]["requery_message_en"] == "Please resend the receipt."
-
-
-def test_claimant_no_requery_message_skips_translation(monkeypatch, _patch):
-    """needs_requery=False처럼 requery_message가 없으면 번역 호출 자체를 안 한다."""
-    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
-    calls = []
-    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: calls.append(texts) or [])
-
-    agent_drafts.write_agent_draft(_body(payload={"needs_requery": False}))
 
     assert calls == []
-
-
-def test_claimant_translation_failure_keeps_korean_draft(monkeypatch, _patch):
-    """번역이 실패해도(None) 원본 한국어 draft 쓰기는 막지 않는다."""
-    monkeypatch.setattr(agent_drafts, "enqueue_task", lambda path, payload: None)
-    monkeypatch.setattr(agent_drafts, "translate_lines", lambda texts: None)
-
-    result = agent_drafts.write_agent_draft(
-        _body(payload={"needs_requery": True, "requery_message": "영수증을 다시 보내주세요."})
-    )
-
-    assert result["status"] == "ok"
     stored = _patch["client"].data["CLAIMANT:rct_1"]
     assert "requery_message_en" not in stored["payload"]
-    assert stored["payload"]["requery_message"] == "영수증을 다시 보내주세요."
+    assert (
+        stored["payload"]["requery_message"]
+        == "The receipt is unreadable. Please send it again."
+    )
 
 
 def test_safety_draft_is_never_translated(monkeypatch, _patch):

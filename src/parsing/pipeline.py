@@ -328,7 +328,14 @@ def _parse(receipt_id: str, receipt: dict) -> str:
             verdict = DraftVerdict(
                 needs_requery=True,
                 is_business=None,
-                requery_message="영수증에서 거래일자가 보이지 않습니다. 날짜가 나오도록 다시 찍어 보내주세요.",
+                # 이 문안은 Slack DM으로 그대로 나간다 — 청구자 에이전트가 쓰는
+                # requery_message와 같은 계약으로 영어다. 한때 한국어로 두고 api가
+                # Gemma로 번역했지만, 번역 실패 시 조용히 한국어로 폴백해 같은 문구가
+                # 오락가락했다(guards/agent_drafts.py 주석 참조).
+                requery_message=(
+                    "The transaction date cannot be read from the receipt. "
+                    "Please take another photo so that the date is visible and send it again."
+                ),
                 reason="transaction_date 미검출 — 코드 결정론적 재요청(청구자 에이전트 미호출)",
             )
             # ingest/routes.py._requery_message는 DM 문안을 agent_drafts에서만

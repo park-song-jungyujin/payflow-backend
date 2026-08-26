@@ -282,6 +282,21 @@ def test_translation_length_mismatch_leaves_originals_only(monkeypatch, wired):
     assert updates["merchant_name_en"] is None
 
 
+def test_missing_transaction_date_requery_message_is_english(monkeypatch, wired):
+    """이 문안은 청구자 에이전트를 안 거치고 코드가 직접 만든다 — Slack DM으로
+    그대로 나가므로 영어여야 한다(에이전트가 쓰는 requery_message와 같은 계약).
+    한때 한국어로 두고 api가 Gemma로 번역했지만, 번역 실패 시 조용히 한국어로
+    폴백해 같은 문구가 오락가락했다."""
+    _install_parser(monkeypatch, RecordingParser(result=_clean_result(transaction_date=None)))
+    _install_translator(monkeypatch, wired, ["Starbucks Gangnam [PHONE]"])
+
+    pipeline.parse_receipt("rct_1")
+
+    message = wired["agent_drafts"][-1]["payload"]["requery_message"]
+    assert not any("가" <= ch <= "힣" for ch in message), message
+    assert "date" in message.lower()
+
+
 def test_transaction_date_is_stored_as_yyyy_mm_dd_string(monkeypatch, wired):
     """§1 시각 — transaction_date는 유일한 예외다. Timestamp로 저장하면
     KST/UTC 경계에서 하루가 밀린다."""
@@ -428,7 +443,9 @@ def test_missing_transaction_date_writes_agent_draft_so_dm_can_be_sent(monkeypat
     assert draft_call["target_id"] == "rct_1"
     assert draft_call["task_id"] == "CLAIMANT:rct_1"
     assert draft_call["payload"]["needs_requery"] is True
-    assert "거래일자" in draft_call["payload"]["requery_message"]
+    # 문안은 Slack DM으로 그대로 나가므로 영어다 —
+    # test_missing_transaction_date_requery_message_is_english가 언어를 지킨다.
+    assert "date" in draft_call["payload"]["requery_message"].lower()
 
 
 def test_missing_transaction_date_verdict_content(monkeypatch, wired):
@@ -439,7 +456,7 @@ def test_missing_transaction_date_verdict_content(monkeypatch, wired):
 
     _, verdict, reason = wired["verdicts"][0]
     assert verdict.needs_requery is True
-    assert "거래일자" in verdict.requery_message
+    assert "date" in verdict.requery_message.lower()
     assert reason == "DATE_MISSING"
 
 

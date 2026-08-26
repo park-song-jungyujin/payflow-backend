@@ -17,6 +17,7 @@ from ..payouts.store import get_client
 from .audit import record_audit_log
 from .oidc import verify_oidc
 from .tasks import enqueue_task
+# /tasks/translate-executor-draft가 쓴다 — draft 쓰기 경로에는 이제 번역이 없다.
 from .translate import translate_lines
 
 router = APIRouter()
@@ -37,7 +38,6 @@ def write_agent_draft_document(
     감사 로그·`/tasks/apply-claimant-draft` enqueue는 호출부 책임이다 — 코드
     호출부는 actor_type=AGENT가 아니고, apply_claimant_verdict도 직접 부르므로
     같은 draft를 또 apply하는 task를 enqueue할 이유가 없다."""
-    payload = _with_translated_fields(agent, payload)
     draft = {
         "draft_id": f"drf_{task_id}",
         "agent": agent,
@@ -53,29 +53,21 @@ def write_agent_draft_document(
     return draft
 
 
-def _with_translated_fields(agent: str, payload: dict) -> dict:
-    """schema-contract.md §9 — 청구자는 한국어만 쓴다. Slack DM(CLAIMANT)이
-    보여줄 영어는 여기서 Gemma로 번역해 채운다. 번역 실패는 조용히 무시한다 —
-    payload는 원본 그대로 반환하고, 읽는 쪽(ingest/routes.py._requery_message)이
-    이미 en 필드 없음을 정상 상태로 다룬다.
-
-    EXECUTOR는 이 경로를 타지 않는다 — 한국어 번역(anomalies_ko·summary_text_ko)이
-    필요하지만 동기로 하면 submit_settlement_analysis 이후 요청이 끝나기 전에
-    최대 15초(translate.py _TIMEOUT_MS)가 순차로 붙는다(한때 실제로 이렇게
-    구현했다가 지연 때문에 되돌린 적이 있다). 대신 draft를 영어 그대로 먼저
-    커밋하고, _enqueue_executor_translation이 번역을 별도 Cloud Task로 미룬다
-    — web은 영어를 먼저 보여주고 번역이 끝나면 폴링으로 따라잡는다
-    (frontend StatusPoller 참조)."""
-    if agent == "CLAIMANT":
-        requery_message = payload.get("requery_message")
-        if not isinstance(requery_message, str) or not requery_message.strip():
-            return payload
-        translated = translate_lines([requery_message])
-        if translated is None:
-            return payload
-        return {**payload, "requery_message_en": translated[0]}
-
-    return payload
+# draft를 쓰는 이 경로에는 Gemma 번역이 없다. 한때 CLAIMANT의 requery_message를
+# 여기서 동기로 번역해 requery_message_en을 채웠지만, 두 가지가 문제였다.
+#
+# 첫째, 번역이 간헐적으로 실패하면 조용히 한국어로 폴백해(실패를 흡수하는 게
+# translate.py의 설계다) 같은 재요청 문구가 어떤 영수증에는 영어로, 어떤
+# 영수증에는 한국어로 Slack에 도착했다. 둘째, 성공해도 draft 쓰기 요청에 최대
+# 15초(translate.py._TIMEOUT_MS)가 순차로 붙었다.
+#
+# 청구자 에이전트가 처음부터 영어로 쓰게 바꿔서(payflow-agent claimant/agent.py)
+# 번역할 이유 자체를 없앴다 — 재요청 사유는 (a) 금액 없음 (b) 거래일자 없음
+# (c) 원문·파싱 모순 셋뿐이라 LLM 번역을 한 번 더 태울 값어치가 없다.
+#
+# EXECUTOR의 한국어 번역(anomalies_ko·summary_text_ko)은 이 경로가 아니라
+# _enqueue_executor_translation의 비동기 Cloud Task다 — 요청 경로 밖이라
+# 지연이 안 붙고, 실패해도 영어가 그대로 보여서 눈에 띄는 사고가 없다.
 
 
 def _enqueue_executor_translation(task_id: str, payload: dict) -> None:
