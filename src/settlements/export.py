@@ -12,19 +12,19 @@ from openpyxl.utils import get_column_letter
 
 from ..payouts.currency import CURRENCY_EXPONENT, minor_to_paypal_value
 from ..payouts.store import get_claims_for_run, get_client, get_recipient, get_settlement_run
-from ..schemas.enums import CATEGORY_DISPLAY
+from ..schemas.enums import CATEGORY_DISPLAY_EN
 
 _HEADERS = [
-    "청구ID",
-    "수취인",
-    "거래일자",
-    "가맹점명",
-    "계정과목코드",
-    "계정과목명",
-    "통화",
-    "금액",
-    "금액(최소단위)",
-    "상태",
+    "Claim ID",
+    "Recipient",
+    "Transaction Date",
+    "Merchant",
+    "Account Category Code",
+    "Account Category Name",
+    "Currency",
+    "Amount",
+    "Amount (Minor Unit)",
+    "Status",
 ]
 
 
@@ -53,7 +53,7 @@ def build_settlement_export(run_id: str) -> bytes:
 
     wb = Workbook()
     ws = wb.active
-    ws.title = "정산내역"
+    ws.title = "Settlement Details"
     ws.append(_HEADERS)
 
     total_by_currency: dict[str, int] = {}
@@ -72,15 +72,16 @@ def build_settlement_export(run_id: str) -> bytes:
         # claim은 amount_minor를 그대로 갖고 있다(줄이지 않는다 — 되돌릴 때 복원할
         # 값이 있어야 하므로). 세무사용 합계에는 실제로 안 나간 돈이니 넣지 않는다 —
         # 행 자체는 감사 추적용으로 그대로 남기고 상태만 표시한다.
-        status_display = f"{claim['status']} (반려됨)" if claim.get("excluded") else claim["status"]
+        status_display = f"{claim['status']} (Rejected)" if claim.get("excluded") else claim["status"]
+        merchant_name = (receipt.get("merchant_name_en") or receipt.get("merchant_name")) if receipt else None
         ws.append(
             [
                 claim["claim_id"],
                 recipient_names[recipient_id],
                 receipt.get("transaction_date") if receipt else None,
-                receipt.get("merchant_name") if receipt else None,
+                merchant_name,
                 category_code,
-                CATEGORY_DISPLAY.get(category_code, category_code),
+                CATEGORY_DISPLAY_EN.get(category_code, category_code),
                 currency,
                 _amount_display(amount_minor, currency),
                 amount_minor,
@@ -98,7 +99,7 @@ def build_settlement_export(run_id: str) -> bytes:
                 None,
                 None,
                 None,
-                f"합계 ({currency})",
+                f"Total ({currency})",
                 currency,
                 _amount_display(minor_sum, currency),
                 minor_sum,
