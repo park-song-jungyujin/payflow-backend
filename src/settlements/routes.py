@@ -24,6 +24,7 @@ from ..guards.claims import link_claims_to_run_cas, unlink_claim_from_run_cas
 from ..guards.oidc import verify_oidc
 from ..matching.candidates import select_claims_for_run
 from ..matching.duplicates import find_duplicate_groups, find_exact_duplicate_receipts
+from ..matching.future_dated import find_future_dated_claims
 from ..payouts.store import (
     create_settlement_run,
     get_claim,
@@ -218,12 +219,17 @@ def _enqueue_executor_analysis(
     exact_duplicate_groups = find_exact_duplicate_receipts(
         claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
     )
+    # 미래 거래일 판정도 duplicate_groups와 같은 이유로 여기서 미리 계산해 태스크
+    # 본문에 싣는다 — 집행자 에이전트가 분석 도중 별도 tool-call 왕복(check_future_dated_claims)
+    # 없이 이 결과만 근거로 서술하게 한다(matching/future_dated.py 참조).
+    future_dated_claims = find_future_dated_claims(claims, receipts, today=datetime.now(UTC).date())
     try:
         enqueue_executor_analyze(
             run_id,
             claim_summaries,
             duplicate_groups,
             exact_duplicate_groups,
+            future_dated_claims,
             org_id,
             force_reanalyze=force_reanalyze,
         )

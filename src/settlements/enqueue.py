@@ -34,6 +34,7 @@ def enqueue_executor_analyze(
     candidate_claims: list[dict],
     duplicate_groups: list[dict],
     exact_duplicate_groups: list[dict],
+    future_dated_claims: list[dict],
     org_id: str,
     force_reanalyze: bool = False,
 ) -> None:
@@ -54,6 +55,7 @@ def enqueue_executor_analyze(
             "candidate_claims": candidate_claims,
             "duplicate_groups": duplicate_groups,
             "exact_duplicate_groups": exact_duplicate_groups,
+            "future_dated_claims": future_dated_claims,
             # agent_sessions 스코핑 키 — tiered-memory-review.html §8 Phase 2.
             "org_id": org_id,
             # web "재시도" 버튼 전용 — 이미 CLOSED된 세션도 강제로 재분석하게 한다
