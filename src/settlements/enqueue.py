@@ -35,6 +35,7 @@ def enqueue_executor_analyze(
     duplicate_groups: list[dict],
     exact_duplicate_groups: list[dict],
     org_id: str,
+    force_reanalyze: bool = False,
 ) -> None:
     # 대괄호로 읽지 않는다: AGENT_SERVICE_URL 부재는 배포 설정 누락으로 실제
     # 일어날 수 있는 상황이고(parsing/enqueue.py와 같은 이유), 여기서
@@ -55,6 +56,9 @@ def enqueue_executor_analyze(
             "exact_duplicate_groups": exact_duplicate_groups,
             # agent_sessions 스코핑 키 — tiered-memory-review.html §8 Phase 2.
             "org_id": org_id,
+            # web "재시도" 버튼 전용 — 이미 CLOSED된 세션도 강제로 재분석하게 한다
+            # (agent/main.py executor_analyze의 CLOSED 가드가 이 값을 본다).
+            "force_reanalyze": force_reanalyze,
         },
         audience=agent_service_url,
     )

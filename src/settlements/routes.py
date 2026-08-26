@@ -187,7 +187,9 @@ def list_unsettled_claims(authorization: str = Header(default="")):
     return {"claims": claims}
 
 
-def _enqueue_executor_analysis(run_id: str, claims: list[dict], receipts: dict, org_id: str) -> None:
+def _enqueue_executor_analysis(
+    run_id: str, claims: list[dict], receipts: dict, org_id: str, force_reanalyze: bool = False
+) -> None:
     """집행자 에이전트 분석 enqueue — 배치 생성 시점과 web "재시도" 버튼이 공유한다
     (settlements/enqueue.py.enqueue_executor_analyze를 감싸 상태 기록까지 묶는다).
 
@@ -208,7 +210,14 @@ def _enqueue_executor_analysis(run_id: str, claims: list[dict], receipts: dict, 
         claims, receipts, settled_claims=settled_claims, settled_receipts=settled_receipts
     )
     try:
-        enqueue_executor_analyze(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id)
+        enqueue_executor_analyze(
+            run_id,
+            claim_summaries,
+            duplicate_groups,
+            exact_duplicate_groups,
+            org_id,
+            force_reanalyze=force_reanalyze,
+        )
     except Exception as e:
         # parsing/pipeline.py의 CLAIMANT_ENQUEUE_FAILED와 같은 패턴 — 별도 try로
         # 감싸 감사 로그 실패가 호출부의 응답을 가리지 않게 한다.
@@ -397,7 +406,7 @@ def retry_executor_analysis_route(run_id: str, authorization: str = Header(defau
         org_id=session["org_id"],
         run_id=run_id,
     )
-    _enqueue_executor_analysis(run_id, claims, receipts, session["org_id"])
+    _enqueue_executor_analysis(run_id, claims, receipts, session["org_id"], force_reanalyze=True)
     return {"executor_analysis": _executor_analysis(run_id)}
 
 

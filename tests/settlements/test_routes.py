@@ -144,9 +144,9 @@ def _wire(monkeypatch, *, claims, receipts, enqueue_error=None, settled_claims=N
 
     enqueue_calls = []
 
-    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id):
+    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id, force_reanalyze=False):
         enqueue_calls.append(
-            (run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id)
+            (run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id, force_reanalyze)
         )
         if enqueue_error:
             raise enqueue_error
@@ -184,9 +184,10 @@ def test_create_run_enqueues_executor_analyze_with_claim_summaries(monkeypatch):
     result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
-    run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id = enqueue_calls[0]
+    run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id, force_reanalyze = enqueue_calls[0]
     assert run_id == result["settlement_run_id"]
     assert org_id == "org_1"
+    assert force_reanalyze is False
     assert claim_summaries == [
         {
             "claim_id": "clm_1",
@@ -220,7 +221,7 @@ def test_create_run_claim_summaries_include_items_for_reject_automation(monkeypa
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, claim_summaries, _, _, _ = enqueue_calls[0]
+    _, claim_summaries, _, _, _, _ = enqueue_calls[0]
     assert claim_summaries[0]["items"] == [{"name": "아메리카노", "amount_minor": 4500}]
 
 
@@ -234,7 +235,7 @@ def test_create_run_finds_duplicate_group_among_passed_claims(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, _, duplicate_groups, _, _ = enqueue_calls[0]
+    _, _, duplicate_groups, _, _, _ = enqueue_calls[0]
     assert len(duplicate_groups) == 1
     assert set(duplicate_groups[0]["claim_ids"]) == {"clm_1", "clm_2"}
 
@@ -246,7 +247,7 @@ def test_missing_receipt_produces_null_merchant_and_date(monkeypatch):
 
     routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
-    _, claim_summaries, _, _, _ = enqueue_calls[0]
+    _, claim_summaries, _, _, _, _ = enqueue_calls[0]
     assert claim_summaries[0]["merchant_name"] is None
     assert claim_summaries[0]["transaction_date"] is None
 
@@ -345,7 +346,7 @@ def test_cas_conflict_excludes_claim_and_logs_audit(monkeypatch):
     result = routes.create_settlement_run_route(body={}, authorization="Bearer t")
 
     assert len(stub.created) == 1  # clm_2가 빠졌어도 남은 clm_1로 run은 만들어진다
-    run_id, claim_summaries, _, _, _ = enqueue_calls[0]
+    run_id, claim_summaries, _, _, _, _ = enqueue_calls[0]
     assert [c["claim_id"] for c in claim_summaries] == ["clm_1"]  # clm_2는 엔큐에서도 빠진다
     assert {
         "actor": "api/src/settlements",
@@ -1028,8 +1029,10 @@ def _wire_retry(monkeypatch, *, run=None, claims=None, receipts=None, enqueue_er
 
     enqueue_calls = []
 
-    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id):
-        enqueue_calls.append((run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id))
+    def fake_enqueue(run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id, force_reanalyze=False):
+        enqueue_calls.append(
+            (run_id, claim_summaries, duplicate_groups, exact_duplicate_groups, org_id, force_reanalyze)
+        )
         if enqueue_error:
             raise enqueue_error
 
@@ -1056,10 +1059,11 @@ def test_retry_executor_analysis_reenqueues_linked_claims(monkeypatch):
     result = routes.retry_executor_analysis_route("run_1", authorization="Bearer t")
 
     assert len(enqueue_calls) == 1
-    run_id, claim_summaries, _, _, org_id = enqueue_calls[0]
+    run_id, claim_summaries, _, _, org_id, force_reanalyze = enqueue_calls[0]
     assert run_id == "run_1"
     assert org_id == "org_1"
     assert claim_summaries[0]["claim_id"] == "clm_1"
+    assert force_reanalyze is True  # 재시도는 이미 CLOSED된 세션도 강제로 재분석해야 한다
     assert status_calls == [("run_1", "PROCESSING", None)]
     assert any(c["action"] == "EXECUTOR_ANALYSIS_RETRY_REQUESTED" for c in audit_calls)
     assert result["executor_analysis"] is None  # get_agent_draft가 None을 돌려주므로

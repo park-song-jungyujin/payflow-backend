@@ -65,4 +65,5 @@ def test_builds_oidc_task_targeting_agent_service(monkeypatch):
         "duplicate_groups": groups,
         "exact_duplicate_groups": exact_groups,
         "org_id": "org_1",
+        "force_reanalyze": False,
     }
