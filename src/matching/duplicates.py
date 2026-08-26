@@ -117,8 +117,14 @@ def find_exact_duplicate_receipts(
     settled_claims: list[dict] | None = None,
     settled_receipts: dict[str, dict] | None = None,
 ) -> list[dict]:
-    """같은 recipient_id의 후보 claim들 중 receipt_serial_number(카드 승인번호 ·
-    영수증 고유번호)가 완전히 일치하는 클러스터를 찾는다.
+    """같은 recipient_id의 후보 claim들 중 receipt_serial_number_hash(카드
+    승인번호 · 영수증 고유번호를 해시한 값, parsing/masking.py.
+    hash_receipt_serial_number)가 완전히 일치하는 클러스터를 찾는다.
+
+    반드시 해시로 비교해야 한다 — 원문(마스킹 전 값)을 그대로 비교하면 원문을
+    Firestore에 들고 있어야 해 §2를 어기고, mask_pii로 마스킹한 값을 비교하면
+    순수 숫자 승인번호가 카드번호 패턴에 걸려 전부 같은 "[CARD]"로 뭉개져
+    무관한 영수증들이 완전일치로 오판된다(실제로 있었던 버그).
 
     find_duplicate_groups(금액·날짜윈도우·가맹점명 퍼지 매칭)보다 훨씬 강한 신호다
     — 승인번호는 카드사/POS가 거래 건마다 고유하게 발급하므로, OCR이 정확히
@@ -126,10 +132,10 @@ def find_exact_duplicate_receipts(
     물리적 영수증을 서로 다른 사진으로 두 번 올린 경우(예: slack_file_id가 달라
     receipt_dedup_keys가 못 잡는 경우)를 잡기 위한 것이다.
 
-    receipt_serial_number가 None이거나 빈 문자열인 receipt는 판정에서 제외한다
-    (근거 없는 필드는 비교하지 않는다 — find_duplicate_groups와 같은 원칙).
-    amount_minor도 함께 일치해야 클러스터로 묶는다 — OCR 오독으로 서로 다른
-    영수증이 우연히 같은 문자열을 내는 극단적인 경우를 막는 이중 확인이다.
+    receipt_serial_number_hash가 None이거나 빈 문자열인 receipt는 판정에서
+    제외한다(근거 없는 필드는 비교하지 않는다 — find_duplicate_groups와 같은
+    원칙). amount_minor도 함께 일치해야 클러스터로 묶는다 — OCR 오독으로 서로
+    다른 영수증이 우연히 같은 문자열을 내는 극단적인 경우를 막는 이중 확인이다.
 
     claims, receipts: find_duplicate_groups와 같은 형태 — **이번 배치 후보만**.
 
@@ -142,7 +148,7 @@ def find_exact_duplicate_receipts(
 
     반환: [{"claim_ids": [...이번 배치 candidate만...],
             "already_settled_claim_ids": [...과거 claim, 없으면 빈 리스트...],
-            "receipt_serial_number": str, "amount_minor": int, "currency": str},
+            "receipt_serial_number_hash": str, "amount_minor": int, "currency": str},
            ...].
     이번 배치 candidate가 하나도 없는 그룹(과거 claim끼리만 겹침)은 만들지 않는다
     — 지금 새로 보여줄 게 없다.
@@ -154,8 +160,8 @@ def find_exact_duplicate_receipts(
             receipt = receipt_map.get(c["receipt_id"])
             if receipt is None:
                 continue
-            serial = receipt.get("receipt_serial_number")
-            if not serial:
+            serial_hash = receipt.get("receipt_serial_number_hash")
+            if not serial_hash:
                 continue
             out.append(
                 {
@@ -163,7 +169,7 @@ def find_exact_duplicate_receipts(
                     "recipient_id": c["recipient_id"],
                     "amount_minor": c["amount_minor"],
                     "currency": c["currency"],
-                    "receipt_serial_number": serial,
+                    "receipt_serial_number_hash": serial_hash,
                     "is_settled": is_settled,
                 }
             )
@@ -192,7 +198,7 @@ def find_exact_duplicate_receipts(
                 continue
             if a["amount_minor"] != b["amount_minor"] or a["currency"] != b["currency"]:
                 continue
-            if a["receipt_serial_number"] != b["receipt_serial_number"]:
+            if a["receipt_serial_number_hash"] != b["receipt_serial_number_hash"]:
                 continue
             union(a["claim_id"], b["claim_id"])
 
@@ -209,7 +215,7 @@ def find_exact_duplicate_receipts(
                 {
                     "claim_ids": candidate_ids,
                     "already_settled_claim_ids": settled_ids,
-                    "receipt_serial_number": members[0]["receipt_serial_number"],
+                    "receipt_serial_number_hash": members[0]["receipt_serial_number_hash"],
                     "amount_minor": members[0]["amount_minor"],
                     "currency": members[0]["currency"],
                 }

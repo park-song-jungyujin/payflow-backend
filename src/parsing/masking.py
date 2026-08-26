@@ -12,6 +12,7 @@
 막는다. 마스커는 지시문을 지우지 않는다 — 지우면 게이트가 볼 근거가 사라진다.
 """
 
+import hashlib
 import re
 
 # 순서가 있다. 좁은 패턴을 먼저 태워야 넓은 패턴이 잡아먹지 않는다.
@@ -36,3 +37,22 @@ def mask_pii(text: str | None) -> str | None:
     for pattern, replacement in _RULES:
         text = pattern.sub(replacement, text)
     return text
+
+
+def hash_receipt_serial_number(value: str | None) -> str | None:
+    """receipt_serial_number(카드 승인번호·거래고유번호·영수증 일련번호)는
+    mask_pii로 마스킹하면 안 된다 — 실제로 발생한 버그: 이 필드는 거의 항상
+    순수 숫자 문자열인데, mask_pii의 카드번호 패턴(13~19자리 연속 숫자)이 여기
+    걸려 서로 다른 영수증의 고유번호가 전부 같은 리터럴 "[CARD]"로 뭉개졌다.
+    matching/duplicates.py.find_exact_duplicate_receipts는 이 필드가
+    거래마다 고유하다는 전제로 완전일치 판정을 하므로, 마스킹으로 유일성이
+    사라지면 같은 recipient·같은 금액의 무관한 영수증들이 전부 "완전일치 중복"
+    (already_settled_claim_ids가 있으면 "이미 송금 완료된 영수증 재청구")으로
+    오판되고, 지금은 그 판정이 자동 반려로 이어진다.
+
+    원문을 그대로 Firestore에 저장할 수는 없으므로(§2, 원본은 GCS에만) 되돌릴
+    수 없는 해시로 바꿔 저장한다 — 완전일치 비교에는 그대로 쓸 수 있고, 해시에서
+    원래 번호를 복원할 수는 없다."""
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
