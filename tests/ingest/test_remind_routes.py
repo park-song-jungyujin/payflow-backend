@@ -67,9 +67,15 @@ def env(monkeypatch):
         "post_result": "1755500000.000100",
     }
 
-    def fake_post(*, channel, text, thread_ts=None, blocks=None):
+    def fake_post(*, channel, text, thread_ts=None, blocks=None, bot_token=None):
         state["sent"].append(
-            {"channel": channel, "text": text, "thread_ts": thread_ts, "blocks": blocks}
+            {
+                "channel": channel,
+                "text": text,
+                "thread_ts": thread_ts,
+                "blocks": blocks,
+                "bot_token": bot_token,
+            }
         )
         result = state["post_result"]
         if isinstance(result, Exception):
@@ -80,6 +86,12 @@ def env(monkeypatch):
     monkeypatch.setattr(routes, "get_claim_request", lambda _id: state["claim_request"])
     monkeypatch.setattr(routes, "get_receipt", lambda _id: state["receipt"])
     monkeypatch.setattr(routes, "get_recipient", lambda _id: state["recipient"])
+    # 워크스페이스 조회는 이 스위트가 검증하는 대상이 아니다 — recipient에
+    # team_id가 없는 기본 케이스로 두고 get_slack_workspace_by_org가 항상
+    # None을 돌려주게 해 실제 Firestore를 안 건드린다(test_notify_rejections_routes.py
+    # _wire와 같은 이유).
+    monkeypatch.setattr(routes, "get_slack_workspace_by_team", lambda team_id: None)
+    monkeypatch.setattr(routes, "get_slack_workspace_by_org", lambda org_id: None)
     monkeypatch.setattr(routes, "get_agent_draft", lambda task_id: state["draft"])
     monkeypatch.setattr(
         routes, "claim_send_slot", lambda _id, *, expected_action, now: state["slot"]

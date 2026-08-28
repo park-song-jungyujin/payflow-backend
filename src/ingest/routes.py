@@ -645,12 +645,26 @@ def task_remind(body: dict, authorization: str = Header(default="")):
         if not claim_send_slot(claim_request_id, expected_action=action, now=now):
             return {"status": "ignored", "reason": "slot_taken"}
 
+        # 전역 SLACK_BOT_TOKEN은 org마다 다른 워크스페이스에 설치된 봇과 안
+        # 맞을 수 있다(get_display_name 등 다른 호출부와 같은 이유,
+        # ingest/routes.py:132) — claim_request의 워크스페이스 토큰을 써야
+        # chat.postMessage가 channel_not_found 없이 그 워크스페이스의
+        # channel/DM을 찾는다.
+        recipient = get_recipient(claim_request.get("recipient_id"))
+        team_id = recipient.get("team_id") if recipient else None
+        workspace = (
+            get_slack_workspace_by_team(team_id)
+            if team_id
+            else get_slack_workspace_by_org(claim_request.get("org_id"))
+        )
+
         try:
             slack_ts = post_message(
                 channel=channel,
                 text=message,
                 thread_ts=thread_ts,
                 blocks=requery_blocks(message, claim_request_id),
+                bot_token=workspace.get("bot_token") if workspace else None,
             )
         except SlackSendTransient as e:
             # 아직 아무것도 기록하지 않았다 — 재시도가 처음부터 다시 돈다.

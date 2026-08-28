@@ -164,14 +164,26 @@ def env(monkeypatch):
         "ts_seq": iter(f"17226828{n:02d}.000100" for n in range(10, 99)),
     }
 
-    def fake_post(*, channel, text, thread_ts=None, blocks=None):
+    def fake_post(*, channel, text, thread_ts=None, blocks=None, bot_token=None):
         state["sent"].append(
-            {"channel": channel, "text": text, "thread_ts": thread_ts, "blocks": blocks}
+            {
+                "channel": channel,
+                "text": text,
+                "thread_ts": thread_ts,
+                "blocks": blocks,
+                "bot_token": bot_token,
+            }
         )
         return next(state["ts_seq"])
 
     monkeypatch.setattr(routes, "post_message", fake_post)
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: state["audit"].append(kw))
+    # 워크스페이스 조회는 이 루프의 소유가 아니다(test_remind_routes.py env와
+    # 같은 이유) — recipient에 team_id가 없는 기본 케이스로 두고
+    # get_slack_workspace_by_org가 항상 None을 돌려주게 해 실제 Firestore를
+    # 안 건드린다.
+    monkeypatch.setattr(routes, "get_slack_workspace_by_team", lambda team_id: None)
+    monkeypatch.setattr(routes, "get_slack_workspace_by_org", lambda org_id: None)
     monkeypatch.setattr(
         routes,
         "enqueue_remind",
