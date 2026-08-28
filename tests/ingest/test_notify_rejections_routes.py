@@ -34,6 +34,11 @@ def _wire(monkeypatch, *, claims, receipts, recipients=None, post_result="175550
     monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims)
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts)
     monkeypatch.setattr(routes, "get_recipient", lambda rid: (recipients or {}).get(rid))
+    # 워크스페이스 조회는 이 스위트가 검증하는 대상이 아니다 — recipient에
+    # team_id가 없는 기본 케이스로 두고 get_slack_workspace_by_org가 항상
+    # None을 돌려주게 해 실제 Firestore를 안 건드린다.
+    monkeypatch.setattr(routes, "get_slack_workspace_by_team", lambda team_id: None)
+    monkeypatch.setattr(routes, "get_slack_workspace_by_org", lambda org_id: None)
     # 기본값은 "번역 불가"다 — 이 스위트 대부분은 번역 자체가 아니라 어떤 항목이
     # 통보에 포함되는지를 검증한다. 그 결과 한국어 사유 그대로 폴백된 텍스트를
     # 이 경로는 Gemma를 부르지 않는다 — 물품명은 파싱 시점 번역(name_en),
@@ -42,7 +47,7 @@ def _wire(monkeypatch, *, claims, receipts, recipients=None, post_result="175550
 
     sent = []
 
-    def fake_post(*, channel, text, thread_ts=None, blocks=None):
+    def fake_post(*, channel, text, thread_ts=None, blocks=None, bot_token=None):
         result = post_result
         if isinstance(result, Exception):
             raise result
@@ -229,12 +234,14 @@ def test_transient_slack_failure_returns_503_but_still_tries_other_recipients(mo
     monkeypatch.setattr(routes, "get_claims_for_run", lambda run_id: claims)
     monkeypatch.setattr(routes, "get_receipts", lambda receipt_ids: receipts)
     monkeypatch.setattr(routes, "get_recipient", lambda rid: recipients.get(rid))
+    monkeypatch.setattr(routes, "get_slack_workspace_by_team", lambda team_id: None)
+    monkeypatch.setattr(routes, "get_slack_workspace_by_org", lambda org_id: None)
     audit = []
     monkeypatch.setattr(routes, "record_audit_log", lambda **kw: audit.append(kw))
 
     sent = []
 
-    def flaky_post(*, channel, text, thread_ts=None, blocks=None):
+    def flaky_post(*, channel, text, thread_ts=None, blocks=None, bot_token=None):
         if channel == "U_1":
             raise SlackSendTransient("Slack returned 503")
         sent.append(channel)

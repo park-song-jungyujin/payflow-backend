@@ -19,7 +19,11 @@ from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from ..auth.store import get_or_create_default_org_id, get_slack_workspace_by_team
+from ..auth.store import (
+    get_or_create_default_org_id,
+    get_slack_workspace_by_org,
+    get_slack_workspace_by_team,
+)
 from ..guards.audit import record_audit_log
 from ..guards.oidc import verify_oidc
 from ..parsing.store import get_receipt
@@ -131,6 +135,7 @@ async def slack_events(request: Request):
                 display_name=get_display_name(
                     slack_user_id, bot_token=workspace.get("bot_token") if workspace else None
                 ),
+                team_id=team_id,
             )
             try:
                 post_message(
@@ -823,8 +828,28 @@ def task_notify_settlement_complete(body: dict, authorization: str = Header(defa
         rejected_items = rejected_by_recipient.get(recipient_id, [])
         text = _settlement_complete_text(amount_display=amount_display, rejected_items=rejected_items)
 
+        # 전역 SLACK_BOT_TOKEN은 org마다 다른 워크스페이스에 설치된 봇과
+        # 안 맞을 수 있다(get_display_name 등 다른 호출부와 같은 이유,
+        # ingest/routes.py:132) — recipient의 워크스페이스 토큰을 써야
+        # chat.postMessage가 channel_not_found 없이 그 워크스페이스의
+        # slack_user_id를 찾는다.
+        # team_id로 조회하는 이유: 한 org에 워크스페이스가 여러 개 연결될 수
+        # 있어(get_slack_workspace_by_org의 "org당 1개" 가정이 항상 맞지는
+        # 않는다) org_id만으로는 어느 워크스페이스인지 확정할 수 없다.
+        # team_id가 없는 옛 recipient(이 필드 추가 전에 만들어진 문서)만
+        # org_id 조회로 대체한다.
+        team_id = recipient.get("team_id")
+        workspace = (
+            get_slack_workspace_by_team(team_id)
+            if team_id
+            else get_slack_workspace_by_org(recipient.get("org_id"))
+        )
         try:
-            post_message(channel=slack_user_id, text=text)
+            post_message(
+                channel=slack_user_id,
+                text=text,
+                bot_token=workspace.get("bot_token") if workspace else None,
+            )
         except SlackSendTransient as e:
             # 다른 수취인 발송은 계속한다 — 이 사람만 다시 큐가 재시도한다.
             had_transient_failure = True
