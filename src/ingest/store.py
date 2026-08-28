@@ -117,7 +117,12 @@ def find_recipient_by_slack_user(org_id: str, slack_user_id: str) -> dict | None
 
 
 def create_recipient_from_slack(
-    *, org_id: str, slack_user_id: str, paypal_email: str, display_name: str | None = None
+    *,
+    org_id: str,
+    slack_user_id: str,
+    paypal_email: str,
+    display_name: str | None = None,
+    team_id: str = "",
 ) -> dict:
     """셀프 등록 — Slack DM으로 받은 PayPal 이메일로 recipients 문서를 새로 만든다.
 
@@ -143,6 +148,12 @@ def create_recipient_from_slack(
         "recipient_id": recipient_id,
         "org_id": org_id,
         "slack_user_id": slack_user_id,
+        # org당 워크스페이스가 1개라는 가정(auth/store.py.get_slack_workspace_by_org)이
+        # 깨질 수 있다 — 같은 org에 워크스페이스가 여러 개면 org_id만으로는 어느
+        # 워크스페이스로 DM을 보내야 할지 알 수 없다(ingest/routes.py.
+        # task_notify_settlement_complete). slack_user_id는 워크스페이스 안에서만
+        # 유일하므로 발급 당시 team_id를 같이 남겨둔다.
+        "team_id": team_id,
         "paypal_email": paypal_email,
         "display_name": display_name or slack_user_id,
         "monthly_paid_minor": 0,

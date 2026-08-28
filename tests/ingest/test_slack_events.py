@@ -64,13 +64,14 @@ def client(monkeypatch):
         )
         return f"rct_{slack_file_id}", True
 
-    def fake_register(*, org_id, slack_user_id, paypal_email, display_name=None):
+    def fake_register(*, org_id, slack_user_id, paypal_email, display_name=None, team_id=""):
         calls["registered"].append(
             {
                 "org_id": org_id,
                 "slack_user_id": slack_user_id,
                 "paypal_email": paypal_email,
                 "display_name": display_name,
+                "team_id": team_id,
             }
         )
         return {"recipient_id": "rcp_new", "slack_user_id": slack_user_id, "paypal_email": paypal_email}
@@ -208,6 +209,7 @@ def test_unregistered_user_with_email_gets_registered(client):
             "slack_user_id": "U_NEW",
             "paypal_email": "new-user@example.com",
             "display_name": None,
+            "team_id": "T01ABCDEF",
         }
     ]
     # 등록 안내만 나가고, 이번 메시지에 파일이 없었으니 receipt는 안 만든다 —
@@ -234,6 +236,7 @@ def test_registration_uses_slack_display_name_when_available(client, monkeypatch
             "slack_user_id": "U_NEW",
             "paypal_email": "new-user@example.com",
             "display_name": "박수현",
+            "team_id": "T01ABCDEF",
         }
     ]
 
@@ -259,6 +262,7 @@ def test_registration_dm_failure_does_not_undo_registration(client, monkeypatch)
             "slack_user_id": "U_NEW",
             "paypal_email": "new-user@example.com",
             "display_name": None,
+            "team_id": "T01ABCDEF",
         }
     ]
 
