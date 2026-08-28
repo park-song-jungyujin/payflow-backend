@@ -13,7 +13,7 @@ import requests
 
 _OAUTH_ACCESS_ENDPOINT = "https://slack.com/api/oauth.v2.access"
 _AUTHORIZE_ENDPOINT = "https://slack.com/oauth/v2/authorize"
-_BOT_SCOPES = "files:read,users:read,chat:write"
+_BOT_SCOPES = "files:read,users:read,chat:write,im:history"
 _TIMEOUT_SECONDS = 10
 
 
