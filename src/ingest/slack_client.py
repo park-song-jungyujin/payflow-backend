@@ -68,14 +68,18 @@ def requery_blocks(text: str, claim_request_id: str) -> list[dict]:
     ]
 
 
-def get_display_name(slack_user_id: str) -> str | None:
+def get_display_name(slack_user_id: str, bot_token: str | None = None) -> str | None:
     """셀프 등록(recipients.display_name) 전용 — 실패해도 예외를 던지지 않는다.
 
     이름이 화면에 안 예쁘게 나오는 것보다 등록 자체가 막히는 게 훨씬 나쁘다
     (users:read 스코프가 없거나 Slack이 잠깐 느려도 등록은 계속돼야 한다).
     호출부가 None이면 slack_user_id로 대체한다.
-    """
-    token = os.environ.get("SLACK_BOT_TOKEN")
+
+    bot_token: post_message와 같은 이유(멀티테넌트 — 워크스페이스마다 별도
+    설치 토큰) — 안 넘기면 전역 SLACK_BOT_TOKEN을 쓰는데, 그 워크스페이스에
+    대해 users:read 권한이 없을 수 있어 조회가 조용히 실패하고 원시 ID로
+    폴백한다."""
+    token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         return None
     try:
@@ -94,14 +98,16 @@ def get_display_name(slack_user_id: str) -> str | None:
     return profile.get("display_name") or profile.get("real_name") or None
 
 
-def get_user_locale(slack_user_id: str) -> str | None:
+def get_user_locale(slack_user_id: str, bot_token: str | None = None) -> str | None:
     """번역된 재요청 DM을 보낼지 정할 때만 쓴다(ingest/routes.py) — get_display_name과
     같은 이유로 실패해도 예외를 던지지 않는다(None이면 호출부가 한국어로 폴백한다).
 
     include_locale=true가 있어야 응답에 locale이 실린다 — get_display_name이 이미
     쓰는 users.info라 새 스코프는 필요 없다(users:read로 충분).
-    """
-    token = os.environ.get("SLACK_BOT_TOKEN")
+
+    bot_token: get_display_name과 같은 이유(멀티테넌트 워크스페이스별 토큰) — 안
+    넘기면 전역 SLACK_BOT_TOKEN을 쓴다."""
+    token = bot_token or os.environ.get("SLACK_BOT_TOKEN")
     if not token:
         return None
     try:

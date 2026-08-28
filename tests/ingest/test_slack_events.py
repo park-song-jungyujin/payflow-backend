@@ -100,7 +100,7 @@ def client(monkeypatch):
     monkeypatch.setattr(
         routes, "post_message", lambda **kw: calls["posted"].append(kw) or "1234.5678"
     )
-    monkeypatch.setattr(routes, "get_display_name", lambda uid: None)
+    monkeypatch.setattr(routes, "get_display_name", lambda uid, bot_token=None: None)
 
     test_client = TestClient(app)
     test_client.calls = calls
@@ -221,7 +221,7 @@ def test_registration_uses_slack_display_name_when_available(client, monkeypatch
     """이름을 못 가져오면(None) fake_register가 slack_user_id로 대체하는 건
     store.py 쪽 책임이라 여기서는 get_display_name의 반환값이 그대로 넘어가는지만
     본다."""
-    monkeypatch.setattr(routes, "get_display_name", lambda uid: "박수현")
+    monkeypatch.setattr(routes, "get_display_name", lambda uid, bot_token=None: "박수현")
 
     payload = _file_message([])
     payload["event"]["user"] = "U_NEW"

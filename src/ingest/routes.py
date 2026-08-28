@@ -128,7 +128,9 @@ async def slack_events(request: Request):
                 org_id=org_id,
                 slack_user_id=slack_user_id,
                 paypal_email=email,
-                display_name=get_display_name(slack_user_id),
+                display_name=get_display_name(
+                    slack_user_id, bot_token=workspace.get("bot_token") if workspace else None
+                ),
             )
             try:
                 post_message(
