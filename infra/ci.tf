@@ -1,4 +1,4 @@
-# GitHub Actions가 `payflow-backend`(park-song-jungyujin/payflow-backend)의 main
+# GitHub Actions가 `payflow-backend`(payflow737/payflow-backend)의 main
 # 브랜치에서 `gcloud run deploy payflow-api --source .`를 돌리기 위한 keyless 인증.
 # 서비스 계정 키 JSON을 GitHub Secrets에 넣지 않는다 — Workload Identity Federation으로
 # 단기 토큰만 발급한다.
@@ -24,7 +24,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository" = "assertion.repository"
   }
   # 이 레포에서 올라온 토큰만 받는다. 다른 레포/포크가 이 identity를 흉내낼 수 없다.
-  attribute_condition = "assertion.repository == 'park-song-jungyujin/payflow-backend'"
+  attribute_condition = "assertion.repository == 'payflow737/payflow-backend'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -42,7 +42,7 @@ resource "google_service_account" "deployer" {
 resource "google_service_account_iam_member" "deployer_wif_binding" {
   service_account_id = google_service_account.deployer.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/park-song-jungyujin/payflow-backend"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/payflow737/payflow-backend"
 }
 
 resource "google_project_iam_member" "deployer_run_admin" {

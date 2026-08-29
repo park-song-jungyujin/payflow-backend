@@ -1,4 +1,4 @@
-# GitHub Actions가 `payflow-frontend`(park-song-jungyujin/payflow-frontend)의 main
+# GitHub Actions가 `payflow-frontend`(payflow737/payflow-frontend)의 main
 # 브랜치에서 `gcloud run deploy payflow-web --source .`를 돌리기 위한 keyless 인증.
 # ci.tf와 같은 패턴 — 풀은 공유하고 레포별로 provider를 분리해 attribute_condition으로
 # 서로의 토큰을 흉내낼 수 없게 한다. deployer SA도 분리해서 payflow-frontend CI가
@@ -14,7 +14,7 @@ resource "google_iam_workload_identity_pool_provider" "github_frontend" {
     "google.subject"       = "assertion.sub"
     "attribute.repository" = "assertion.repository"
   }
-  attribute_condition = "assertion.repository == 'park-song-jungyujin/payflow-frontend'"
+  attribute_condition = "assertion.repository == 'payflow737/payflow-frontend'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -30,7 +30,7 @@ resource "google_service_account" "web_deployer" {
 resource "google_service_account_iam_member" "web_deployer_wif_binding" {
   service_account_id = google_service_account.web_deployer.name
   role                = "roles/iam.workloadIdentityUser"
-  member              = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/park-song-jungyujin/payflow-frontend"
+  member              = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/payflow737/payflow-frontend"
 }
 
 resource "google_project_iam_member" "web_deployer_run_admin" {
